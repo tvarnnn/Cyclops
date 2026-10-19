@@ -547,6 +547,39 @@ class SurfaceParams:
     frame_weight_floor: float = 0.25
     """The worst frame that still passes the gate contributes this much."""
 
+    neighbour_fit: bool = True
+    """Give a posed frame of the placed component whose OWN depth fit is
+    missing or refused a fit borrowed from the room (`neighbour_fit.py`): its
+    prediction is fitted to the depth its nearest fused frames measured, and
+    it is fused only if that fit passes the same gate every fused frame passes
+    (`gate_rel` on the held-out half, a > 0, at least
+    `DenseParams.min_sparse_points` anchors from at least `min_support_frames`
+    distinct fused frames).
+
+    WHY. A frame that sees few features -- a plain wall, the top of a wall --
+    has fewer than 20 sparse anchors and gets no fit, or a fit on a clustered
+    handful that the gate refuses, and is then fused nowhere although it was
+    posed in the room. On walk 10.1 that was 165 of the 1042 frames of the
+    placed component (79 without a fit, 86 refused); the pre-cleanup control
+    on the same frames lost 191 of 1270, the same share. Off restores
+    "no own fit, no fusion"."""
+
+    neighbour_fit_frames: int = 10
+    """How many nearest fused frames (facing the same half-space) lend their
+    depth as anchors. 10 is the dense stage's consensus neighbourhood
+    (`DenseParams.neighbours`), measured there: a wider search recruits more
+    distant, weaker witnesses."""
+
+    neighbour_fit_scope: str = "placed"
+    """Which frames may borrow a fit. `placed` (the default): only the placed
+    component's own frames. `solver-frame` (an experiment, off by default):
+    also the keyframes the final scale guard isolated from the placed
+    component as `final-scale-outlier` while the solver had posed them in the
+    placed component's own frame -- their live depth predictions are staged,
+    and each is fused only if its borrowed fit passes the same gate. It
+    overrides a guard decision for the SURFACE only (the components record and
+    the appearance are untouched), which is an owner decision."""
+
     # -- the solver's own outliers (see `robust_pose_outliers`) -------------
     outlier_radius_multiple: float = OUTLIER_RADIUS_MULTIPLE
     """A pose or a sparse point farther than this MULTIPLE OF THE SOLVE'S OWN
@@ -987,6 +1020,9 @@ class SurfaceParams:
             quality="live",
             consistency_outer=3,
             consistency_warm_outer=1,
+            # The live budget is the gap between solves; the surface built
+            # after Stop, which replaces this one, borrows the fits.
+            neighbour_fit=False,
         )
         base.update(overrides)
         return cls(**base)
@@ -1053,6 +1089,15 @@ class SurfaceParams:
              self.fusion_bound_multiple, self.max_key_coarsening,
              OUTLIER_VERSION),
         )
+        if self.neighbour_fit:
+            # Present only when on, so a surface built with it off keeps the
+            # digest it had before the parameter existed; and BEFORE the
+            # optional appends below, which must keep only appending.
+            from tower.world_builder.neighbour_fit import NEIGHBOUR_FIT_ID  # noqa: PLC0415
+
+            base = base + (("neighbour-fit", NEIGHBOUR_FIT_ID, self.neighbour_fit_frames),)
+            if self.neighbour_fit_scope != "placed":
+                base = base + (("neighbour-fit-scope", self.neighbour_fit_scope),)
         if self.fill_gap_frac > 0:
             base = base + ("fill", self.fill_gap_frac, self.fill_enclose_dirs,
                            self.fill_sealed_only)

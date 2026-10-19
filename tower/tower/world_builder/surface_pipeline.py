@@ -502,6 +502,8 @@ class _Frames:
         # `prepared` then yields corrected depth rather than the plain affine.
         self.correction = None
         self.consistency = None
+        # What `adopt_neighbour_fits` did, when it ran.
+        self.neighbour_fit = None
         held = []
         # Keyframe indices refused because their depth fit is not physical:
         # inverted (`fit_is_physical`), or unscorable because the held-out
@@ -595,6 +597,11 @@ class _Frames:
         kw = dict(multiple=params.outlier_radius_multiple,
                   detach=params.pose_detach_multiple,
                   max_fraction=params.max_gated_pose_fraction)
+        # What the gate decided, kept so a frame adopted later
+        # (`adopt_neighbour_fits`) is held to the same rule.
+        self.pose_gated: set[int] = set()
+        self.pose_gate_centre = None
+        self.pose_gate_threshold = 0.0
         if not self.items:
             return robust_pose_outliers(np.zeros((0, 3)), **kw).record()
         centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in self.items])
@@ -602,12 +609,16 @@ class _Frames:
         if report.stood_down:
             logger.warning("[Tower][WorldBuilder][surface] pose gate %s",
                            report.detail)
+        elif report.threshold > 0:
+            self.pose_gate_centre = np.median(centres, axis=0)
+            self.pose_gate_threshold = float(report.threshold)
         if report.gated:
             kept = []
             for item, wild in zip(self.items, report.outlier):
                 if wild:
                     self.kids.pop(item[0], None)
                     self.image_sha1.pop(item[0], None)
+                    self.pose_gated.add(int(item[0]))
                 else:
                     kept.append(item)
             logger.warning(
@@ -628,7 +639,13 @@ class _Frames:
     def load(self, ki, *, image: bool = True):
         import cv2
 
-        pred = np.load(self.work / "depth" / f"{ki:05d}.npy").astype(np.float32)
+        path = self.work / "depth" / f"{ki:05d}.npy"
+        if not path.exists():
+            # A frame adopted with a borrowed fit (`adopt_neighbour_fits`): the
+            # depth stage keeps its raw prediction under this name and writes
+            # the name above only for a frame its own fit admitted.
+            path = self.work / "depth" / f"{ki:05d}_pred.npy"
+        pred = np.load(path).astype(np.float32)
         img = None
         if image:
             img = cv2.imread(str(self.work / "undist" / f"{ki:05d}.jpg"),
@@ -644,6 +661,169 @@ class _Frames:
                 fill = f
         return pred, img, fill
 
+    def _validity(self, ki, zt, zmax, fill, params: SurfaceParams, median_depth: float,
+                  device):
+        """The pixels of one frame's depth `zt` that may be fused, before the
+        fusion bound: (ok, incidence cosine, whether a transient mask applied).
+        One rule for the fusion (`prepared`) and for the depth a frame lends
+        as anchors (`adopt_neighbour_fits`)."""
+        import torch
+
+        ok, cosang = depth_validity(
+            zt, self.K, params, median_depth,
+            max_depth=depth_bound(params, median_depth, zmax))
+        if fill is not None:
+            ok &= ~_dilate_fill(torch.as_tensor(fill, device=device),
+                                params.fill_margin_px)
+        # The wearer's hands, arms and held phone: zero weight. Neither a
+        # measurement (a hand on the desk is within depth noise of the desk
+        # and fuses into it as a bump with the hand's colour) nor a carve.
+        det = self.transients.mask(ki) if self.transients is not None else None
+        masked = det is not None and det.shape == tuple(ok.shape)
+        if masked:
+            ok &= ~torch.as_tensor(det, device=device)
+        return ok, cosang, masked
+
+    def adopt_neighbour_fits(self, align: dict, solution, params: SurfaceParams,
+                             median_depth: float, voxel: float, device=None,
+                             extra: list | None = None) -> dict:
+        """Fuse the posed frames of the placed component whose own depth fit
+        is missing or refused, when a fit to the depth their fused neighbours
+        measured passes the gate (`SurfaceParams.neighbour_fit`,
+        `neighbour_fit.py`). Appends them to `items`; returns and keeps
+        (`self.neighbour_fit`) the record of what it did.
+
+        `extra`: further candidates `(ki, kid, pose, prior, record)` outside the
+        depth stage's records -- the `solver-frame` scope's isolated pieces
+        (`isolated_candidates`), whose predictions are already staged in `work`.
+
+        Called once the frames, their transient masks, the scene scale and the
+        fusion bound exist, and before the consistency field, so an adopted
+        frame is corrected, masked and filtered exactly as every other one."""
+        import torch
+
+        from tower.world_builder import neighbour_fit as NF  # noqa: PLC0415
+        from tower.world_builder.dense import DenseParams  # noqa: PLC0415
+
+        t0 = time.time()
+        dev = device or torch.device("cpu")
+        record = {"id": NF.NEIGHBOUR_FIT_ID, "neighbours": int(params.neighbour_fit_frames),
+                  "candidates": 0, "adopted": 0, "refused": {}, "by_prior": {},
+                  "adopted_frames": []}
+        self.neighbour_fit = record
+        primary = list(self.items)
+        if not primary:
+            return record
+        admitted = {int(item[0]) for item in primary}
+        poses = solution.poses or {}
+        kids = list(getattr(solution, "keyframe_ids", None) or [])
+        refused = record["refused"]
+        candidates = []
+        for r in align.get("records", []):
+            if not isinstance(r, dict) or r.get("ki") is None:
+                continue
+            ki = int(r["ki"])
+            if ki in admitted or ki in self.pose_gated:
+                continue
+            kid = r.get("kid") or (kids[ki] if 0 <= ki < len(kids) else None)
+            pose = poses.get(kid) if kid is not None else None
+            if not pose or pose.get("rotation") is None or pose.get("translation") is None:
+                continue
+            # The depth stage's targets are the placed component already; this
+            # says so rather than relying on it.
+            if int(pose.get("component", 0)) != int(params.component):
+                continue
+            if not ((self.work / "depth" / f"{ki:05d}_pred.npy").exists()
+                    and (self.work / "undist" / f"{ki:05d}.jpg").exists()):
+                refused["no-prediction"] = refused.get("no-prediction", 0) + 1
+                continue
+            candidates.append((ki, kid, pose, "refused" if r.get("ok") else "no-fit", r))
+        for cand in extra or []:
+            ki = int(cand[0])
+            if ki in admitted or ki in self.pose_gated:
+                continue
+            if not ((self.work / "depth" / f"{ki:05d}_pred.npy").exists()
+                    and (self.work / "undist" / f"{ki:05d}.jpg").exists()):
+                refused["no-prediction"] = refused.get("no-prediction", 0) + 1
+                continue
+            candidates.append(cand)
+        record["candidates"] = len(candidates)
+        if not candidates:
+            return record
+
+        trel = truncation_rel(params, self.median_held_out)
+        floor = params.trunc_voxels * voxel
+        cap = max(params.trunc_max_voxels * voxel, floor)
+
+        def band(z):
+            return np.clip(z * trel, floor, cap) if trel > 0 else np.full_like(z, floor)
+
+        centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in primary])
+        axes = np.array([R[2] for _ki, _a, _b, R, _t, _ho, _z in primary])
+        cache: dict = {}
+
+        def points(i):
+            if i not in cache:
+                ki, a, b, R, t, _ho, zmax = primary[i]
+                pred, _img, fill = self.load(ki, image=False)
+                z = np.asarray(_depth_from_prediction(pred, a, b, self.kind), np.float32)
+                zt = torch.as_tensor(np.where(np.isfinite(z), z, np.nan), device=dev)
+                ok, _cos, _m = self._validity(ki, zt, zmax, fill, params, median_depth, dev)
+                if self.bound is not None:
+                    ok &= depth_within_bound(zt, self.K, R, t, self.bound.lo, self.bound.hi)
+                cache[i] = NF.frame_points(ki, z, ok.cpu().numpy(), R, t, self.K,
+                                           z_cap=zmax)
+            return cache[i]
+
+        min_anchors = DenseParams().min_sparse_points
+        for ki, kid, pose, prior, _r in candidates:
+            R = np.array(pose["rotation"], float).reshape(3, 3)
+            t = np.array(pose["translation"], float)
+            centre = -R.T @ t
+            by = record["by_prior"].setdefault(prior, {"candidates": 0, "adopted": 0})
+            by["candidates"] += 1
+            if (self.pose_gate_centre is not None and self.pose_gate_threshold > 0
+                    and float(np.linalg.norm(centre - self.pose_gate_centre))
+                    > self.pose_gate_threshold):
+                refused["pose"] = refused.get("pose", 0) + 1
+                continue
+            pred, _img, fill = self.load(ki, image=False)
+            blocked = None
+            if fill is not None:
+                blocked = _dilate_fill(torch.as_tensor(fill, device=dev),
+                                       params.fill_margin_px).cpu().numpy()
+            idx = NF.pick_neighbours(centre, R[2], centres, axes,
+                                     int(params.neighbour_fit_frames))
+            u, v, z, src = NF.borrowed_anchors(self.K, pred.shape, R, t,
+                                               [points(i) for i in idx], band=band,
+                                               blocked=blocked)
+            fit = NF.fit_from_neighbours(pred, self.kind, u, v, z, src,
+                                         gate_rel=params.gate_rel, min_anchors=min_anchors,
+                                         min_frames=params.min_support_frames)
+            if not fit["ok"]:
+                refused[fit["code"]] = refused.get(fit["code"], 0) + 1
+                continue
+            by["adopted"] += 1
+            record["adopted"] += 1
+            self.kids[ki] = kid
+            self.image_sha1[ki] = _r.get("image_sha1")
+            self.items.append((ki, fit["a"], fit["b"], R, t, fit["held_out_rel"],
+                               fit["z_anchor_max"]))
+            # Everything the appearance stage needs to use the frame as the
+            # depth stage's own records are used (`appearance_pipeline`): the
+            # frame that built a surface is also a photograph of it.
+            record["adopted_frames"].append({
+                "ki": ki, "kid": kid, "prior": prior, "a": fit["a"], "b": fit["b"],
+                "held_out_rel": round(fit["held_out_rel"], 5),
+                "z_sparse_max": fit["z_anchor_max"], "anchors": fit["anchors"],
+                "anchor_frames": fit["anchor_frames"],
+                "image_sha1": _r.get("image_sha1"), "fill_rule": _r.get("fill_rule")})
+        record["seconds"] = round(time.time() - t0, 2)
+        logger.info("[Tower][WorldBuilder][surface] neighbour fits: %d of %d posed frames "
+                    "without a usable own fit adopted (%s refused) in %.1f s",
+                    record["adopted"], record["candidates"], refused, record["seconds"])
+        return record
+
     def prepared(self, params: SurfaceParams, median_depth: float, device):
         import torch
 
@@ -657,18 +837,9 @@ class _Frames:
                 # Validity below is decided on the CORRECTED depth, which is
                 # the depth that is fused.
                 zt = self.correction.correct(ki, zt)
-            ok, cosang = depth_validity(
-                zt, self.K, params, median_depth,
-                max_depth=depth_bound(params, median_depth, zmax))
-            if fill is not None:
-                ok &= ~_dilate_fill(torch.as_tensor(fill, device=device),
-                                    params.fill_margin_px)
-            # The wearer's hands, arms and held phone: zero weight. Neither a
-            # measurement (a hand on the desk is within depth noise of the desk
-            # and fuses into it as a bump with the hand's colour) nor a carve.
-            det = self.transients.mask(ki) if self.transients is not None else None
-            if det is not None and det.shape == tuple(ok.shape):
-                ok &= ~torch.as_tensor(det, device=device)
+            ok, cosang, masked = self._validity(ki, zt, zmax, fill, params, median_depth,
+                                                device)
+            if masked:
                 self.masked += 1
             # Outside the robust envelope of the observed scene, depth is not
             # measurement but the solver's noise carried through the affine
@@ -863,6 +1034,36 @@ def surfacify(store, world_id: str, session_id: str, *,
         # depth is prepared, because `_Frames.prepared` is what applies it.
         frames.bound = _fusion_bound(frames, solution, params, median_depth)
 
+        if params.neighbour_fit:
+            # After the scale, the bound and the primary frames' masks (the
+            # anchors are their fused depth), before the consistency field (an
+            # adopted frame is corrected like every other).
+            import torch  # noqa: PLC0415
+
+            t = time.time()
+            _status(root, state=STATE_RUNNING, stage=STAGE_NEIGHBOUR_FIT,
+                    input_digest=digest, params_digest=pdigest)
+            extra = iso = None
+            if params.neighbour_fit_scope == "solver-frame":
+                extra, iso = isolated_candidates(store, world_id, session_id, solution,
+                                                 intrinsics, work, params)
+            nf = frames.adopt_neighbour_fits(
+                align, solution, params, median_depth, voxel,
+                device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+                extra=extra)
+            if iso is not None:
+                nf["isolated"] = iso
+            if nf.get("adopted"):
+                # Their hand and phone masks: computed only for the adopted
+                # frames, every other one is cached.
+                frames.transients = _ensure_transients(
+                    store, world_id, session_id, solution, intrinsics, align, work, frames,
+                    tparams, should_stop, progress, transient_backend_factory,
+                    imagery_source=params.imagery_source)
+            seconds[STAGE_NEIGHBOUR_FIT] = round(time.time() - t, 2)
+            if frames.transients.state == "stopped" or _stopped(should_stop):
+                return _stop(root, STAGE_NEIGHBOUR_FIT, seconds, _outlier_record(frames, voxel))
+
         if params.depth_consistency:
             t = time.time()
             _status(root, state=STATE_RUNNING, stage=STAGE_CONSISTENCY)
@@ -942,6 +1143,92 @@ def surfacify(store, world_id: str, session_id: str, *,
 
 
 STAGE_CONSISTENCY = "consistency"
+STAGE_NEIGHBOUR_FIT = "neighbour-fit"
+
+
+def adopted_fits(manifest: dict | None) -> dict:
+    """`{ki: record}` of the frames a surface fused with a borrowed fit
+    (`_Frames.adopt_neighbour_fits`), read from that surface's manifest and
+    shaped like the depth stage's `ok` records of `align.json`, so a later
+    stage can use them exactly as it uses those. Empty for a surface built
+    without them."""
+    detail = (manifest or {}).get("detail")
+    nf = detail.get("neighbour_fit") if isinstance(detail, dict) else None
+    out = {}
+    for f in (nf or {}).get("adopted_frames") or []:
+        if not isinstance(f, dict) or f.get("ki") is None or not fit_is_physical(
+                f.get("a"), f.get("b")):
+            continue
+        out[int(f["ki"])] = {"ki": int(f["ki"]), "kid": f.get("kid"), "ok": True,
+                             "a": float(f["a"]), "b": float(f["b"]),
+                             "held_out_rel": f.get("held_out_rel"),
+                             "z_sparse_max": f.get("z_sparse_max"),
+                             "image_sha1": f.get("image_sha1"),
+                             "fill_rule": f.get("fill_rule"), "fit": "neighbour"}
+    return out
+
+
+def isolated_candidates(store, world_id: str, session_id: str, solution, intrinsics,
+                        work: Path, params: SurfaceParams) -> tuple[list, dict]:
+    """The `solver-frame` scope of `SurfaceParams.neighbour_fit_scope`.
+
+    The keyframes the final scale guard isolated from the placed component
+    (an unplaced component whose only reason is `final-scale-outlier`) while
+    the solver had posed them in the placed component's own frame (their
+    `solver_component` is one of its `solver_components`), with their live
+    depth predictions staged into `work` under their final indices. Returns
+    `(candidates for adopt_neighbour_fits, record)`. Frames without a
+    compatible live prediction are not candidates."""
+    import shutil  # noqa: PLC0415
+
+    record = {"pieces": 0, "keyframes": 0, "staged": 0}
+    comps = list(getattr(solution, "components", None) or [])
+    placed = next((c for c in comps if int(c.get("index", -1)) == int(params.component)), None)
+    if placed is None:
+        return [], record
+    frame = {int(x) for x in placed.get("solver_components") or []}
+    pieces = {int(c["index"]) for c in comps
+              if frame and c.get("gate_state") == "unplaced"
+              and list(c.get("gate_reasons") or []) == ["final-scale-outlier"]
+              and {int(x) for x in c.get("solver_components") or []} <= frame}
+    record["pieces"] = len(pieces)
+    want = {}
+    for ki, kid in enumerate(solution.keyframe_ids):
+        pose = (solution.poses or {}).get(kid)
+        if not pose or pose.get("rotation") is None or pose.get("translation") is None:
+            continue
+        if (int(pose.get("component", -1)) in pieces
+                and int(pose.get("solver_component", -1)) in frame):
+            want[ki] = (kid, pose)
+    record["keyframes"] = len(want)
+    if not want:
+        return [], record
+    from tower.world_builder.dense_pipeline import FILL_RULE, depth_trust_now  # noqa: PLC0415
+    from tower.world_builder.live_depth import (  # noqa: PLC0415
+        _live_files,
+        compatible_live_records,
+    )
+
+    root = work.parent
+    trust = depth_trust_now(store, world_id, session_id, imagery_source=params.imagery_source)
+    matches = compatible_live_records(store, world_id, session_id, solution, intrinsics, root,
+                                      imagery_source=params.imagery_source, trust=trust)
+    out = []
+    for ki, (kid, pose) in sorted(want.items()):
+        match = matches.get(ki)
+        if match is None or match[0] != kid:
+            continue
+        try:
+            for directory, src, dst in _live_files(match[2], ki):
+                target = work / directory
+                target.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(root / "live_depth" / "work" / directory / src, target / dst)
+        except OSError:
+            continue
+        out.append((ki, kid, pose, "isolated", {"image_sha1": match[1],
+                                                 "fill_rule": FILL_RULE}))
+    record["staged"] = len(out)
+    return out, record
 
 
 def _consistency(dense_root, frames, solution, params, median_depth, should_stop):
@@ -1575,6 +1862,8 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
                            "evidence_filter": evidence_stats,
                            "mobile_page_fit": mobile_fit,
                            "depth_consistency": frames.consistency,
+                           **({"neighbour_fit": frames.neighbour_fit}
+                              if getattr(frames, "neighbour_fit", None) else {}),
                            "plane_snap": _snap_summary(snap_stats),
                            **({"enclosed_fill": fill_stats} if fill_stats else {})}),
     )

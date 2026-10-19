@@ -93,6 +93,10 @@ def _params_from_args(args) -> SurfaceParams:
             kw[name] = value
     if args.no_carve:
         kw["carve"] = False
+    if args.no_neighbour_fit:
+        kw["neighbour_fit"] = False
+    if args.neighbour_fit_scope:
+        kw["neighbour_fit_scope"] = args.neighbour_fit_scope
     return SurfaceParams(**kw)
 
 
@@ -179,6 +183,10 @@ def main() -> int:
     ap.add_argument("--gate", dest="gate_rel", type=float)
     ap.add_argument("--min-component-frac", dest="min_component_frac", type=float)
     ap.add_argument("--smooth", dest="smooth_iterations", type=int)
+    ap.add_argument("--no-neighbour-fit", action="store_true",
+                    help="fuse only frames whose own sparse depth fit passed (SurfaceParams.neighbour_fit)")
+    ap.add_argument("--neighbour-fit-scope", choices=("placed", "solver-frame"),
+                    help="SurfaceParams.neighbour_fit_scope")
     args = ap.parse_args()
 
     store = WorldStore(Path(args.root))
