@@ -279,6 +279,7 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         read_mesh_bytes,
     )
     from tower.world_builder.surface_pipeline import (  # noqa: PLC0415
+        adopted_fits,
         read_surface_confidence,
         read_surface_level,
         read_surface_manifest,
@@ -329,6 +330,11 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     depth_dir = droot / "work" / "depth"
     records = {int(r["ki"]): r for r in align.get("records") or []
                if isinstance(r, dict) and r.get("ki") is not None}
+    # The frames this surface fused with a fit borrowed from the room
+    # (`surface_pipeline.adopt_neighbour_fits`), under the fit the surface
+    # used: a frame that built a surface is also a photograph of it, and its
+    # occluder test must read the depth that was fused.
+    records.update(adopted_fits(surface))
     kind = align.get("kind", "disparity")
 
     policy = A.resolve_label_policy(store, world_id, session_id, redactor_factory,
