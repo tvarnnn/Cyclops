@@ -65,6 +65,15 @@ def _no_transient_detector_models(monkeypatch):
     monkeypatch.setenv("TOWER_WORLD_TRANSIENTS", "off")
 
 
+@pytest.fixture(autouse=True)
+def _no_replace_cut(monkeypatch):
+    """Re-place, don't cut (tower/world_builder/replace_cut.py) would open the solve database with
+    pycolmap and run COLMAP's mapper inside every final publication the guard makes. Tests of the guard
+    and the solve pin the guard's own decision; off by environment, as the transient detector is.
+    `test_world_builder_replace_cut.py` turns it on."""
+    monkeypatch.setenv("TOWER_WORLD_REPLACE_CUT", "off")
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _live_depth_never_loads_a_model():
     """Every builder session starts a `LiveDepthWorker`, and its first trusted,

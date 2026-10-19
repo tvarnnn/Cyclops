@@ -896,6 +896,19 @@ def world_solve_gate_setting() -> bool:
     return _flag(WORLD_SOLVE_GATE_ENV, default=False)
 
 
+# Re-place, don't cut (`world_builder/replace_cut.py`): at the final scale guard's publication, the
+# keyframes the room would not hold (isolated by the guard, below the support floor, not posed) are
+# registered into the finished room by COLMAP's incremental registration, and kept only if they pass the
+# support floor and the guard's own pose and scale screens. Read by the guard at every final publication.
+WORLD_REPLACE_CUT_ENV = "TOWER_WORLD_REPLACE_CUT"
+
+
+def world_replace_cut_setting() -> bool:
+    """`TOWER_WORLD_REPLACE_CUT`: re-place the keyframes the final solve could not place. On.
+    Off: the guard's decision is published as it is, byte for byte what the guard alone publishes."""
+    return _flag(WORLD_REPLACE_CUT_ENV, default=True)
+
+
 # The evidence gate's CONSENSUS (`world_builder/coherence_publish.gate_by_consensus`):
 # the number of mapper-seed draws a gated, seeded final
 # solve maps on its one frozen database and gates, deciding attachment to the room per
