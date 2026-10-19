@@ -2,10 +2,13 @@
 
 Contract identifier: `wb-surface-mesh/1`.
 
-Document version: **v3** (2026-09-28): what a hole and a gap can be, the
-area page's revision, and a fixed template allowance in the page estimate,
-manager 130 from the C9 cross-check (§2 claim 2, §8). See the change log at the
-end. The artifact identifier, manifest and routes do **not** move.
+Document version: **v4** (2026-10-19): borrowed depth fits (§1), their
+manifest record and stage (§6), patchy run lane G after reviews R1/R2 of
+cand-v1. v3 (2026-09-28): what a hole and a gap can be, the area page's
+revision, and a fixed template allowance in the page estimate, manager 130
+from the C9 cross-check (§2 claim 2, §8). See the change log at the end. The
+artifact identifier and routes do **not** move; the manifest gains one
+`detail` key.
 
 This describes what `<world>/surface/<session>/` contains, what it claims, and
 what it promises never to claim. It is additive: a reader that does not know
@@ -26,8 +29,40 @@ the **depth consistency field** (`WORLD-BUILDER-DENSE.md` §11): a smooth
 per-keyframe scale-and-offset correction solved jointly over every gated frame
 against the sparse points and against the other frames' depth, and applied
 only when held-out checks say it helps. This stage adds that correction, the
-fusion, the surface, the plane snap (§3), and nothing else about where
-geometry comes from.
+fusion, the surface, the plane snap (§3), the borrowed fits below, and nothing
+else about where geometry comes from.
+
+**Borrowed fits** (`neighbour-fit/2`; `SurfaceParams.neighbour_fit`, on for a
+final build, off in the live preset; `tower/tower/world_builder/neighbour_fit.py`).
+A keyframe of the placed component whose own fit is missing or refused, and
+that the pose gate kept, may be fused with a fit borrowed from the room. Its
+monocular prediction is fitted, by the same robust affine and held-out split
+as every fit, to the depth its nearest fused frames (`neighbour_fit_frames`,
+facing the same half-space) measured, projected into it. It is fused only when
+all of these hold:
+
+1. the fit passes the dense stage's gate: `a > 0`, held-out error within
+   `gate_rel`, at least `min_sparse_points` anchors from at least
+   `min_support_frames` distinct fused frames;
+2. **the room's gauge**: the median of `z_anchor / prediction` over its
+   anchors (the final scale guard's per-camera statistic, the backend being
+   metric and told the solve camera's FoV) against the room's reference (the
+   guard's `dominant_level` over the same statistic of the frames fused with
+   their own fits) lies inside the guard's clear band [0.75, 1.333]
+   (`neighbour_fit_scale_band`, `screen` = [0.8, 1.25]). The held-out error
+   cannot see a gauge error the anchors share: on a broken solve draw a
+   stretch drawn ×4.16 the room's scale vouched for its own unfitted frames
+   and grew a sheet 2-7 m from every camera. Without a metric prediction
+   nothing is borrowed;
+3. **the anchored footprint**: it is fused only on the anchor grid's cells
+   (4 px) that hold a kept anchor, dilated by one cell. Elsewhere its depth was
+   never scored and does not exist for the fusion or the consistency field.
+
+So a borrowed fit contributes depth only where fused frames of the room
+measured it, re-fitted in a frame that had no fit of its own. Its far bound is
+`anchor_depth_multiple` times its farthest anchor. After that it is an ordinary
+fused frame (claim 1's tests, the components filter), and the appearance stage
+uses it as a photograph (`WORLD-BUILDER-APPEARANCE.md` §5.1).
 
 ## 2. What this artifact CLAIMS
 
@@ -493,6 +528,7 @@ level.
 | `detail.depth_consistency` | the consistency field this surface was fused through (added 2026-09-17): `state` (`applied`, `refused`, `failed`, `skipped`), `reason`, `frames`, `cells`, `heldout.before` / `heldout.after` (held-out sparse-point `sfm` and held-out frame-pair `cross` median relative error, the plain affine vs the field), `warm_start`, `seconds`, `gpu_peak_mb`, `key`, `reused`. Only `applied` means corrected depth was fused. A surface built while the solve `failed` is never reported "already built": the next build tries the solve again |
 | `detail.rims` | the level-0 boundary the smoothing left (added 2026-09-21; absent from manifests written before): `smoothing` (`curve` or `umbrella`, per `params.smooth_boundary_curve`), `boundary_edges`, `length_voxels`, `junction_vertices`, and `roughness_voxels` / `roughness_voxels_p90` — the median and p90 distance of a boundary vertex from the midpoint of its two boundary neighbours, in voxels. It is how ragged the rims are, and the number §3's rim smoothing exists to move. Measured after the smoothing and before the plane snap, which moves vertices again (about +2% of boundary length on the canonical capture). `roughness_voxels` is `null` for a closed surface |
 | `detail.plane_snap` | the plane snap's record (§3): `plane_count`, `plane_areas`, `planes[]`, `rejected`, `vertices_moved`, `area_snapped`, `max_move`, `tol`, `min_area`, `min_frames`, `seconds`. `null` when `params.plane_snap` is off |
+| `detail.neighbour_fit` | the borrowed fits (§1; added 2026-10-19, absent when `params.neighbour_fit` is off): `id` (`neighbour-fit/2`), `neighbours`, `candidates`, `adopted`, `refused` (counts by code: `anchors`, `frames`, `inverted`, `unscorable`, `gate`, `scale`, `pose`, `no-prediction`, `no-room-scale`), `by_prior` (`no-fit` / `refused`: candidates, adopted), `scale` (`band`, `low`, `high`, `state` — `measured`, `no-metric-depth` or `no-reference` — and `reference_units_per_metre`), `seconds` (the fitting; the adopted frames' transient masks are in `seconds.neighbour-fit`), and `adopted_frames[]` (`ki`, `kid`, `prior`, `a`, `b`, `held_out_rel`, `scale_ratio`, `footprint_share`, `z_sparse_max` = the farthest anchor, `anchors`, `anchor_frames`, `image_sha1`, `fill_rule`), which the appearance stage reads; `isolated` with the opt-in `solver-frame` scope. A frame adopted here may also be counted in `outliers.frames_refused_inverted_fit` / `_unscorable_fit`, which count OWN fits |
 | `detail.voxel_coarsened_by` | how far the block budget (`params.max_blocks`) coarsened the voxel. A walk the budget cannot hold after 12 coarsening attempts is refused (`unavailable`, naming the budget) rather than built over it |
 | `voxel`, `truncation` | in scene units. `truncation` is the band a sample at the scene scale actually got, cap included (manifests written before 2026-09-16 recorded the uncapped request) |
 | `frames_used`, `frames_offered` | how much of the walk contributed |
@@ -500,7 +536,7 @@ level.
 | `levels` | per level: level, vertices, faces, bytes, `file`, and `confidence` (§5a): `{file, bytes, vertices, format, version}`, absent when none was built |
 | `confidence` | the channel as a whole: `{format, version, levels, bytes, components, evidence_share}`, or `null`. Absent from manifests written before 2026-09-18, and `null` when `params.confidence` is off or the enclosed fill is on (that path does not produce the corner weight the score is graded on, and it already breaks the format identifier) |
 | `canonical_level`, `mobile_level` | which rung is the archive and which the phone gets |
-| `seconds` | per stage: `depth`, `transients` (ensuring the detector masks), `consistency`, `fuse`, `mesh`, `snap`, `pack` |
+| `seconds` | per stage: `depth`, `transients` (ensuring the detector masks), `neighbour-fit` (the borrowed fits and the adopted frames' masks; absent when off), `consistency`, `fuse`, `mesh`, `snap`, `pack` |
 | `transients` | claim 6: the detector report (`state`, `detail`, `mode`, `rule`, `models`, `frames_masked`, `computed`, `cached`, `seconds`, `gpu_peak_mb`) plus `frames_fused_with_mask`. Absent from manifests written before 2026-09-17 |
 | `outliers` | what this build did about the solve's own outliers (added 2026-09-22; absent from manifests written before, which fused whatever the solver produced). **Written on every outcome, not only on `ok`** — a build the guards themselves refused carries it on `status.json`, because a guard that cannot be seen acting is indistinguishable from a broken depth backend. **The pose gate:** `poses_offered`, `poses_gated`, `pose_radius_multiple`, `pose_radius_median`, `pose_radius_p95`, `pose_detach_multiple`, `pose_gate_threshold`, `pose_radius_max`, `pose_radius_gated_max`, `pose_gate_stood_down`, `pose_detail`. A pose is not fused when its centre lies beyond BOTH `params.outlier_radius_multiple` times the median pose radius of this solve AND `params.pose_detach_multiple` times its p95 radius — far on the solve's own scale *and* detached from the body of its own distribution. The second test is not optional: a capture that dwells and then moves is far on the first test while being entirely real, and the multiple-of-the-median alone deleted up to 45% of such a capture, the wearer's own photographs among them. `pose_gate_stood_down` is true when a rule applied and then declined to act — too few poses to be robust, or a share above `params.max_gated_pose_fraction`, which is a solve that came apart rather than a handful of outliers. **The fusion bound:** `fusion_bound_lo` / `fusion_bound_hi` / `fusion_bound_multiple` / `fusion_bound_detail` — the box depth was fused inside, built from the inlier sparse points and from every kept camera centre grown by the scene-relative far bound, then scaled about its own centre. `frames_clipped_by_bound`, `frames_emptied_by_bound`, `pixels_clipped_by_bound` and `pixels_offered_to_bound` count what it cost; the pixel counts are the ones that matter, since a frame counter cannot tell a stray pixel from a frame cut in half. A bound that empties every frame is refused by name rather than as "no frame produced usable depth". **The depth-fit gate** (added 2026-09-23): `frames_refused_inverted_fit` counts frames whose depth fit is not physical (slope `a <= 0` or non-finite, which inverts depth; it includes frames an older rule also refused) and `frames_refused_unscorable_fit` counts frames whose held-out half could not be scored, which in this pipeline means that half's own fit was not physical. Neither is fused, matching the dense stage's own fuse gate; both are absent from manifests written before. **The voxel:** `voxel_coarsened_for_key_range` — the block grid could not be keyed at the requested voxel and was coarsened until it could, up to `params.max_key_coarsening`, past which the build is refused rather than published as a collapsed room; `voxel_coarsened_for_block_budget` is the same number for `params.max_blocks`. Every criterion is a multiple of a statistic of this solve's own poses, never a distance in units, because `global_solve` does not normalise. Excluding solver noise is not inventing geometry, and nothing here fills what it excludes (§3) |
 | `scale` | inherited verbatim, with a note saying so |
@@ -740,3 +776,4 @@ Document versions start at v2. **v1** is everything up to 2026-09-27.
 |---|---|---|---|---|---|
 | **v2** | 2026-09-28 | **Manager 109** (CX-C6, O3; after walk 4 `c81766a3`) | §2 claim 2; §2 claim 8; §8 surface page caption and implementation spec | Scopes the hole claim to frames fused into this surface and replaces the gap caption's claim about where nothing looked with a statement about the page's reconstructed surface. The two evidence-filter branches, keyframe count, scale note and area-specific prefix stay unchanged. The later copy-only page edit moves no revision (the surface page has no page version; its revision follows the surface build). | **Nothing.** `wb-surface-mesh/1`, its manifest and all routes are unchanged. The page strings are Tower-served, and no iOS source reads any of them (checked 2026-09-28 against `codex/surfcap` @ `9bb9727`). Among the patterns checked, `frames_offered` has 20 hits, all in other cartridges' decoders and tests, and *nothing looked* has 2, `WorldPresentationTests.swift:1198` and `:1202`: a negative assertion on the native caption, which agrees with this change. |
 | **v3** | 2026-09-28 | **Manager 130** (from the C9 cross-check; C6f LOW-1, LOW-2 and NIT-1) | §2 claim 2; §8 page budget, surface page caption and implementation spec | Claim 2's "A hole is …" also names measured samples that were never integrated and the cracks decimation opens on a served level (C9 MED; C6f NIT-1). §8's "A gap can be …" adds frames published without a usable depth fit and space this page's own fused frames measured but did not agree on enough to keep (C6f LOW-2). The revision sentence gives an area page's revision, `<session>/area:<area>/surface:<built_at>`, beside a room page's (C9 LOW; C6f LOW-1). The page estimate's template share becomes a fixed `PAGE_TEMPLATE_ALLOWANCE` of 32,576 bytes instead of the template's size on disk, held by a guard test, so a copy edit never moves geometry and a CRLF and an LF checkout give the same estimate (C9 item 3; its review's §3.4 item 4). | **Nothing.** `wb-surface-mesh/1`, its manifest keys and all routes are unchanged. What moves is a diagnostic record: on the Tower's CRLF checkout, the `detail.mobile_page_fit.mesh_budget_bytes` a later surface build records returns to its pre-`0636fce` value, 4,645,008 bytes (`0636fce`'s 28-byte-shorter template made it 4,645,029; `0636fce` is not in `world-builder/int-walk5-candidate`), and `page_bytes_estimate` for the same mesh is 28 bytes higher; on an LF checkout the budget moves from 4,645,530 to the same 4,645,008. No product code and no iOS source reads either key. `params_digest` does not include the estimate (it never has), so no served artifact is rebuilt. |
+| **v4** | 2026-10-19 | **Patchy run, lane G** (reviews R1 and R2 of cand-v1: the borrowed fits were not in the contract, and their gate let a broken draw's phantom through) | §1 borrowed fits; §6 `detail.neighbour_fit`, `seconds.neighbour-fit` | §1 states the borrowed fits as a source of fused depth and the three rules that bound them: the dense stage's gate, the room's gauge against the metric prediction (the final scale guard's statistic and band) and the anchored footprint. §6 documents their manifest record and stage time | **Additive.** `wb-surface-mesh/1` and every route are unchanged; the manifest gains `detail.neighbour_fit` (absent when off). `params_digest` names `neighbour-fit/2` (and a non-default scale band), so a surface built with `neighbour-fit/1` rebuilds. No iOS source reads `detail` |
