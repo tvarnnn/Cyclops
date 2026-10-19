@@ -36,6 +36,14 @@ appearance; nothing else is normalised.
 TO RECORD: `WB_PHOTOS_AFTER_STOP_RECORD=<path>` writes the observed payloads to
 <path> instead of comparing. Record only from `dc35d51`, twice, and keep the
 golden only if the two recordings are identical.
+
+RE-RECORDED 2026-10-19 (patchy run, lane A: the display gauge on; the
+transient vote's time gate and the per-point selection distance added, both
+off by default), twice, identical. The only values that moved against the
+`dc35d51` recording are the appearance manifest's digests (`manifest_on_disk`,
+`manifest.body`, and their area twins): the manifest gains params and
+records, and the gauge rescales gains. Every chunk, proxy, route, header,
+page and rule in this file is byte-identical to the `dc35d51` recording.
 """
 
 from __future__ import annotations
@@ -595,4 +603,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "8a6312756520dad72099e53749b4bc7241cfb045c6206ffaaec5b426c71cb6ae"
+GOLDEN_SHA256 = "9dc42176907333c47e77c3f9d00a8f453f2e7e930de23a50f471a5fa217a5c2c"
