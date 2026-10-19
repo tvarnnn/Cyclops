@@ -773,20 +773,91 @@ def test_the_registration_runs_in_a_child_with_the_same_result(tmp_path):
         assert np.allclose(child.poses[k][1], here.poses[k][1], atol=1e-9)
     assert child.obs == here.obs and set(child.points) == set(here.points)
     assert child.record["child_seconds"] >= child.record["seconds"]
+    assert child.record["transfer_s"]["write"] >= 0 and child.record["transfer_s"]["read"] >= 0
+
+
+def _running(pid) -> bool:
+    """An independent look at whether a process is still running (not through `_in_child`'s handle)."""
+    import os
+    import subprocess
+
+    if os.name == "nt":
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True).stdout
+        return f" {pid} " in out
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
 
 
 def test_a_child_past_its_timeout_is_killed_and_an_error_is_reported():
-    """The hard bound: `_in_child` kills the process at its timeout (TimeoutError); a failure inside the
-    child comes back as an error, a result as the result."""
+    """The hard bound: `_in_child` stops the process at its deadline (TimeoutError) and confirms its
+    interpreter is gone; a failure inside the child comes back as an error, a result as the result."""
     import time
 
     t0 = time.perf_counter()
+    timings = {}
     with pytest.raises(TimeoutError):
-        RC._in_child("time:sleep", args=(120,), timeout=1.0)
+        RC._in_child("time:sleep", args=(120,), timeout=1.0, timings=timings)
     assert time.perf_counter() - t0 < 30
+    assert timings["tree_killed"] and timings["interpreter_pid"] and not _running(timings["interpreter_pid"])
     with pytest.raises(RuntimeError, match="ValueError"):
         RC._in_child("math:sqrt", args=(-1.0,), timeout=60)
     assert RC._in_child("math:sqrt", args=(4.0,), timeout=60) == 2.0
+
+
+def test_a_failed_tree_kill_still_leaves_no_interpreter(monkeypatch):
+    """R2 round 3: the tree kill (taskkill /T, or the process group) fails. On Windows a venv's
+    python.exe is a launcher whose interpreter is its child; `_stop` confirms the interpreter is gone by
+    its OWN handle (on this Tower the launcher's kill takes it down too), and the run says so."""
+    monkeypatch.setattr(RC, "_taskkill_tree", lambda pid: False)
+    monkeypatch.setattr(RC, "_killpg", lambda pid, sig: False)
+    timings = {}
+    with pytest.raises(TimeoutError):
+        RC._in_child("time:sleep", args=(120,), timeout=2.0, timings=timings)
+    assert timings["tree_killed"] is False
+    pid = timings["interpreter_pid"]
+    assert pid and not _running(pid)
+
+
+def test_an_interpreter_that_survives_every_kill_is_killed_by_its_own_handle(monkeypatch):
+    """Neither the tree kill nor the kill of the process started happened (mocked): the interpreter is
+    still running at the deadline, and `_stop` kills it by its own handle (POSIX: the process itself),
+    confirms it gone, and reaps what it started."""
+    monkeypatch.setattr(RC, "_kill_tree", lambda proc: False)
+    timings = {}
+    with pytest.raises(TimeoutError):
+        RC._in_child("time:sleep", args=(120,), timeout=2.0, timings=timings)
+    assert timings["tree_killed"] is False and timings["killed_by_pid"] is True
+    pid = timings["interpreter_pid"]
+    assert pid and not _running(pid)
+
+
+def test_the_deadline_counts_from_the_step_start_and_covers_the_input_write():
+    """No child is started once the deadline has passed (the input write counts against it); a step whose
+    registration returns past its deadline stops at the next gate, and the pose screen checks it too."""
+    import time
+
+    with pytest.raises(TimeoutError, match="no time left"):
+        RC._in_child("math:sqrt", args=(4.0,), deadline=time.perf_counter() - 1.0)
+    sol, truth, pts, kfs, cams, a, name_of = _isolated_world()
+    piece = [_kid(i) for i in range(20, 35)]
+    seen = {}
+
+    def register(s, **k):
+        seen.update(k)
+        return _registration(s, truth, pts, piece)
+
+    t0 = time.perf_counter()
+    out_sol, out_a, record = _step(sol, a, cams, kfs, name_of, register_fn=register,
+                                   params=RC.ReplaceParams(max_seconds=0.0))
+    assert t0 <= seen["deadline"] <= time.perf_counter()               # the step's own start + 0 s
+    assert out_sol is sol and out_a is a and record["state"] == "error"
+    assert record["error"] == "TimeoutError: the step ran past its 0 s deadline (after the registration)"
+    room = [_cam(i, [STEP * i, 0, 0]) for i in range(40) if i != 20]
+    with pytest.raises(TimeoutError):
+        RC.motion_refusals(room, [_cam(20, [STEP * 20, 0, 0])], 1.0, P, deadline=time.perf_counter() - 1.0)
 
 
 def test_a_child_that_crashes_or_exits_non_zero_is_an_error():

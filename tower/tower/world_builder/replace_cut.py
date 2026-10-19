@@ -27,10 +27,10 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      and local bundle adjustment of the newly registered image. COLMAP's registration gates, unchanged:
      >= 30 inliers (`abs_pose_min_num_inliers`), inlier ratio >= 0.25, <= 12 px (`abs_pose_max_error`),
      at most 3 trials an image. Intrinsics are fixed, as in the solve. Seeded and on one thread, as the
-     seeded solve maps: one input, one result. In a child process (`register`), killed at
-     `ReplaceParams.max_seconds` (then nothing is re-placed); inside it a soft deadline
-     `max_seconds - soft_margin_seconds`, read before every pass and image attempt and capping every
-     bundle adjustment, keeps what is registered by then.
+     seeded solve maps: one input, one result. In a child process (`register`), stopped at the step's
+     deadline (`ReplaceParams.max_seconds` from the step's start; then nothing is re-placed); inside it a
+     soft deadline `soft_margin_seconds` earlier, read before every pass and image attempt and capping
+     every bundle adjustment, keeps what is registered by then.
   4. GATES (`replace_cut`), each a rule that already exists; a keyframe that fails one stays where it was
      (cut, unsupported or unposed -- today's outcome):
        a. the support floor: >= `MIN_IMAGE_OBSERVATIONS` (30) 3-D observations, the solve's own rule for a
@@ -55,7 +55,7 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      are dropped; its observations of room points and the points newly triangulated with it are added. The
      room's own points and poses are never moved.
 
-It never raises: any failure -- its registration process killed, crashed or failing included -- leaves the
+It never raises: any failure -- the deadline passed, its registration process crashed or failing -- leaves the
 guard's decision as it was, with the error in the record; and if publishing its candidate fails afterwards
 (the guard's `apply`, or writing its records), the guard's own cut is published instead
 (`final_scale_guard.guard_publication`, `coherence_publish._records_before_publish`; record `withdrawn`). With `TOWER_WORLD_REPLACE_CUT=off`
@@ -113,9 +113,13 @@ class ReplaceParams:
     min_obs: int = 30
     # RANSAC and the mapper are seeded so that one solve and one database give one result.
     seed: int = 20261019
-    # THE HARD BOUND on the registration, a bound on the cost, not a quality knob: it runs in a child
-    # process (`register`) that is KILLED if it is still running this long after it started (spawn, the
-    # database read and every COLMAP call included); then nothing is re-placed and the guard's cut stands.
+    # THE STEP'S DEADLINE, from its start, a bound on the cost, not a quality knob. Everything counts
+    # against it: the registration's input write, its child's start and the wait for it (the child is
+    # STOPPED there, `_in_child` / `_stop`), and every gate round after it (`replace_cut`, `in_time`).
+    # Past it nothing is re-placed and the guard's cut stands. It can be overrun only by the one piece
+    # running when it passes, none of which can be interrupted: stopping the child (0.2 s measured; the
+    # stop gives up after 30 s of tree kill plus 10 s of confirming the interpreter gone), or reading a
+    # result that arrived in time (0.06 s on live 10.1) and one gate round (all the gates, ~1 s there).
     max_seconds: float = 180.0
     # The soft deadline inside the child, `max_seconds - soft_margin_seconds`: no pass or image attempt
     # starts after it and every bundle adjustment is capped at it, so a long registration returns what it
@@ -262,21 +266,27 @@ def _pipeline_options(pycolmap, params: ReplaceParams):
 
 
 def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
-             params: ReplaceParams | None = None) -> Registration:
+             params: ReplaceParams | None = None, deadline: float | None = None) -> Registration:
     """Register `target_kids` into the room made of `room_kids` (poses fixed) and the points they
     triangulate, with COLMAP's incremental mapper over the solve database. Reads the database only.
 
-    BOUNDED: `_register` runs in a child process (`_in_child`) that is killed at `params.max_seconds`;
-    a kill raises `TimeoutError` (the step then re-places nothing). Inside, `_register` keeps the soft
-    deadline `max_seconds - soft_margin_seconds`. One input, one result: the child runs the same seeded,
-    one-thread code on the same inputs."""
+    BOUNDED by `deadline` (a `time.perf_counter()` instant; None: `params.max_seconds` from now; the step
+    passes its own, `max_seconds` from ITS start): `_register` runs in a child process (`_in_child`)
+    whose input write, spawn and wait all count against it, and which is stopped there (`TimeoutError`;
+    the step then re-places nothing). Inside, `_register` keeps the soft deadline: `soft_margin_seconds`
+    before it. One input, one result: the child runs the same seeded, one-thread code on the same inputs.
+    The record gets `child_seconds` and `transfer_s` (input write, result read)."""
     params = params or ReplaceParams()
     started = time.perf_counter()
+    if deadline is None:
+        deadline = started + params.max_seconds
+    timings: dict = {}
     reg = _in_child(f"{__name__}:_register", kwargs=dict(
         solution=solution, room_kids=list(room_kids), target_kids=list(target_kids),
         database_path=str(database_path), name_of=dict(name_of), params=params,
-        deadline_s=params.max_seconds - params.soft_margin_seconds), timeout=params.max_seconds)
+        deadline_s=deadline - started - params.soft_margin_seconds), deadline=deadline, timings=timings)
     reg.record["child_seconds"] = round(time.perf_counter() - started, 3)
+    reg.record["transfer_s"] = {"write": timings.get("write_s"), "read": timings.get("read_s")}
     return reg
 
 
@@ -465,13 +475,22 @@ def _register(solution, *, room_kids, target_kids, database_path, name_of: dict,
     return reg
 
 
-def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, timeout: float):
-    """`module:function`(*args, **kwargs) in a child Python process, its result returned; KILLED after
-    `timeout` seconds (`TimeoutError`). Inputs and the result travel as pickles in a private temporary
-    directory, which is also the child's working directory; the child imports this tree's `tower`
-    package. Its output (COLMAP's log) goes to a file there and its tail is in any error. Never leaves a
-    process behind: a timeout kills the child's whole process tree (on Windows a venv's `python.exe` is a
-    launcher that runs the interpreter as ITS child, so killing the launcher alone would not stop it)."""
+def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, timeout: float | None = None,
+              deadline: float | None = None, timings: dict | None = None):
+    """`module:function`(*args, **kwargs) in a child Python process, its result returned.
+
+    BOUNDED by `deadline` (a `time.perf_counter()` instant), else `timeout` seconds from the call: writing
+    the input counts against it (past it, no child is started), and the child is STOPPED there
+    (`TimeoutError`, `_stop`). Reading a result that arrived in time is the one step after it; its time is
+    in `timings["read_s"]` (and the input write's in `"write_s"`). A crash or non-zero exit is a
+    `RuntimeError`. Inputs and the result travel as pickles in a private temporary directory, which is
+    also the child's working directory; the child imports this tree's `tower`; its output (COLMAP's log)
+    goes to a file there, and its tail is in any error.
+
+    The INTERPRETER is not always the process started: on Windows a venv's python.exe is a launcher that
+    runs the interpreter as its child. So the child writes its own PID first, and the parent opens a
+    handle to it (`_Interpreter`), which also keeps the PID from being reused; `_stop` uses it to confirm
+    the interpreter is gone, killing it by its own handle if the tree kill did not."""
     import os  # noqa: PLC0415
     import pickle  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
@@ -479,51 +498,178 @@ def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, time
     import tempfile  # noqa: PLC0415
     from pathlib import Path  # noqa: PLC0415
 
+    started = time.perf_counter()
+    end = deadline if deadline is not None else started + float(timeout)
+    timings = timings if timings is not None else {}
     root = str(Path(__file__).resolve().parents[2])        # the directory that holds the `tower` package
     paths = [root] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != root]
     env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
     with tempfile.TemporaryDirectory(prefix="replace-cut-", ignore_cleanup_errors=True) as tmp:
-        inp, out, log = Path(tmp) / "in.pkl", Path(tmp) / "out.pkl", Path(tmp) / "child.log"
+        inp, out, log, pid = (Path(tmp) / n for n in ("in.pkl", "out.pkl", "child.log", "pid"))
         inp.write_bytes(pickle.dumps((target, tuple(args), dict(kwargs or {})), protocol=pickle.HIGHEST_PROTOCOL))
-        code = ("import sys; from tower.world_builder.replace_cut import _child_main; "
-                "_child_main(sys.argv[1], sys.argv[2])")
+        timings["write_s"] = round(time.perf_counter() - started, 3)
+        if time.perf_counter() >= end:
+            raise TimeoutError(f"{target}: no time left to start it")
+        code = ("import os, sys; open(sys.argv[3] + '.tmp', 'w').write(str(os.getpid())); "
+                "os.replace(sys.argv[3] + '.tmp', sys.argv[3]); "
+                "from tower.world_builder.replace_cut import _child_main; _child_main(sys.argv[1], sys.argv[2])")
+        interpreter = None
         with open(log, "wb") as sink:
-            proc = subprocess.Popen([sys.executable, "-c", code, str(inp), str(out)], cwd=tmp, env=env,
+            proc = subprocess.Popen([sys.executable, "-c", code, str(inp), str(out), str(pid)], cwd=tmp, env=env,
                                     stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
                                     start_new_session=os.name != "nt")
             try:
-                status = proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                _kill_tree(proc)
-                raise TimeoutError(f"{target} ran past {timeout:g} s and was stopped") from None
+                while True:
+                    if interpreter is None:
+                        interpreter = _Interpreter.of(proc, pid)
+                    left = end - time.perf_counter()
+                    if left <= 0:
+                        timings.update(_stop(proc, interpreter, pid))
+                        raise TimeoutError(f"{target} ran past its deadline and was stopped")
+                    try:
+                        status = proc.wait(timeout=min(0.05, left))
+                        break
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                if interpreter is not None:
+                    interpreter.close()
+        t_read = time.perf_counter()
         if status != 0 or not out.exists():
             tail = log.read_text(encoding="utf-8", errors="replace")[-400:]
             raise RuntimeError(f"{target} failed in its process (exit {status}): {tail}")
         ok, value = pickle.loads(out.read_bytes())
+        timings["read_s"] = round(time.perf_counter() - t_read, 3)
     if not ok:
         raise RuntimeError(value)
     return value
 
 
-def _kill_tree(proc) -> None:
-    """Kill `proc` and every process it started, then reap it."""
+class _Interpreter:
+    """The child's interpreter process, from the PID it wrote, held by a handle so the PID cannot be
+    reused while the parent may still kill it. On POSIX the interpreter is the process started."""
+
+    def __init__(self, pid: int, handle=None, proc=None):
+        self.pid, self._handle, self._proc = pid, handle, proc
+
+    @classmethod
+    def of(cls, proc, pid_file) -> "_Interpreter | None":
+        import os  # noqa: PLC0415
+
+        if os.name != "nt":
+            return cls(proc.pid, proc=proc)
+        try:
+            pid = int(pid_file.read_text())
+        except (OSError, ValueError):
+            return None                           # not written yet
+        k32 = _kernel32()
+        handle = k32.OpenProcess(0x0001 | 0x00100000, False, pid)     # PROCESS_TERMINATE | SYNCHRONIZE
+        return cls(pid, handle=handle) if handle else cls(pid)        # no handle: it has already exited
+
+    def gone(self, wait_s: float = 0.0) -> bool:
+        if self._proc is not None:
+            try:
+                self._proc.wait(timeout=wait_s)
+                return True
+            except Exception:  # noqa: BLE001 -- subprocess.TimeoutExpired
+                return False
+        if not self._handle:
+            return True
+        return _kernel32().WaitForSingleObject(self._handle, int(wait_s * 1000)) == 0    # WAIT_OBJECT_0
+
+    def kill(self) -> None:
+        if self._proc is not None:
+            self._proc.kill()
+        elif self._handle:
+            _kernel32().TerminateProcess(self._handle, 1)
+
+    def close(self) -> None:
+        if self._handle:
+            _kernel32().CloseHandle(self._handle)
+            self._handle = None
+
+
+def _kernel32():
+    import ctypes  # noqa: PLC0415
+    from ctypes import wintypes  # noqa: PLC0415
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.OpenProcess.restype = wintypes.HANDLE
+    k32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    k32.WaitForSingleObject.restype = wintypes.DWORD
+    k32.WaitForSingleObject.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+    k32.TerminateProcess.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    k32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    return k32
+
+
+def _stop(proc, interpreter, pid_file) -> dict:
+    """Stop the child at its deadline and CONFIRM its interpreter is gone: the tree kill (`_kill_tree`),
+    then, if the interpreter is still there -- the tree kill failed, or the launcher was killed before
+    the interpreter wrote its PID -- the interpreter killed by its own handle. Raises when it cannot be
+    confirmed gone. Returns what it took ({stop_s, tree_killed, killed_by_pid, interpreter_pid})."""
+    t0 = time.perf_counter()
+    tree = _kill_tree(proc)
+    if interpreter is None:                       # killed while it was starting: wait for its PID briefly
+        for _ in range(40):
+            interpreter = _Interpreter.of(proc, pid_file)
+            if interpreter is not None:
+                break
+            time.sleep(0.05)
+    by_pid = False
+    try:
+        if interpreter is not None and not interpreter.gone(0.5):
+            interpreter.kill()
+            by_pid = True
+            if not interpreter.gone(10.0):
+                raise RuntimeError(f"the child interpreter {interpreter.pid} could not be stopped")
+    finally:
+        if interpreter is not None:
+            interpreter.close()
+        if proc.poll() is None:                   # a launcher whose interpreter is gone exits by itself
+            try:
+                proc.wait(timeout=10)
+            except Exception:  # noqa: BLE001 -- subprocess.TimeoutExpired
+                proc.kill()
+                proc.wait()
+    return {"stop_s": round(time.perf_counter() - t0, 3), "tree_killed": tree, "killed_by_pid": by_pid,
+            "interpreter_pid": None if interpreter is None else interpreter.pid}
+
+
+def _kill_tree(proc) -> bool:
+    """Kill `proc` and every process it started (best effort; True when the tree kill reported success),
+    then reap `proc` itself."""
     import os  # noqa: PLC0415
     import signal  # noqa: PLC0415
-    import subprocess  # noqa: PLC0415
 
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
-        else:
-            os.killpg(proc.pid, signal.SIGKILL)       # its own session (`start_new_session`)
-    except (OSError, subprocess.SubprocessError):
-        pass
+    ok = _taskkill_tree(proc.pid) if os.name == "nt" else _killpg(proc.pid, signal.SIGKILL)
     try:
         proc.kill()
     except OSError:
         pass
     proc.wait()
+    return ok
+
+
+def _taskkill_tree(pid: int) -> bool:
+    import subprocess  # noqa: PLC0415
+
+    try:
+        done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
+        return done.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _killpg(pid: int, sig) -> bool:
+    import os  # noqa: PLC0415
+
+    try:
+        os.killpg(pid, sig)                       # its own session (`start_new_session`)
+        return True
+    except OSError:
+        return False
 
 
 def _child_main(inp: str, out: str) -> None:
@@ -654,18 +800,21 @@ def merge(solution, reg: Registration, accepted, *, room_kids, new_points: bool 
 # ---------------------------------------------------------------------------
 
 
-def motion_refusals(room_cams, new_cams, mpu: float, gparams) -> dict:
+def motion_refusals(room_cams, new_cams, mpu: float, gparams, deadline: float | None = None) -> dict:
     """{kid: why} for the re-placed cameras the guard's pose screen, run over the room and the re-placed
     cameras in capture order, does not accept. Each round: a re-placed camera outside the screen's core
     cluster or with a room defect is refused; only when there is none, the re-placed camera(s) in the most
     steps beyond the walking allowance (or hard steps, or height jumps) -- a room camera is never blamed,
     and a lone outlier between two re-placed neighbours takes the blame alone. Then the screen runs again
-    without the refused cameras, until it accepts every one left."""
+    without the refused cameras, until it accepts every one left. Past `deadline` (a `time.perf_counter()`
+    instant) it raises `TimeoutError` before starting another round."""
     from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
 
     out: dict = {}
     pending = list(new_cams)
     while pending:
+        if deadline is not None and time.perf_counter() > deadline:
+            raise TimeoutError("the step ran past its deadline (in the pose screen)")
         new = {c.kid for c in pending}
         cams = sorted(list(room_cams) + pending, key=lambda c: c.index)
         kid_at = {c.index: c.kid for c in cams}
@@ -748,6 +897,14 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
 
     params = params or ReplaceParams()
     started = time.perf_counter()
+    # THE STEP'S DEADLINE, from its start: the registration's child is stopped there (`register`), and
+    # every gate round after it checks it, so a step past it re-places nothing (the guard's cut).
+    deadline = started + params.max_seconds
+
+    def in_time(stage: str) -> None:
+        if time.perf_counter() > deadline:
+            raise TimeoutError(f"the step ran past its {params.max_seconds:g} s deadline ({stage})")
+
     pieces_kids = {k for p in assessment.get("pieces") or [] for k in p["keyframe_ids"]}
     targets = targets_of(solution, pieces_kids, min_obs=params.min_obs)
     if not targets:
@@ -770,8 +927,10 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
         room_cams = [c for c in cams if c.kid not in pieces_kids and FSG._finite_pose(c)]
         room = {c.kid for c in room_cams}
         reg = (register_fn or register)(solution, room_kids=room, target_kids=targets,
-                                        database_path=database_path, name_of=name_of, params=params)
+                                        database_path=database_path, name_of=name_of, params=params,
+                                        deadline=deadline)
         record["registration"] = reg.record
+        in_time("after the registration")
         accepted = set(reg.poses)
         refused: dict[str, str] = {k: NOT_REGISTERED for k in targets if k not in accepted}
 
@@ -781,6 +940,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
 
         def screen_floor_and_motion(acc):
             while True:
+                in_time("in the gates")
                 cand = merge(solution, reg, acc, room_kids=room, new_points=own)
                 # the floor on what the frame keeps: with "room", its observations of room points only
                 floor = {k for k in acc if int(cand.poses[k]["observations"]) < params.min_obs}
@@ -792,7 +952,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
                                            R=reg.poses[k][0], tvec=reg.poses[k][1],
                                            group=(groups_of or {}).get(name_of.get(k), "room"))
                             for k in sorted(acc, key=kidx0.get)]
-                motion = motion_refusals(room_cams, new_cams, mpu, gparams)
+                motion = motion_refusals(room_cams, new_cams, mpu, gparams, deadline=deadline)
                 for k, why in motion.items():
                     refused[k] = f"{MOTION}:{why}"
                 acc = acc - set(motion)
@@ -805,6 +965,7 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
             metric_log, inputs = FSG.read_evidence(store, world_id, session_id, cand, None,
                                                    database_path=database_path, name_of=name_of,
                                                    live_metric_fn=live_metric_fn)
+            in_time("after the scale evidence")
             keep = room | accepted
             cams2 = [c for c in FSG.room_cameras(cand, keyframes, name_of, groups_of=groups_of,
                                                  min_obs=params.min_obs) if c.kid in keep]
