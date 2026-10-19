@@ -364,6 +364,25 @@ and phones on the desk are **partly** removed (fully in ki 366 and 340, the
 phone and part of a hand in 330 and 351, little in 308), and residual hand
 pixels remain possible in any keyframe.
 
+**A disagreement seen again on another visit is static, not transient**
+(`transient_static_gap_s` 30, `transient_static_views` 2). The vote cannot tell
+a hand on the desk from a static object the proxy lacks -- skateboards against
+a wall, things on a shelf: both project onto the surface behind them and the
+other views saw that surface. Time can: a hand, a phone or a passer-by holds
+one place in the world for one dwell; a static object is still there when the
+walk comes back. A hit is dropped (kept opaque) when at least 2 other
+keyframes received at least 30 s away (the Tower's receipt clock,
+`keyframes.jsonl` `received_at`) themselves disagree with the reference at
+that point AND agree with this keyframe's colour, within the same tolerance.
+30 s: the one measured hand-and-phone dwell (the canonical capture's desk,
+ki 308-366) spans 20 s. 2: a revisit at 2-5 keyframes a second yields
+several, and one alone can be a coincidence. An unknown time never
+corroborates; without the journal, or with either value 0, the vote is as
+before. Its cost: a hand resting at one spot across two visits 30 s apart
+survives. The misregistration fraction below still counts every disagreement.
+Recorded per keyframe as `transient.static_kept` (grid points) and per build
+as `occluders.transient_time_gate`.
+
 A keyframe that disagrees on more than 20% of its tested points is treated as
 **misregistered** (a pose or proxy error), not as full of transients: it is left
 unmasked, listed in `occluders.misregistered_frames_unmasked`, and its
@@ -379,7 +398,7 @@ points.
 
 The per-keyframe record keeps `near_fraction`, `transient_fraction`,
 `occluder: {median_ratio, mad, threshold}` and
-`transient: {tested, disagreeing_fraction, applied}`.
+`transient: {tested, disagreeing_fraction, applied, static_kept}`.
 
 ### 5.3a The transient detector mask (`tower/world_builder/transients.py`)
 

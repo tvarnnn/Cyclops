@@ -262,6 +262,20 @@ def build_appearance(store, world_id: str, session_id: str, *,
         lock.release()
 
 
+def _received_at(store, world_id: str, session_id: str) -> dict:
+    """keyframe_id -> its receipt time (seconds, the Tower's clock), or {}
+    when the journal cannot be read: the transient vote then runs without its
+    time gate, as it did before the gate existed."""
+    try:
+        return {k.keyframe_id: float(k.received_at)
+                for k in store.read_keyframes(world_id, session_id)}
+    except Exception:  # noqa: BLE001 -- an unreadable journal only disables the gate
+        logger.warning("[Tower][WorldBuilder][appearance] %s/%s: keyframe times "
+                       "unreadable; transient vote without its time gate",
+                       world_id, session_id)
+        return {}
+
+
 def _unobserved_rule(policy) -> str:
     """What produced each frame's unobserved mask. Under the bypass: nothing,
     and the record says so rather than naming a rule that did not run."""
@@ -538,11 +552,15 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     # -- transients: what most other keyframes did not see there ------------
     t2b = time.time()
     _status(root, state=STATE_RUNNING, stage=STAGE_TRANSIENTS, params_digest=pdigest)
+    # When each keyframe was received (the Tower's clock), for the vote's
+    # time gate: a disagreement seen again on another visit is static.
+    received = _received_at(store, world_id, session_id)
+    times = [received.get(fr.source.keyframe_id, float("nan")) for fr in frames]
     votes = A.transient_votes([fr.source.rgb for fr in frames], opaque,
                               [fr.zp for fr in frames], gains,
                               [fr.R for fr in frames], [fr.t for fr in frames], K, params,
                               device=device, should_stop=should_stop,
-                              slopes=slopes, vignette=vignette)
+                              slopes=slopes, vignette=vignette, times=times)
     if votes is None:
         return _stop(root, STAGE_TRANSIENTS, seconds)
     for i, (fr, (grid, vrec)) in enumerate(zip(frames, votes)):
@@ -812,7 +830,16 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
                                f"transient:grid{params.transient_grid_px}|box{params.transient_box_px}|"
                                f"views>={params.transient_min_views}|consensus{params.transient_consensus}|"
                                f"diff>max({params.transient_abs},{params.transient_rel}*luma)|"
-                               f"shift{params.transient_shift_px}|framemax{params.transient_frame_max}")},
+                               f"shift{params.transient_shift_px}|framemax{params.transient_frame_max}|"
+                               f"static>={params.transient_static_views}@{params.transient_static_gap_s}s"),
+                      "transient_time_gate": {
+                          "gap_s": params.transient_static_gap_s,
+                          "views": params.transient_static_views,
+                          "clock": "tower-receipt",
+                          "frames_with_time": int(sum(1 for x in times if np.isfinite(x))),
+                          "points_kept_static": int(sum(
+                              (fr.extra.get("transient") or {}).get("static_kept", 0)
+                              for fr in frames))}},
         # THE MISSING-MASK POLICY (contract §5.3a): `state` is `ok` only when
         # the detector ran or its cache answered; otherwise `unavailable`,
         # `failed` or `off`, with the reason, and no keyframe says it is masked.

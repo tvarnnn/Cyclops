@@ -198,6 +198,21 @@ class AppearanceParams:
     transient_frame_max: float = 0.2
     transient_shift_px: int = 6
     transient_open_cells: int = 1
+    # A DISAGREEMENT SEEN AGAIN ON ANOTHER VISIT IS NOT A TRANSIENT (§5.3).
+    # The vote cannot tell a hand on the desk from a static object the proxy
+    # lacks (skateboards against a wall, things on a shelf): both project onto
+    # the surface behind them and differ from the other views. Time can: a
+    # hand, a phone or a passer-by holds one place in the world for one dwell,
+    # and a static object is still there when the walk comes back. A hit is
+    # dropped when at least `transient_static_views` other keyframes, each at
+    # least `transient_static_gap_s` away on the receipt clock, themselves
+    # disagree with the reference at that point AND agree with this keyframe.
+    # 30 s: the one measured hand-and-phone dwell (the canonical capture's
+    # desk, ki 308-366) spans 20 s. 2 views: a revisit at 2-5 keyframes a
+    # second yields several; one alone can be a coincidence. Either at 0, or
+    # a build without keyframe times, is the vote as it was.
+    transient_static_gap_s: float = 30.0
+    transient_static_views: int = 2
     # the transient DETECTOR (transients.py, contract §5.3a): `union`
     # (Grounding DINO + SAM 2.1 with OneFormer), `oneformer`, or `off`
     transient_detector: str = "union"
@@ -983,7 +998,7 @@ def occluder_mask(zs: np.ndarray, zp: np.ndarray, unobserved: np.ndarray,
 
 
 def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParams, device=None,
-                    should_stop=None, slopes=None, vignette=None):
+                    should_stop=None, slopes=None, vignette=None, times=None):
     """Where a keyframe shows something most OTHER keyframes did not see there.
 
     The depth test above removes what is nearer than the proxy. It cannot
@@ -1007,6 +1022,12 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     points is misregistered rather than full of transients; its grid is left
     empty and its record says so.
 
+    With `times` (seconds, one per keyframe; NaN = unknown), a hit is kept
+    unmasked as STATIC when at least `transient_static_views` other keyframes
+    at least `transient_static_gap_s` away also disagree with the reference
+    there and agree with this keyframe's colour (within the same tolerance).
+    The misregistration fraction counts every disagreement, static or not.
+
     Returns one (coarse bool grid, record or None) per keyframe, or None if
     stopped.
     """
@@ -1023,6 +1044,14 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     R = torch.as_tensor(np.asarray(Rs), dtype=torch.float32, device=dev)
     t = torch.as_tensor(np.asarray(ts), dtype=torch.float32, device=dev)
     g = torch.as_tensor(np.asarray(gains, np.float32), device=dev)
+    # Seconds from the first known time: an epoch in float32 is ~2 minutes coarse.
+    gap = float(params.transient_static_gap_s)
+    kmin = int(params.transient_static_views)
+    tt = None
+    if times is not None and gap > 0 and kmin > 0:
+        tn = np.asarray(times, np.float64).reshape(-1)
+        if len(tn) == N and np.isfinite(tn).any():
+            tt = torch.as_tensor((tn - np.nanmin(tn)).astype(np.float32), device=dev)
     # A wide box: a hand is tens of pixels across, and a one-pixel
     # misregistration along a shelf edge must not read as a colour change.
     b = params.transient_box_px
@@ -1065,12 +1094,13 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         x, y, z0 = xs[idx].float() + 0.5, ys[idx].float() + 0.5, z[idx]
         xc = torch.stack([(x - Kt[0, 2]) / Kt[0, 0] * z0, (y - Kt[1, 2]) / Kt[1, 1] * z0, z0], 1)
         X = (xc - t[a]) @ R[a]
-        cols = []
+        cols, views = [], []
         for c0 in range(0, N, group):
             cs = torch.arange(c0, min(N, c0 + group), device=dev)
             cs = cs[cs != a]
             if not len(cs):
                 continue
+            views.append(cs)
             pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
             zb = pc[..., 2]
             u = Kt[0, 0] * pc[..., 0] / zb.clamp(min=1e-6) + Kt[0, 2]
@@ -1118,6 +1148,14 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
                & (mine > tol) & torch.isfinite(mine))
         tested = int(have.sum())
         frac = float(hit.sum()) / tested if tested else 0.0
+        static = None
+        if tt is not None and bool(hit.any()) and bool(torch.isfinite(tt[a])):
+            # Comparisons with NaN (an unseen view, an unknown time) are False.
+            far = (tt[torch.cat(views)] - tt[a]).abs() >= gap               # (views,)
+            same = (C - (own / scale)[None]).abs().amax(2) <= tol[None]      # agrees with me
+            odd = dev_views > tol[None]                                      # not with the rest
+            static = hit & ((same & odd & far[:, None]).sum(0) >= kmin)
+            hit = hit & ~static
         # A keyframe that disagrees with the rest of the walk nearly everywhere
         # is misregistered (a pose or proxy error), not full of transients:
         # masking most of it would be noise. It is left unmasked and reported,
@@ -1125,9 +1163,10 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         applied = frac <= params.transient_frame_max
         if applied:
             grid_out[idx] = hit
-        out.append((grid_out.reshape(gh, gw).cpu().numpy(),
-                    {"tested": tested, "disagreeing_fraction": round(frac, 4),
-                     "applied": applied}))
+        rec = {"tested": tested, "disagreeing_fraction": round(frac, 4), "applied": applied}
+        if tt is not None:
+            rec["static_kept"] = 0 if static is None else int(static.sum())
+        out.append((grid_out.reshape(gh, gw).cpu().numpy(), rec))
     del zp, op, rgb
     if dev.type == "cuda":
         torch.cuda.empty_cache()

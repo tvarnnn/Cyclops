@@ -983,6 +983,98 @@ def test_an_unknown_consensus_mode_is_refused():
         A.AppearanceParams(redaction_consensus="sometimes")
 
 
+def _paint_wall_square(rgbs, zps, Rs, ts, K, frames, colour, centre=(0.0, -0.2), half=0.3):
+    """Paint a square of the far wall (z = 3) in `frames` only: something on
+    the wall the proxy does not model, seen by those keyframes alone."""
+    out = [r.copy() for r in rgbs]
+    for i in frames:
+        z = zps[i]
+        h, w = z.shape
+        vv, uu = np.mgrid[0:h, 0:w].astype(float)
+        xc = np.stack([(uu + 0.5 - K[0, 2]) / K[0, 0] * z, (vv + 0.5 - K[1, 2]) / K[1, 1] * z, z], -1)
+        X = (xc - ts[i]) @ Rs[i]
+        m = ((np.abs(X[..., 0] - centre[0]) < half) & (np.abs(X[..., 1] - centre[1]) < half)
+             & (np.abs(X[..., 2] - 3.0) < 0.05))
+        assert m.sum() > 400, f"the square leaves keyframe {i}"
+        out[i][m] = colour
+    return out
+
+
+def _votes_with_times(times, painted=(0, 1, 12, 13), **kw):
+    n = 20
+    rgbs, opaque, zps, Rs, ts, K = _exposure_inputs([[1.0, 1.0, 1.0]] * n, [(0.0, 0.0)] * n, (0.0, 0.0), n)
+    rgbs = _paint_wall_square(rgbs, zps, Rs, ts, K, painted, (40, 210, 60))
+    params = A.AppearanceParams(**kw)
+    return A.transient_votes(rgbs, opaque, zps, np.ones((n, 3), np.float32), Rs, ts, K, params,
+                             device="cpu", times=times)
+
+
+def test_a_disagreement_seen_again_on_another_visit_is_static_not_transient():
+    """§5.3 time gate. The same twenty keyframes, the same green square on
+    the wall in keyframes 0, 1, 12 and 13 -- 4 of 20, so the rest agree on the
+    wall and every one of the four is outvoted. Only WHEN they were taken
+    differs. All four within one second: one dwell, a hand, masked. 12 and 13
+    a minute and a half later: the walk came back and it was still there, so
+    it is the room, kept."""
+    one_visit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [0.6, 0.9] + [12.0 + i for i in range(6)]
+    revisit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [90.0, 90.3] + [92.0 + i for i in range(6)]
+    a = _votes_with_times(one_visit)
+    b = _votes_with_times(revisit)
+    for i in (0, 1, 12, 13):
+        grid_a, rec_a = a[i]
+        grid_b, rec_b = b[i]
+        assert rec_a["applied"] and grid_a.sum() >= 8, (i, rec_a)
+        assert rec_a["static_kept"] == 0
+        assert grid_b.sum() <= 0.2 * grid_a.sum(), (i, int(grid_b.sum()), int(grid_a.sum()))
+        assert rec_b["static_kept"] >= 0.8 * grid_a.sum()
+        # the misregistration test still counts every disagreement
+        assert rec_b["disagreeing_fraction"] == rec_a["disagreeing_fraction"]
+    for i in (2, 5, 9, 16):
+        assert a[i][0].sum() == 0 and b[i][0].sum() == 0
+
+
+def test_the_time_gate_needs_two_far_views_and_is_off_without_times():
+    """One far view agreeing is a coincidence, not a revisit; and a build
+    without keyframe times (or with the gate at 0) votes as before."""
+    revisit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [90.0, 90.3] + [92.0 + i for i in range(6)]
+    masked = int(_votes_with_times(None)[0][0].sum())
+    assert masked >= 8
+    assert "static_kept" not in _votes_with_times(None)[0][1]
+    assert int(_votes_with_times(revisit, transient_static_gap_s=0.0)[0][0].sum()) == masked
+    # only keyframe 12 came back: one far corroborator
+    single = _votes_with_times(revisit, painted=(0, 1, 2, 12))
+    assert int(single[0][0].sum()) >= 0.8 * masked
+    # an unknown time never corroborates
+    unknown = list(revisit)
+    unknown[12] = unknown[13] = float("nan")
+    assert int(_votes_with_times(unknown)[0][0].sum()) >= 0.8 * masked
+
+
+def test_a_build_records_the_time_gate_and_still_masks_a_one_frame_hand(world):
+    """With the session's keyframe journal present the gate runs, and a hand
+    one keyframe saw is still transparent in that keyframe."""
+    from tower.world_builder.records import Keyframe
+
+    for i, kid in enumerate(world.kids):
+        world.store.append_keyframe(WORLD, Keyframe(
+            keyframe_id=kid, session_id=SESSION, source_seq=i + 1, received_at=1000.0 + 20.0 * i,
+            image_relpath=f"images/{kid.rsplit(':', 1)[-1]}.jpg", width=SW, height=SH, byte_count=1))
+    img = world.render(3)
+    img[40:80, 60:110] = (40, 210, 60)
+    world.set_image(3, img)
+    world.write_align()
+    world.build(redactor_factory=_never_redact)
+    man = world.manifest()
+    gate = man["occluders"]["transient_time_gate"]
+    assert gate["frames_with_time"] == N_FRAMES and gate["gap_s"] == 30.0 and gate["views"] == 2
+    entry = next(k for k in man["keyframes"] if k["ki"] == 3)
+    assert entry["transient"]["static_kept"] == 0
+    assert entry["transient_fraction"] > 0.05
+    rgba = world.decoded(3)
+    green = _near_colour(rgba[..., :3], np.array([40, 210, 60])) & _opaque(rgba)
+    assert green.sum() < 20
+
+
 def test_exposure_gains_recover_a_frame_shot_darker(tmp_path):
     w = World(tmp_path)
     w.gain[6] = 0.6
