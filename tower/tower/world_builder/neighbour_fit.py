@@ -82,10 +82,16 @@ The fit was scored only where the anchors are. Beyond them -- the ceiling over a
 saw, the far side of a doorway -- the frame's depth is its own prediction carried through its
 pose, which nothing checked: a pose error parallel to a plain wall moves that geometry by the
 error, and on cc3 28 % of the far-surface support of the stretch's adopted frames came from such
-pixels. An adopted frame's prediction is therefore kept only on the cells of the anchor grid
-(`ANCHOR_STRIDE`) that hold a kept anchor, dilated by one cell (the grid's own spacing: a donor's
-4-px samples projected into another view leave one-cell gaps), and is unknown elsewhere for every
-consumer (`anchored_footprint`, `surface_pipeline._Frames.load`). Measured before the rule, the
+pixels. And inside the anchors the robust fit is free to leave a minority behind: with the pose
+0.6 m too low on a plain wall, the room's wall points land on pixels that truly see the ceiling,
+the fit follows the wall majority and those pixels keep the ceiling's depth, 0.6 m off (review
+R1's probe: 2016 of 5088 ceiling pixels). An adopted frame's prediction is therefore kept only
+on the cells of the anchor grid (`ANCHOR_STRIDE`) whose anchors its fitted depth agrees with
+within the fusion's truncation band (what the fusion calls one surface), dilated by one cell (the
+grid's own spacing: a donor's 4-px samples projected into another view leave one-cell gaps) but
+never into a cell holding an anchor it disagrees with; it is unknown elsewhere for every consumer
+(`anchored_footprint`, `surface_pipeline._Frames.load`). In R1's probe that leaves 96 ceiling
+pixels in every case, the dilation's fringe, which the true pose fuses correctly too. Measured before the rule, the
 surface that ONLY such pixels supported was 0.5 % of the area on walk 10.1 and 0.5 % on the
 pre1-u2 draw (laneG `phantom_who.py`).
 """
@@ -216,20 +222,23 @@ def scale_log(z, pred) -> float | None:
     return float(np.log(np.median(z[ok] / p[ok])))
 
 
-def anchored_footprint(u, v, shape, *, cell: int = ANCHOR_STRIDE) -> np.ndarray:
+def anchored_footprint(u, v, shape, *, agree=None, cell: int = ANCHOR_STRIDE) -> np.ndarray:
     """(H, W) bool: the `cell` x `cell` blocks of the candidate's image that hold an anchor
-    (`u`, `v` integer pixels), dilated by one block (module docstring, THE ANCHORED FOOTPRINT)."""
+    (`u`, `v` integer pixels) the fit agrees with, dilated by one block, minus every block that
+    holds an anchor it disagrees with (`agree`, per anchor; None: all agree). Module docstring,
+    THE ANCHORED FOOTPRINT."""
     H, W = int(shape[0]), int(shape[1])
     hc, wc = (H + cell - 1) // cell, (W + cell - 1) // cell
-    c = np.zeros((hc + 2, wc + 2), bool)
     u = np.asarray(u, np.int64)
     v = np.asarray(v, np.int64)
-    if len(u):
-        c[v // cell + 1, u // cell + 1] = True
+    ok = np.ones(len(u), bool) if agree is None else np.asarray(agree, bool)
+    good = np.zeros((hc + 2, wc + 2), bool)
+    good[v[ok] // cell + 1, u[ok] // cell + 1] = True
     d = np.zeros((hc, wc), bool)
     for dy in (0, 1, 2):
         for dx in (0, 1, 2):
-            d |= c[dy:dy + hc, dx:dx + wc]
+            d |= good[dy:dy + hc, dx:dx + wc]
+    d[v[~ok] // cell, u[~ok] // cell] = False
     return np.repeat(np.repeat(d, cell, 0), cell, 1)[:H, :W]
 
 

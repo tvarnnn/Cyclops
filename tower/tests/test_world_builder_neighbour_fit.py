@@ -448,6 +448,58 @@ class TestTheAnchoredFootprint:
         assert (corner == want).all()
         assert not NF.anchored_footprint(np.zeros(0, int), np.zeros(0, int), (8, 8)).any()
 
+    def test_a_cell_whose_anchor_the_fit_left_behind_is_not_fused(self):
+        """The dilation never reaches into a block holding an anchor the fit disagrees with,
+        and that block's own anchors do not seed it."""
+        u = np.array([9, 13, 5])
+        v = np.array([17, 17, 17])
+        fp = NF.anchored_footprint(u, v, (32, 24), agree=np.array([True, False, True]))
+        want = np.zeros((32, 24), bool)
+        want[12:24, 0:16] = True        # cells (4, 1) and (4, 2) agree: columns 0..3 dilated
+        want[16:20, 12:16] = False      # cell (4, 3) holds the disagreeing anchor
+        assert (fp == want).all()
+
+    def test_a_pose_too_low_on_a_plain_wall_keeps_only_what_agrees(self):
+        """Review R1's probe in miniature: the room's wall points land, through a pose 0.6 m too
+        low, on pixels that truly see the ceiling. The fit follows the wall; those pixels do not
+        agree with their anchors and are not fused."""
+        ceiling = 1.2
+        wall = (0.0, 0.0, ROOM)
+
+        def depth_with_ceiling(R, t):
+            z = _depth(R, t)
+            C = -R.T @ t
+            uu, vv = np.meshgrid(np.arange(W) + 0.5, np.arange(H) + 0.5)
+            dc = np.stack([(uu - K[0, 2]) / K[0, 0], (vv - K[1, 2]) / K[1, 1],
+                           np.ones_like(uu)], -1)
+            d = dc @ R
+            with np.errstate(divide="ignore", invalid="ignore"):
+                tc = (-ceiling - C[1]) / d[..., 1]          # y is down: the ceiling at y = -1.2
+            zc = np.where(tc > 0, tc * dc[..., 2] / np.linalg.norm(dc, axis=-1) *
+                          np.linalg.norm(d, axis=-1), np.inf)
+            return np.minimum(z, zc), zc < z
+
+        nbs = []
+        for i, e in enumerate([(-0.4, 0.0, 0.2), (0.0, 0.1, 0.0), (0.4, 0.0, 0.1),
+                               (0.2, -0.1, 0.3)]):
+            R, t = _look_from(e, (e[0], 0.6, ROOM))
+            z, on_ceiling = depth_with_ceiling(R, t)
+            nbs.append(NF.frame_points(i, z, np.isfinite(z) & ~on_ceiling, R, t, K, z_cap=None))
+        eye = np.array([0.0, 0.0, 0.5])
+        R, t = _look_from(eye, (0.0, -0.9, ROOM))
+        z, on_ceiling = depth_with_ceiling(R, t)
+        Rw, tw = _look_from(eye + [0.0, 0.6, 0.0], (0.0, -0.3, ROOM))
+        u, v, za, src = _anchors_for(Rw, tw, nbs)
+        fit = NF.fit_from_neighbours(z, "depth", u, v, za, src, gate_rel=0.08, min_anchors=20,
+                                     min_frames=2, room_scale_log=0.0, scale_band=CLEAR)
+        assert fit["ok"]                    # neither the held-out error nor the gauge sees it
+        zf = (z[v, u] - fit["b"]) / fit["a"]
+        agree = np.abs(zf - za) <= _band(za)
+        assert (~agree).sum() > 50
+        loose = NF.anchored_footprint(u, v, (H, W))
+        tight = NF.anchored_footprint(u, v, (H, W), agree=agree)
+        assert (loose & on_ceiling).sum() > 4 * (tight & on_ceiling).sum()
+
     def test_an_adopted_frame_is_fused_only_where_its_neighbours_measured(self, tmp_path):
         """The donors saw one wall of the corner; the candidate sees both. Its other wall is
         geometry no anchor checked -- a pose error parallel to a plain wall would move it

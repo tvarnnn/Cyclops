@@ -846,7 +846,10 @@ class _Frames:
                 continue
             by["adopted"] += 1
             record["adopted"] += 1
-            fp = NF.anchored_footprint(u, v, pred.shape)
+            zf = _depth_from_prediction(np.asarray(pred, np.float64)[v, u], fit["a"], fit["b"],
+                                        self.kind)
+            agree = np.isfinite(zf) & (np.abs(zf - z) <= band(z))
+            fp = NF.anchored_footprint(u, v, pred.shape, agree=agree)
             self.footprint[int(ki)] = fp
             self.kids[ki] = kid
             self.image_sha1[ki] = _r.get("image_sha1")
@@ -860,6 +863,7 @@ class _Frames:
                 "held_out_rel": round(fit["held_out_rel"], 5),
                 "scale_ratio": round(fit["scale_ratio"], 4),
                 "footprint_share": round(float(fp.mean()), 4),
+                "anchors_disagreeing": round(float(1.0 - agree.mean()), 4),
                 "z_sparse_max": fit["z_anchor_max"], "anchors": fit["anchors"],
                 "anchor_frames": fit["anchor_frames"],
                 "image_sha1": _r.get("image_sha1"), "fill_rule": _r.get("fill_rule")})
