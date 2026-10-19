@@ -481,18 +481,6 @@ def fit_is_physical(a, b) -> bool:
     return math.isfinite(a) and math.isfinite(b) and a > 0.0
 
 
-def _scale_band(name: str) -> tuple[float, float]:
-    """`SurfaceParams.neighbour_fit_scale_band` as (low, high) ratios: the final
-    scale guard's own bands (`GuardParams`)."""
-    from tower.world_builder.final_scale_guard import GuardParams  # noqa: PLC0415
-
-    g = GuardParams()
-    bands = {"clear": (g.clear_low, g.clear_high), "screen": (g.screen_low, g.screen_high)}
-    if name not in bands:
-        raise ValueError(f"neighbour_fit_scale_band must be one of {sorted(bands)}, not {name!r}")
-    return bands[name]
-
-
 class _Frames:
     """The gated, posed frames of one session, with their depth on disk."""
 
@@ -709,7 +697,8 @@ class _Frames:
 
     def adopt_neighbour_fits(self, align: dict, solution, params: SurfaceParams,
                              median_depth: float, voxel: float, device=None,
-                             extra: list | None = None) -> dict:
+                             extra: list | None = None,
+                             certified: set | None = None) -> dict:
         """Fuse the posed frames of the placed component whose own depth fit
         is missing or refused, when a fit to the depth their fused neighbours
         measured passes the gate (`SurfaceParams.neighbour_fit`,
@@ -719,6 +708,10 @@ class _Frames:
         `extra`: further candidates `(ki, kid, pose, prior, record)` outside the
         depth stage's records -- the `solver-frame` scope's isolated pieces
         (`isolated_candidates`), whose predictions are already staged in `work`.
+
+        `certified`: the keyframe indices the final scale guard certified
+        (`neighbour_fit.certified_keyframes`, `guard_certified`); only those of
+        the fused frames lend anchors. None or empty: nothing is borrowed.
 
         Called once the frames, their transient masks, the scene scale and the
         fusion bound exist, and before the consistency field, so an adopted
@@ -774,22 +767,18 @@ class _Frames:
         if not candidates:
             return record
 
-        # THE ROOM'S GAUGE (`neighbour_fit.py`): the room's reference scale, the
-        # final scale guard's own estimator over the placed frames' own fits.
-        band_lo, band_hi = _scale_band(params.neighbour_fit_scale_band)
-        scale = {"band": params.neighbour_fit_scale_band, "low": band_lo, "high": band_hi}
-        record["scale"] = scale
-        ref = self._room_scale_log(primary) if self.kind in NF.METRIC_KINDS else None
-        if ref is None:
-            # No metric witness of the anchors' gauge: nothing is borrowed.
-            scale["state"] = ("no-metric-depth" if self.kind not in NF.METRIC_KINDS
-                              else "no-reference")
-            refused["no-room-scale"] = len(candidates)
+        # CERTIFIED DONORS (`neighbour_fit.py`): only the fused frames the final
+        # scale guard kept in the room lend anchors.
+        certified = set(certified or ())
+        donors = [item for item in primary if int(item[0]) in certified]
+        record["donors"] = {"rule": "final-scale-guard kept plateaus",
+                            "fused": len(primary), "certified": len(donors)}
+        if not donors:
+            refused["no-certified-donor"] = len(candidates)
             record["seconds"] = round(time.time() - t0, 2)
-            logger.warning("[Tower][WorldBuilder][surface] neighbour fits: none borrowed (%s)",
-                           scale["state"])
+            logger.warning("[Tower][WorldBuilder][surface] neighbour fits: none borrowed "
+                           "(no fused frame the final scale guard certified)")
             return record
-        scale.update(state="measured", reference_units_per_metre=round(float(np.exp(ref)), 6))
 
         trel = truncation_rel(params, self.median_held_out)
         floor = params.trunc_voxels * voxel
@@ -798,13 +787,13 @@ class _Frames:
         def band(z):
             return np.clip(z * trel, floor, cap) if trel > 0 else np.full_like(z, floor)
 
-        centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in primary])
-        axes = np.array([R[2] for _ki, _a, _b, R, _t, _ho, _z in primary])
+        centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in donors])
+        axes = np.array([R[2] for _ki, _a, _b, R, _t, _ho, _z in donors])
         cache: dict = {}
 
         def points(i):
             if i not in cache:
-                ki, a, b, R, t, _ho, zmax = primary[i]
+                ki, a, b, R, t, _ho, zmax = donors[i]
                 pred, _img, fill = self.load(ki, image=False)
                 z = np.asarray(_depth_from_prediction(pred, a, b, self.kind), np.float32)
                 zt = torch.as_tensor(np.where(np.isfinite(z), z, np.nan), device=dev)
@@ -839,8 +828,7 @@ class _Frames:
                                                blocked=blocked)
             fit = NF.fit_from_neighbours(pred, self.kind, u, v, z, src,
                                          gate_rel=params.gate_rel, min_anchors=min_anchors,
-                                         min_frames=params.min_support_frames,
-                                         room_scale_log=ref, scale_band=(band_lo, band_hi))
+                                         min_frames=params.min_support_frames)
             if not fit["ok"]:
                 refused[fit["code"]] = refused.get(fit["code"], 0) + 1
                 continue
@@ -861,7 +849,6 @@ class _Frames:
             record["adopted_frames"].append({
                 "ki": ki, "kid": kid, "prior": prior, "a": fit["a"], "b": fit["b"],
                 "held_out_rel": round(fit["held_out_rel"], 5),
-                "scale_ratio": round(fit["scale_ratio"], 4),
                 "footprint_share": round(float(fp.mean()), 4),
                 "anchors_disagreeing": round(float(1.0 - agree.mean()), 4),
                 "z_sparse_max": fit["z_anchor_max"], "anchors": fit["anchors"],
@@ -872,38 +859,6 @@ class _Frames:
                     "without a usable own fit adopted (%s refused) in %.1f s",
                     record["adopted"], record["candidates"], refused, record["seconds"])
         return record
-
-    def _room_scale_log(self, primary) -> float | None:
-        """The room's reference scale for borrowed fits (`neighbour_fit.py`, THE
-        ROOM'S GAUGE): per placed frame, `neighbour_fit.scale_log` of its own
-        fit's depth against its prediction on the anchor grid (bracketed by its
-        own sparse anchors, off its redaction fill); then the final scale
-        guard's own estimator over the frames (`dominant_level`: the median of
-        the densest window as wide as the guard's screen band). None without a
-        measured frame."""
-        from tower.world_builder import neighbour_fit as NF  # noqa: PLC0415
-        from tower.world_builder.final_scale_guard import (  # noqa: PLC0415
-            GuardParams,
-            dominant_level,
-        )
-
-        st = NF.ANCHOR_STRIDE
-        logs = []
-        for ki, a, b, _R, _t, _ho, zmax in primary:
-            pred, _img, fill = self.load(ki, image=False)
-            p = np.asarray(pred[::st, ::st], np.float64)
-            z = _depth_from_prediction(p, a, b, self.kind)
-            ok = np.isfinite(z)
-            if zmax:
-                ok &= z <= float(zmax)
-            if fill is not None:
-                ok &= ~np.asarray(fill[::st, ::st], bool)
-            s = NF.scale_log(z[ok], p[ok])
-            if s is not None:
-                logs.append(s)
-        if not logs:
-            return None
-        return dominant_level(np.asarray(logs), GuardParams())
 
     def prepared(self, params: SurfaceParams, median_depth: float, device):
         import torch
@@ -1131,7 +1086,7 @@ def surfacify(store, world_id: str, session_id: str, *,
             nf = frames.adopt_neighbour_fits(
                 align, solution, params, median_depth, voxel,
                 device=torch.device("cuda" if torch.cuda.is_available() else "cpu"),
-                extra=extra)
+                extra=extra, certified=guard_certified(store, world_id, session_id))
             if iso is not None:
                 nf["isolated"] = iso
             if nf.get("adopted"):
@@ -1225,6 +1180,23 @@ def surfacify(store, world_id: str, session_id: str, *,
 
 STAGE_CONSISTENCY = "consistency"
 STAGE_NEIGHBOUR_FIT = "neighbour-fit"
+
+
+def guard_certified(store, world_id: str, session_id: str) -> set[int]:
+    """The keyframe indices the final scale guard certified for this session's
+    published solve (`neighbour_fit.certified_keyframes` over its audit,
+    `solve/<session>/final_scale_guard.json`); empty when there is no readable
+    audit, so nothing is borrowed."""
+    from tower.world_builder import final_scale_guard as FSG  # noqa: PLC0415
+    from tower.world_builder import neighbour_fit as NF  # noqa: PLC0415
+    from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
+
+    try:
+        path = workspace_for(store, world_id, session_id).root / FSG.AUDIT_FILENAME
+        audit = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return set()
+    return NF.certified_keyframes(audit)
 
 
 def adopted_fits(manifest: dict | None) -> dict:

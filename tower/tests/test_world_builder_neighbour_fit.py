@@ -6,11 +6,12 @@ The scene is a synthetic box room with exact depth, so "the right fit" and "the 
 are known by construction. `TestTheRoomsGauge` adds what a box room alone never exercises: a
 stretch of the solve drawn in its OWN gauge (its poses and its own fits scaled together, as on
 the 10.1 replay cc3), which is internally consistent and therefore invisible to the held-out
-error.
+error. `TestCertifiedDonors` is what stops it: only frames the final scale guard kept lend.
 """
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -81,24 +82,10 @@ def _anchors_for(R, t, neighbours, **kw):
     return NF.borrowed_anchors(K, (H, W), R, t, neighbours, band=_band, **kw)
 
 
-# The final scale guard's bands (`final_scale_guard.GuardParams`), as `SurfaceParams.neighbour_fit_scale_band`
-# names them.
-CLEAR, SCREEN = SP._scale_band("clear"), SP._scale_band("screen")
-NO_GAUGE = (1e-12, 1e12)    # the rule switched off: what `neighbour-fit/1` admitted
-
-
-def _room_scale_log():
-    """The room's units per metre of prediction, as a room frame reads it."""
-    _R, _t, z = _view(EYES[0], CORNER)
-    return NF.scale_log(z, A0 * z + B0)
-
-
-def _fit(pred, R, t, neighbours, *, band=CLEAR, ref=None, **kw):
+def _fit(pred, R, t, neighbours, **kw):
     u, v, z, src = _anchors_for(R, t, neighbours)
     return NF.fit_from_neighbours(pred, "depth", u, v, z, src, gate_rel=0.08,
-                                  min_anchors=20, min_frames=2,
-                                  room_scale_log=_room_scale_log() if ref is None else ref,
-                                  scale_band=band, **kw)
+                                  min_anchors=20, min_frames=2, **kw)
 
 
 class TestTheBorrowedFit:
@@ -169,66 +156,20 @@ def _stretch_neighbour(ki, eye, target, s):
 STRETCH = [(-0.3, 0.0, -0.6), (0.0, 0.1, -0.7), (0.3, -0.1, -0.6)]
 
 
-class TestTheRoomsGauge:
-    """THE ROOM'S GAUGE (`neighbour_fit.py`): the cc3 mechanism. A stretch the solve drew in its
-    own gauge lends anchors that agree with each other, so the held-out error passes; the
-    candidate's metric prediction is the witness that they are not where the room is."""
-
-    def _candidate(self, s):
-        eye = (0.0, 0.0, -0.55)
-        R, _t, z = _view(eye, CORNER)
-        return A0 * z + B0, R, -R @ _in_gauge(eye, s)
+class TestAStretchInItsOwnGauge:
+    """The cc3 mechanism: a stretch the solve drew in its own gauge lends anchors that agree with
+    each other, so every rule of the fit passes. What stops it is not the fit (see
+    `TestCertifiedDonors`)."""
 
     @pytest.mark.parametrize("s", [4.16, 0.07])
-    def test_a_stretch_in_its_own_gauge_cannot_vouch_for_its_own_frames(self, s):
+    def test_its_own_frames_vouch_for_each_other(self, s):
         """x4.16 is cc3's excursion 347-358; x0.07 its collapsed stretches."""
         nbs = [_stretch_neighbour(i, e, CORNER, s) for i, e in enumerate(STRETCH)]
-        pred, R, t = self._candidate(s)
-        # What neighbour-fit/1 did: two or more consistent donors, a near-perfect held-out
-        # error, a slope `s` times off -- admitted.
-        old = _fit(pred, R, t, nbs, band=NO_GAUGE)
-        assert old["ok"] and old["anchor_frames"] == 3 and old["held_out_rel"] < 0.01
-        assert old["a"] == pytest.approx(A0 / s, rel=0.02)
-        # The anchors read `s` against the candidate's metric prediction: refused.
-        for band in (CLEAR, SCREEN):
-            fit = _fit(pred, R, t, nbs, band=band)
-            assert not fit["ok"] and fit["code"] == "scale"
-            assert fit["scale_ratio"] == pytest.approx(s, rel=0.05)
-
-    @pytest.mark.parametrize("s, clear, screen", [(1.0, True, True), (1.1, True, True),
-                                                  (1.3, True, False), (0.77, True, False),
-                                                  (1.45, False, False), (0.7, False, False)])
-    def test_the_guards_bands_decide(self, s, clear, screen):
-        """Inside the guard's screen band the gauge agrees; between screen and clear it is the
-        guard's borderline (admitted by the default `clear`); beyond clear, a gross error."""
-        nbs = [_stretch_neighbour(i, e, CORNER, s) for i, e in enumerate(STRETCH)]
-        pred, R, t = self._candidate(s)
-        assert _fit(pred, R, t, nbs, band=CLEAR)["ok"] is clear
-        assert _fit(pred, R, t, nbs, band=SCREEN)["ok"] is screen
-
-    def test_a_pose_error_along_the_view_is_absorbed_by_the_shift_but_not_by_the_witness(self):
-        """A frame facing a plain wall square on: the solve put it 1.5 m too far back. The
-        room's anchors on the wall are all at one depth, so an affine shift follows them
-        exactly and the held-out error cannot see the error; the metric prediction can."""
-        target = (0.0, 0.0, ROOM)
-        eyes = [(-0.4, 0.0, -0.5), (0.4, 0.0, -0.5), (0.0, 0.3, -0.6), (0.0, -0.3, -0.4)]
-        nbs = [_neighbour(i, e, target) for i, e in enumerate(eyes)]
-        eye = np.array([0.0, 0.0, -0.5])
-        _R, _t, z = _view(eye, target)
-        pred = A0 * z + B0
-        R, t = _look_from(eye - np.array([0.0, 0.0, 1.5]), target)
-        ref = NF.scale_log(z, pred)
-        old = _fit(pred, R, t, nbs, band=NO_GAUGE, ref=ref)
-        assert old["ok"] and old["held_out_rel"] < 0.01
-        fit = _fit(pred, R, t, nbs, ref=ref)
-        assert not fit["ok"] and fit["code"] == "scale"
-        assert fit["scale_ratio"] == pytest.approx((ROOM + 0.5 + 1.5) / (ROOM + 0.5), rel=0.05)
-
-    def test_scale_log_is_the_guards_per_camera_statistic(self):
-        z = np.array([2.0, 4.0, 6.0, np.nan, 1.0])
-        p = np.array([1.0, 2.0, 3.0, 1.0, -1.0])
-        assert NF.scale_log(z, p) == pytest.approx(np.log(2.0))
-        assert NF.scale_log(np.array([1.0]), np.array([0.0])) is None
+        eye = (0.0, 0.0, -0.55)
+        R, _t, z = _view(eye, CORNER)
+        fit = _fit(A0 * z + B0, R, -R @ _in_gauge(eye, s), nbs)
+        assert fit["ok"] and fit["anchor_frames"] == 3 and fit["held_out_rel"] < 0.01
+        assert fit["a"] == pytest.approx(A0 / s, rel=0.02)
 
 
 class TestTheAnchorsAreMeasuredSurface:
@@ -314,9 +255,13 @@ def _world(tmp_path, specs):
     return frames, align, solution, params
 
 
-def _adopt(frames, align, solution, params):
+def _adopt(frames, align, solution, params, certified=None):
+    """`certified`: the keyframe indices the final scale guard certified; None certifies every
+    frame fused with its own fit."""
+    if certified is None:
+        certified = {int(it[0]) for it in frames.items}
     return frames.adopt_neighbour_fits(align, solution, params, median_depth=3.0,
-                                       voxel=params.voxel_frac * 3.0)
+                                       voxel=params.voxel_frac * 3.0, certified=certified)
 
 
 class TestAdoption:
@@ -377,11 +322,14 @@ class TestAdoption:
         assert 10 not in {it[0] for it in frames.items}
 
 
-class TestTheRoomsGaugeInTheSurfaceStage:
-    """The cc3 layout in miniature: the room's frames, and beside them a stretch the solve drew
-    x4.16 the room's scale whose own fits agree with each other; one unfitted frame in each."""
+class TestCertifiedDonors:
+    """CERTIFIED DONORS (`neighbour_fit.py`): the cc3 layout in miniature -- the room's frames,
+    and beside them a stretch the solve drew x4.16 the room's scale whose own fits agree with each
+    other; one unfitted frame in each. The final scale guard kept the room and left the stretch
+    attached, uncertified."""
 
     OPP = (-ROOM, 0.0, -ROOM)
+    ROOM_KI = {0, 1, 2, 3, 4, 21}
 
     def _specs(self, gauge=4.16):
         room = [(i, (-e[0], e[1], -e[2]), self.OPP, "ok", 0) for i, e in enumerate(EYES)]
@@ -390,47 +338,67 @@ class TestTheRoomsGaugeInTheSurfaceStage:
         return room + stretch + [(20, (0.0, 0.0, -0.55), CORNER, "no-fit", 0, gauge),
                                  (21, (0.0, 0.05, 0.55), self.OPP, "no-fit", 0)]
 
-    def test_the_stretch_cannot_lend_its_gauge_to_its_own_frames(self, tmp_path):
+    def test_an_uncertified_stretch_cannot_vouch_for_its_own_frames(self, tmp_path):
         frames, align, solution, params = _world(tmp_path, self._specs())
         assert sorted(it[0] for it in frames.items) == [0, 1, 2, 3, 4, 10, 11, 12]
-        rec = _adopt(frames, align, solution, params)
+        rec = _adopt(frames, align, solution, params, certified=self.ROOM_KI)
         assert rec["candidates"] == 2 and rec["adopted"] == 1
-        assert rec["refused"] == {"scale": 1}
         assert [f["ki"] for f in rec["adopted_frames"]] == [21]
-        assert rec["adopted_frames"][0]["scale_ratio"] == pytest.approx(1.0, abs=0.05)
-        # The reference is the room's: five frames outvote the stretch's three.
-        assert rec["scale"]["state"] == "measured" and rec["scale"]["band"] == "clear"
-        assert rec["scale"]["reference_units_per_metre"] == pytest.approx(
-            np.exp(_room_scale_log()), rel=0.05)
-        assert 20 not in {it[0] for it in frames.items}
+        assert sum(rec["refused"].values()) == 1 and 20 not in {it[0] for it in frames.items}
+        assert rec["donors"] == {"rule": "final-scale-guard kept plateaus", "fused": 8,
+                                 "certified": 5}
+        # The stretch's own-fit frames are still fused: own fits are not this rule's.
+        assert {10, 11, 12} <= {it[0] for it in frames.items}
 
-    def test_a_stretch_in_the_rooms_gauge_still_lends(self, tmp_path):
-        frames, align, solution, params = _world(tmp_path, self._specs(gauge=1.0))
+    def test_what_neighbour_fit_1_did_with_the_same_stretch(self, tmp_path):
+        """Every fused frame lending, as before: the stretch's frame is adopted on its own
+        stretch's anchors, at the stretch's scale."""
+        frames, align, solution, params = _world(tmp_path, self._specs())
         rec = _adopt(frames, align, solution, params)
+        assert rec["adopted"] == 2
+        a20 = next(f for f in rec["adopted_frames"] if f["ki"] == 20)
+        assert a20["a"] == pytest.approx(A0 / 4.16, rel=0.05)
+
+    def test_a_certified_stretch_lends(self, tmp_path):
+        frames, align, solution, params = _world(tmp_path, self._specs(gauge=1.0))
+        rec = _adopt(frames, align, solution, params, certified=self.ROOM_KI | {10, 11, 12})
         assert rec["adopted"] == 2 and rec["refused"] == {}
 
-    def test_without_a_metric_prediction_nothing_is_borrowed(self, tmp_path):
+    @pytest.mark.parametrize("certified", [set(), None])
+    def test_without_a_certified_donor_nothing_is_borrowed(self, tmp_path, certified):
         specs = [(i, e, CORNER, "ok", 0) for i, e in enumerate(EYES)]
         specs += [(10, (0.0, 0.0, -0.55), CORNER, "no-fit", 0)]
         frames, align, solution, params = _world(tmp_path, specs)
-        frames.kind = "disparity"
-        rec = _adopt(frames, align, solution, params)
-        assert rec["adopted"] == 0 and rec["refused"] == {"no-room-scale": 1}
-        assert rec["scale"]["state"] == "no-metric-depth"
+        rec = frames.adopt_neighbour_fits(align, solution, params, median_depth=3.0,
+                                          voxel=params.voxel_frac * 3.0, certified=certified)
+        assert rec["adopted"] == 0 and rec["refused"] == {"no-certified-donor": 1}
         assert sorted(it[0] for it in frames.items) == [0, 1, 2, 3]
 
-    def test_the_screen_band_is_stricter_and_named_in_the_digest(self, tmp_path):
-        frames, align, solution, params = _world(tmp_path, self._specs(gauge=1.3))
-        assert _adopt(frames, align, solution, params)["adopted"] == 2
-        frames, align, solution, _p = _world(tmp_path / "screen", self._specs(gauge=1.3))
-        rec = _adopt(frames, align, solution, S.SurfaceParams(neighbour_fit_scale_band="screen"))
-        assert rec["adopted"] == 1 and rec["refused"] == {"scale": 1}
-        assert ("neighbour-fit-scale-band", "screen") in S.SurfaceParams(
-            neighbour_fit_scale_band="screen").digest_fields()
-        assert not any(isinstance(f, tuple) and f and f[0] == "neighbour-fit-scale-band"
-                       for f in S.SurfaceParams().digest_fields())
-        with pytest.raises(ValueError):
-            SP._scale_band("loose")
+    def test_the_certified_keyframes_are_the_guards_kept_plateaus(self):
+        audit = {"assessment": {"plateaus": [
+            {"first_index": 0, "last_index": 74, "decision": "kept", "class": "in"},
+            {"first_index": 75, "last_index": 81, "decision": "attached", "class": "high"},
+            {"first_index": 82, "last_index": 84, "decision": "kept", "class": "in"},
+            {"first_index": 347, "last_index": 358, "decision": "attached", "class": "high",
+             "kind": "excursion"},
+            {"first_index": 830, "last_index": 830, "decision": "attached", "class": None,
+             "kind": "unmeasured"}]}}
+        assert NF.certified_keyframes(audit) == set(range(0, 75)) | {82, 83, 84}
+        assert NF.certified_keyframes(None) == set()
+        assert NF.certified_keyframes({"assessment": None, "error": "x"}) == set()
+
+    def test_the_surface_stage_reads_the_guards_audit(self, tmp_path):
+        from tower.world_builder import final_scale_guard as FSG
+
+        root = tmp_path / "worlds" / "w"
+        store = SimpleNamespace(world_dir=lambda wid: tmp_path / "worlds" / wid)
+        assert SP.guard_certified(store, "w", "s") == set()
+        (root / "solve" / "s").mkdir(parents=True)
+        (root / "solve" / "s" / FSG.AUDIT_FILENAME).write_text(json.dumps({"assessment": {
+            "plateaus": [{"first_index": 3, "last_index": 5, "decision": "kept"}]}}))
+        assert SP.guard_certified(store, "w", "s") == {3, 4, 5}
+        (root / "solve" / "s" / FSG.AUDIT_FILENAME).write_text("{not json")
+        assert SP.guard_certified(store, "w", "s") == set()
 
 
 class TestTheAnchoredFootprint:
@@ -491,8 +459,8 @@ class TestTheAnchoredFootprint:
         Rw, tw = _look_from(eye + [0.0, 0.6, 0.0], (0.0, -0.3, ROOM))
         u, v, za, src = _anchors_for(Rw, tw, nbs)
         fit = NF.fit_from_neighbours(z, "depth", u, v, za, src, gate_rel=0.08, min_anchors=20,
-                                     min_frames=2, room_scale_log=0.0, scale_band=CLEAR)
-        assert fit["ok"]                    # neither the held-out error nor the gauge sees it
+                                     min_frames=2)
+        assert fit["ok"]                    # the held-out error does not see it
         zf = (z[v, u] - fit["b"]) / fit["a"]
         agree = np.abs(zf - za) <= _band(za)
         assert (~agree).sum() > 50

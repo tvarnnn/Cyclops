@@ -28,7 +28,7 @@ WHAT KEEPS IT FROM INVENTING GEOMETRY
   * The fit must pass the gate every fused frame passes: a physical slope and a held-out error
     within `gate_rel`, on at least `min_sparse_points` anchors, which must come from at least
     `min_support_frames` distinct fused frames.
-  * The anchors must be in the ROOM'S GAUGE, against the frame's own metric prediction (below).
+  * Only CERTIFIED DONORS lend anchors (below): frames the final scale guard kept in the room.
   * The frame is fused only on its ANCHORED FOOTPRINT (below): nowhere its fit was not scored.
   * After adoption the frame is an ordinary fused frame: the consistency field, the evidence
     filter (>= 2 supporting frames, the contradiction ratio, back-facing) and the component
@@ -42,39 +42,40 @@ anchors are the odd entries of the same dense grid as the fitted ones. On a plai
 error along the view is absorbed by the affine shift and one parallel to the wall moves nothing
 the fit can see (a CPU probe of review R1, 2026-10-19: poses 0.6-2 m wrong adopted at 0.07 %);
 and anchors that share an error with the candidate -- a stretch of the solve drawn in its own
-gauge -- agree with it by construction. The two rules below close what it cannot see.
+gauge -- agree with it by construction. The two rules below close what it cannot see: the
+donors must be placed in the room, and the candidate then only re-states what they measured.
 
 Occlusion: a fused frame can see a surface the candidate cannot (behind something nearer in
 the candidate's view). Per small cell of the candidate's image only anchors within the fusion's
 truncation band of the nearest anchor in that cell are kept -- the band is what the fusion
 itself treats as one surface -- and the robust fit absorbs the rest.
 
-THE ROOM'S GAUGE (`neighbour-fit/2`)
+CERTIFIED DONORS (`neighbour-fit/3`)
 
 The held-out error measures whether the candidate's prediction can follow its ANCHORS. It
 cannot tell whether the anchors themselves are where the room is. On a broken solve draw
-(walk 10.1 replay cc3) a short stretch of keyframes sat in its own gauge, x4.16 the room's (the
-final scale guard measured it and left it attached, uncertified). Three frames of that stretch
-had own fits, consistent with each other in that gauge; seven unfitted frames of the same
-stretch took 100 % of their borrowed anchors from those three (the nearest fused frames: the
-room's own frames, 2-4 m away, lent nothing), fitted with a ~= 0.09 against the room's 0.39 and
-a held-out error of 0.6-1.5 %, and passed every rule above -- "two distinct fused frames"
-included. Fused, they multiplied the support of the stretch's surface and grew it from 4.5 to
-26 m^2, a sheet 2-7 m from every camera (20.5 % of the surface).
+(walk 10.1 replay cc3) a short stretch of keyframes (347-358) sat in its own gauge, x4.16 the
+room's scale and turned ~90 degrees (against a good draw of the same frames); the final scale
+guard measured it and kept it ATTACHED but uncertified (an excursion too short to cut). Three
+frames of that stretch had own fits, consistent with each other; seven unfitted frames of the
+same stretch took 100 % of their borrowed anchors from those three, fitted at a held-out error
+of 0.6-1.5 % on 2-3 donor frames, and passed every rule above. Fused, they gave the stretch's
+surface seven more supporters and grew it from 4.5 to 26 m^2, a sheet 2-7 m from every camera.
 
-A gauge error is visible to one independent witness: the candidate's own METRIC prediction.
-The depth stage runs a metric backend (MoGe-2, "depth" kind) told the solve camera's FoV, so
-for a frame in the room's gauge `z_room / z_metric` is the room's units per metre -- the very
-statistic the final scale guard screens every camera with (`coherence_scale`: per camera, the
-median of z_sfm / z_metric). A borrowed fit is therefore admitted only if the median of
-`z_anchor / pred` over its anchors, against the room's reference (the guard's own estimator,
-`dominant_level`, over the same statistic of the placed frames' own fits), is not a gross scale
-error by the guard's own rule: inside the guard's CLEAR band [0.75, 1.333] (default; the band
-outside which the guard calls a measured ratio a `final-scale-outlier`), or, as the stricter
-setting, its SCREEN band [0.8, 1.25] (`SurfaceParams.neighbour_fit_scale_band`). The same
-witness also sees a pose error along the view direction, which the affine shift absorbs: the
-anchors' depth then moves by that error and the metric prediction does not. Without a metric
-prediction ("disparity" backends) there is no such witness and nothing is borrowed.
+The pipeline's authority on whether a camera is placed in the room's gauge is the final scale
+guard (`final_scale_guard.py`): it splits the room's cameras into plateaus of their metric scale
+and KEEPS the ones inside its screen band (`decision: "kept"`), certified; excursions, off-band
+plateaus and unmeasured stretches stay attached, uncertified. So only a fused frame inside a
+plateau the guard kept may lend anchors (`certified_keyframes`); a frame the guard did not
+certify may still be fused with its own fit, as before, but it may not vouch for another frame.
+Without the guard's audit nothing is borrowed. No constant: the guard's own decision.
+
+Tried first and replaced (patchy run lane G, 2026-10-19): testing each candidate's anchors
+against its OWN metric prediction (median z_anchor / pred against the room's, inside the guard's
+clear band). It removed the cc3 sheet, but per-frame metric depth misreads -- night plain walls
+at x0.5-0.7, a near occluder up to x3.6 -- and of the frames it refused on two broken draws most
+were posed within 4 cm of a good draw of the same frames. The guard's plateaus smooth that
+per-frame noise; a single frame cannot.
 
 THE ANCHORED FOOTPRINT
 
@@ -102,11 +103,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-NEIGHBOUR_FIT_ID = "neighbour-fit/2"
-
-# The backends whose prediction carries a metric level (`dense.MoGeBackend`; the depth stage of
-# the surface always tells it the solve camera's FoV, `surface_pipeline.ensure_depth_stage`).
-METRIC_KINDS = ("depth",)
+NEIGHBOUR_FIT_ID = "neighbour-fit/3"
 
 # The anchor grid: one anchor per `ANCHOR_STRIDE` pixels of a fused frame, and the candidate's
 # z-buffer cell. 4 px keeps ~14k anchors per 352x640 neighbour -- three orders of magnitude
@@ -210,18 +207,6 @@ def borrowed_anchors(K, shape, R, t, neighbours: list[NeighbourPoints], *, band,
     return u[keep], v[keep], z[keep], src[keep]
 
 
-def scale_log(z, pred) -> float | None:
-    """log of the median of `z / pred` over the finite pairs with both positive: depth in the
-    solve's units per metre of the metric prediction (the final scale guard's per-camera
-    statistic). None without such a pair."""
-    z = np.asarray(z, np.float64).ravel()
-    p = np.asarray(pred, np.float64).ravel()
-    ok = np.isfinite(z) & np.isfinite(p) & (z > 0) & (p > 0)
-    if not ok.any():
-        return None
-    return float(np.log(np.median(z[ok] / p[ok])))
-
-
 def anchored_footprint(u, v, shape, *, agree=None, cell: int = ANCHOR_STRIDE) -> np.ndarray:
     """(H, W) bool: the `cell` x `cell` blocks of the candidate's image that hold an anchor
     (`u`, `v` integer pixels) the fit agrees with, dilated by one block, minus every block that
@@ -242,13 +227,26 @@ def anchored_footprint(u, v, shape, *, agree=None, cell: int = ANCHOR_STRIDE) ->
     return np.repeat(np.repeat(d, cell, 0), cell, 1)[:H, :W]
 
 
+def certified_keyframes(audit: dict | None) -> set[int]:
+    """The keyframe indices inside a plateau the final scale guard KEPT (its certified room
+    stretches; module docstring, CERTIFIED DONORS), from its audit document
+    (`final_scale_guard.json`). Empty without an assessment."""
+    plateaus = ((audit or {}).get("assessment") or {}).get("plateaus") or []
+    out: set[int] = set()
+    for p in plateaus:
+        if p.get("decision") != "kept":
+            continue
+        try:
+            out.update(range(int(p["first_index"]), int(p["last_index"]) + 1))
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
 def fit_from_neighbours(pred, kind: str, u, v, z, src, *, gate_rel: float, min_anchors: int,
-                        min_frames: int, room_scale_log: float,
-                        scale_band: tuple[float, float]) -> dict:
+                        min_frames: int) -> dict:
     """Fit the candidate's prediction to the borrowed anchors and decide. The record always says
-    why; `ok` is True only when the fit passes every rule a fused frame's fit must pass AND the
-    anchors are in the room's gauge: `exp(scale_log(anchors) - room_scale_log)` inside
-    `scale_band` (low, high), inclusive (module docstring, THE ROOM'S GAUGE)."""
+    why; `ok` is True only when the fit passes every rule a fused frame's fit must pass."""
     from tower.world_builder.dense import align_frame
 
     n = int(len(z))
@@ -279,18 +277,6 @@ def fit_from_neighbours(pred, kind: str, u, v, z, src, *, gate_rel: float, min_a
         return rec
     if ho > gate_rel:
         rec.update(code="gate", why=f"held-out error {ho:.3f} over the {gate_rel:.0%} gate")
-        return rec
-    s = scale_log(zf, p[finite])
-    if s is None:
-        rec.update(code="scale", why="no anchor has a positive metric prediction")
-        return rec
-    d = s - float(room_scale_log)
-    rec.update(scale_ratio=float(np.exp(d)))
-    lo, hi = scale_band
-    # Compared in log, as the guard compares (`final_scale_guard.classify`).
-    if d < np.log(lo) or d > np.log(hi):
-        rec.update(code="scale", why=f"the anchors are x{np.exp(d):.2f} the room's scale, "
-                                     f"outside [{lo}, {hi}]")
         return rec
     rec.update(ok=True, code="adopted")
     return rec
