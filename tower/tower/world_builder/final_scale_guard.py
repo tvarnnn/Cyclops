@@ -951,15 +951,17 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
 
     RE-PLACE, DON'T CUT (`replace_cut`; `replace`, None = `TOWER_WORLD_REPLACE_CUT`, on): between the
     assessment and `apply`, the keyframes the room would not hold are offered to COLMAP's incremental
-    registration against the room (one thread, in a child process killed at `ReplaceParams.max_seconds`),
-    and those with >= 30
-    observations of the ROOM's points that pass this guard's own pose screen and are anchored to the room
+    registration against the room (one thread, in a child process; the whole step has a deadline of
+    `ReplaceParams.max_seconds` from its start, at which the child is stopped and its interpreter
+    confirmed gone, overrun only by the one uninterruptible piece running then -- see `ReplaceParams`),
+    and those with >= 30 observations of the ROOM's points that pass this guard's own pose screen and are anchored to the room
     by steps it can test join the room at their registered poses (their keyframe ids leave the isolated
     pieces). With the default `anchors="room"` a re-placed keyframe keeps only those room-point
     observations and brings no scale of its own, so no scale screen judges it: it is recorded uncertified,
     kind `re-placed` (a room certified before becomes `uncertified`); `anchors="own"` keeps the points its
     registration triangulated and re-runs the scale screen instead. It never raises; a failure
-    there (its registration process killed, crashed or failing included) leaves the assessment as it was;
+    there (the deadline passed, or its registration process crashed or failing, included) leaves the
+    assessment as it was;
     a failure building its publication (`apply`, the summary, the audit) publishes the guard's own cut
     here, and a failure writing its records publishes the cut in `coherence_publish._records_before_publish`
     (`GuardOutcome.cut`), the record then `error` with what it had re-placed (`replace_cut.withdrawn`).
