@@ -596,6 +596,7 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         "phone_budget": params.phone_budget, "phone": len(order),
         "tower": len(frames) - len(order), "objective": round(objective, 3),
         "z_ref": round(z_ref, 4), "samples": int(len(pts)),
+        "distance": params.selection_distance,
         "coverage": {"phone": A.coverage(scores, order),
                      "all": A.coverage(scores, range(len(frames)))},
     }

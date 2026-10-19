@@ -1257,6 +1257,60 @@ def test_an_unknown_display_gauge_is_refused():
         A.AppearanceParams(exposure_display_gauge="brighter")
 
 
+def _near_and_far_views():
+    """Four keyframes 1 m from the far wall and three 3.5 m from it, all
+    looking at its centre: the walk passed close to that wall, and also saw
+    it, and more of it, from across the room."""
+    K = np.array([[FX, 0, W / 2], [0, FX, H / 2], [0, 0, 1.0]])
+    eyes = [(-0.05, 0, 2.0), (0.05, 0, 2.0), (0, 0.05, 2.0), (0, -0.05, 2.0),
+            (-0.3, 0, -0.5), (0, 0, -0.5), (0.3, 0, -0.5)]
+    Rs, ts, zps = [], [], []
+    for e in eyes:
+        R, t = _look_from(np.array(e, float), np.array([0.0, 0.0, 3.0]))
+        Rs.append(R)
+        ts.append(t)
+        zps.append(_render_box_depth(R, t, K, W, H).astype(np.float32))
+    centre = np.array([[x, y, 3.0] for x in (-0.08, 0.0, 0.08) for y in (-0.08, 0.0, 0.08)], np.float32)
+    outer = np.array([[0.6, y, 3.0] for y in (-0.2, 0.0, 0.2)], np.float32)
+    pts = np.concatenate([centre, outer])
+    nrm = np.tile(np.array([[0.0, 0.0, -1.0]], np.float32), (len(pts), 1))
+    return pts, nrm, zps, [np.ones((H, W), bool)] * len(eyes), Rs, ts, K, len(centre)
+
+
+@pytest.mark.parametrize("z_ref", [5.0, 2.0])
+def test_selection_scores_texel_density_against_the_walks_own_distance(z_ref):
+    """§5.5 `selection_distance: point`. At the wall centre the walk's median
+    view is the near one, so a view from across the room is magnified 3.5x
+    against it and scores so; under `scene` with z_ref 5 (beyond both) the
+    two tie. A point seen only from beyond z_ref scores exactly as under
+    `scene`."""
+    pts, nrm, zps, opaque, Rs, ts, K, nc = _near_and_far_views()
+    q = np.ones(len(zps))
+    point = A.score_points(pts, nrm, zps, opaque, Rs, ts, K, q, z_ref,
+                           A.AppearanceParams(), device="cpu")
+    scene = A.score_points(pts, nrm, zps, opaque, Rs, ts, K, q, z_ref,
+                           A.AppearanceParams(selection_distance=A.SELECTION_DISTANCE_SCENE),
+                           device="cpu")
+    near, far = point[:4, :nc], point[4:, :nc]
+    assert (near > 0.95).all() and (far > 0).all()
+    assert far.max() < 0.35 * near.min()
+    if z_ref == 5.0:
+        assert scene[4:, :nc].min() > 0.95 * scene[:4, :nc].max()      # a tie
+    # the outer points: only the far views see them, from about one distance,
+    # so they lose almost nothing; seen only from beyond z_ref (2), exactly
+    # as before
+    assert (point[:4, nc:] == 0).all() and (point[4:, nc:] > 0).all()
+    if z_ref == 2.0:
+        assert point[:, nc:] == pytest.approx(scene[:, nc:], rel=2e-3, abs=1e-4)
+    else:
+        assert (point[4:, nc:] >= 0.95 * scene[4:, nc:]).all()
+
+
+def test_an_unknown_selection_distance_is_refused():
+    with pytest.raises(ValueError):
+        A.AppearanceParams(selection_distance="closest")
+
+
 def test_the_manifest_carries_the_photometric_model(world):
     world.build(redactor_factory=_never_redact)
     man = world.manifest()

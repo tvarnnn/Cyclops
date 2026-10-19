@@ -129,6 +129,11 @@ EXPOSURE_GAUGE_KEYFRAMES = "keyframes"
 EXPOSURE_GAUGE_PHONE_MEDIAN = "phone-median"
 EXPOSURE_GAUGES = (EXPOSURE_GAUGE_KEYFRAMES, EXPOSURE_GAUGE_PHONE_MEDIAN)
 
+# The distance term of the selection score (`selection_distance`, §5.5).
+SELECTION_DISTANCE_SCENE = "scene"
+SELECTION_DISTANCE_POINT = "point"
+SELECTION_DISTANCES = (SELECTION_DISTANCE_SCENE, SELECTION_DISTANCE_POINT)
+
 # Alpha is 0 over the transparent core dilated by this much: one ASTC 6x6
 # block plus one bilinear tap, so no block that holds a zeroed texel also holds
 # an opaque one, and a bilinear fetch of an opaque texel never reaches a zeroed
@@ -294,6 +299,19 @@ class AppearanceParams:
     selection_vis_tol: float = 0.03
     selection_second_weight: float = 0.5
     selection_min_gain_frac: float = 1e-4
+    # The distance term of a keyframe's score at a point (§5.5).
+    #   `scene`  min(1, z_ref / z), z_ref the median proxy depth of the whole
+    #            walk: every view nearer than the room's median depth scores
+    #            alike, so where the walk passed close to a surface its
+    #            sharpest views earn nothing for being close.
+    #   `point`  min(1, z_p / z), z_p = min(z_ref, the median distance at which
+    #            the usable keyframes saw THAT point). The page puts its camera
+    #            where the walk went, so those are the distances the point
+    #            will be looked at from; a source at or nearer than the median
+    #            one is drawn no more magnified than a typical keyframe would
+    #            be, a farther one is magnified in proportion. A point seen
+    #            only from beyond z_ref scores exactly as under `scene`.
+    selection_distance: str = SELECTION_DISTANCE_POINT
     phone_budget: int = 128
     quality_floor: float = 0.15
     seed: int = 0
@@ -310,6 +328,9 @@ class AppearanceParams:
         if self.exposure_display_gauge not in EXPOSURE_GAUGES:
             raise ValueError(f"unknown exposure display gauge "
                              f"{self.exposure_display_gauge!r}; one of {EXPOSURE_GAUGES}")
+        if self.selection_distance not in SELECTION_DISTANCES:
+            raise ValueError(f"unknown selection distance "
+                             f"{self.selection_distance!r}; one of {SELECTION_DISTANCES}")
         if self.redaction_consensus not in CONSENSUS_MODES:
             raise ValueError(f"unknown redaction consensus mode "
                              f"{self.redaction_consensus!r}; one of {CONSENSUS_MODES}")
@@ -1608,7 +1629,13 @@ def sample_proxy_points(V, F, n: int, seed: int = 0):
 
 def score_points(points, normals, zps, opaque, Rs, ts, K, quality, z_ref,
                  params: AppearanceParams, device=None):
-    """(N, M) float32 selection scores (contract §5.5)."""
+    """(N, M) float32 selection scores (contract §5.5).
+
+    With `params.selection_distance == "point"` the distance term is taken
+    against each point's own reference, the median depth over the keyframes
+    that see it there (visible and opaque), capped at `z_ref`; this needs
+    every keyframe's depth at every point first, so it is a second pass over
+    an (N, M) float16 table."""
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
 
@@ -1621,6 +1648,8 @@ def score_points(points, normals, zps, opaque, Rs, ts, K, quality, z_ref,
     X = torch.as_tensor(points, dtype=torch.float32, device=dev)
     Nn = torch.as_tensor(normals, dtype=torch.float32, device=dev)
     out = np.zeros((N, M), np.float32)
+    per_point = params.selection_distance == SELECTION_DISTANCE_POINT
+    zv = np.full((N, M), np.nan, np.float16) if per_point else None
     for i in range(N):
         R = torch.as_tensor(np.asarray(Rs[i]), dtype=torch.float32, device=dev)
         t = torch.as_tensor(np.asarray(ts[i]), dtype=torch.float32, device=dev)
@@ -1639,8 +1668,22 @@ def score_points(points, normals, zps, opaque, Rs, ts, K, quality, z_ref,
         ray = X - C
         ray = ray / ray.norm(dim=1, keepdim=True).clamp(min=1e-9)
         cos = (ray * Nn).sum(1).abs()
-        s = cos * torch.clamp(z_ref / z.clamp(min=1e-6), max=1.0) * float(quality[i])
+        if per_point:
+            s = cos * float(quality[i])
+            zv[i] = torch.where(vis, z, torch.full_like(z, float("nan"))).cpu().numpy()
+        else:
+            s = cos * torch.clamp(z_ref / z.clamp(min=1e-6), max=1.0) * float(quality[i])
         out[i] = torch.where(vis, s, torch.zeros_like(s)).cpu().numpy()
+    if per_point:
+        step = 4096
+        for c0 in range(0, M, step):
+            Z = torch.as_tensor(zv[:, c0:c0 + step].astype(np.float32), device=dev)
+            zr = torch.nanmedian(Z, dim=0).values
+            zr = torch.where(torch.isfinite(zr), torch.clamp(zr, max=float(z_ref)),
+                             torch.full_like(zr, float(z_ref)))
+            fac = torch.clamp(zr[None] / Z.clamp(min=1e-6), max=1.0)
+            fac = torch.where(torch.isfinite(Z), fac, torch.zeros_like(fac))
+            out[:, c0:c0 + step] *= fac.cpu().numpy()
     return out
 
 
