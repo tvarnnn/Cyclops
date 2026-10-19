@@ -97,6 +97,8 @@ def _params_from_args(args) -> SurfaceParams:
         kw["neighbour_fit"] = False
     if args.neighbour_fit_scope:
         kw["neighbour_fit_scope"] = args.neighbour_fit_scope
+    if args.neighbour_fit_scale_band:
+        kw["neighbour_fit_scale_band"] = args.neighbour_fit_scale_band
     return SurfaceParams(**kw)
 
 
@@ -187,6 +189,8 @@ def main() -> int:
                     help="fuse only frames whose own sparse depth fit passed (SurfaceParams.neighbour_fit)")
     ap.add_argument("--neighbour-fit-scope", choices=("placed", "solver-frame"),
                     help="SurfaceParams.neighbour_fit_scope")
+    ap.add_argument("--neighbour-fit-scale-band", choices=("clear", "screen"),
+                    help="SurfaceParams.neighbour_fit_scale_band")
     args = ap.parse_args()
 
     store = WorldStore(Path(args.root))
