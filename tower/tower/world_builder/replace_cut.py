@@ -31,8 +31,9 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      image attempt, every bundle adjustment); what is not registered by then stays where it was.
   4. GATES (`replace_cut`), each a rule that already exists; a keyframe that fails one stays where it was
      (cut, unsupported or unposed -- today's outcome):
-       a. the support floor: >= `MIN_IMAGE_OBSERVATIONS` 3-D observations, the solve's own rule for a camera
-          that is a measurement;
+       a. the support floor: >= `MIN_IMAGE_OBSERVATIONS` (30) 3-D observations, the solve's own rule for a
+          camera that is a measurement, counted on what the frame keeps (`anchors`: with "room", its
+          observations of the ROOM's points only);
        b. the guard's pose screen (`final_scale_guard._pose_screen`) over the room and the re-placed
           cameras in capture order: a re-placed camera in a step beyond the walking allowance
           (2.0 m/s x dt + 0.3 m) or a height jump, in a hard step, with a room defect, or outside the core
@@ -40,9 +41,11 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
           screen can test (<= 3 journal indices, <= 2 s) joins to an anchor -- a room camera the screen can
           test against another room camera -- is refused: the screen cannot place an island relative to the
           room, and a lone room camera inside a collapsed stretch is no anchor;
-       c. the guard's scale screen, re-run (`assess_v2`) on the room plus the re-placed cameras with their
-          metric ratios recomputed from the live depth cache: a re-placed camera the guard would isolate is
-          refused (the rule that cut the stretch must now keep it);
+       c. with `anchors="own"` only, the guard's scale screen, re-run (`assess_v2`) on the room plus the
+          re-placed cameras with their metric ratios recomputed from the live depth cache: a re-placed camera
+          the guard would isolate is refused (the rule that cut the stretch must now keep it). With "room"
+          the frame brings no scale of its own (every 3-D point it keeps is the room's), so there is none to
+          screen, and it is recorded `re-placed` uncertified;
        d. downstream, unchanged: the depth stage's per-frame fit (held-out <= 8 %) decides what is fused.
      Without metric evidence there is no scale screen, so nothing is re-placed.
   5. MERGE (`merge`): a re-placed keyframe joins component 0 with its registered pose; its old observations
@@ -58,9 +61,17 @@ ANCHORS (`ReplaceParams.anchors`, default "room"). A re-placed stretch frame's p
 vouches for it (cm level against a good draw of the same frames), but most of the points triangulated while it
 was registered come from the stretch's own low-parallax pairs: on walk 10.1's live draw their depth scale read
 x1.6-1.8 and, anchored on them, the depth stage pushed the surface back (a phantom). "room" keeps only a
-re-placed frame's observations of room points, so it brings no scale of its own: no support floor and no scale
-screen apply, and its depth comes from the room -- its own fit on room points, or a fit borrowed from its fused
-neighbours (`neighbour_fit`). "own" (gates a-c) is the measured alternative (patchy run 2026-10-19, lane R).
+re-placed frame's observations of room points, so it brings no scale of its own (no scale screen), and its
+depth comes from the room -- its own fit on room points, or a fit borrowed from its fused neighbours
+(`neighbour_fit`). "own" (gates a-c) is the measured alternative (patchy run 2026-10-19, lane R).
+
+THE FLOOR UNDER "room" counts room points, because COLMAP's >= 30 PnP inliers may be mostly the stretch's
+own chained points: measured against a good draw of the same frames (patchy run 2026-10-19, lane X), the
+re-placed frames with < 30 room-point observations were less accurate than the room's own draw-to-draw
+spread -- live 10.1 vs pre3, local fits: centre median 4.3 cm (room 0.8 cm), rotation median 1.3 deg (room
+0.2 deg); pre1's bad draw vs its good draw: centre median 7.0 cm (room 7.4 cm, global fit) but rotation 1.9
+deg (room 0.1 deg, local) -- while those with >= 30 matched the room (live: 0.2 cm, 0.1 deg). So a frame
+below the floor on room points stays where it was.
 """
 
 from __future__ import annotations
@@ -115,8 +126,9 @@ class ReplaceParams:
     # "room": its observations of room points only; the points triangulated during registration (from the
     # stretch's own low-parallax pairs) are used to chain the registration and then dropped, so the room's
     # geometry is unchanged and the depth stage scales a re-placed frame only on room points (or, with too
-    # few, borrows a fit from its fused neighbours where the surface does that). No support floor, no scale
-    # screen then: the registration's own >= 30 inliers are the measurement, and the frame brings no scale.
+    # few, borrows a fit from its fused neighbours where the surface does that). The support floor then
+    # counts its ROOM-point observations (COLMAP's >= 30 PnP inliers may be mostly the stretch's own chained
+    # points; measured, see the module's THE FLOOR UNDER "room"); no scale screen: it brings no scale.
     anchors: str = "room"
 
     def digest(self) -> str:
@@ -648,7 +660,8 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
         def screen_floor_and_motion(acc):
             while True:
                 cand = merge(solution, reg, acc, room_kids=room, new_points=own)
-                floor = {k for k in acc if int(cand.poses[k]["observations"]) < params.min_obs} if own else set()
+                # the floor on what the frame keeps: with "room", its observations of room points only
+                floor = {k for k in acc if int(cand.poses[k]["observations"]) < params.min_obs}
                 for k in floor:
                     refused[k] = BELOW_FLOOR
                 acc = acc - floor

@@ -371,25 +371,38 @@ def test_the_default_anchors_are_the_rooms():
     assert RC.ReplaceParams().anchors == "room"
 
 
-def test_room_anchors_drop_the_registrations_own_points_and_judge_no_floor(monkeypatch):
+def test_room_anchors_drop_the_registrations_own_points_and_judge_the_floor_on_room_points(monkeypatch):
+    """anchors="room": a re-placed frame keeps only its observations of ROOM points, no scale screen runs
+    (it brings no scale), and the support floor counts those room points: 20-26 registered on 5 room
+    points and 40 of the registration's own points stay cut although the registration had >= 30 inliers;
+    27-34 (every room point they see, plus 40 own) are re-placed holding their room points only."""
     sol, truth, pts, kfs, cams, a, name_of = _isolated_world()
     monkeypatch.setattr(FSG, "read_evidence", lambda *a_, **k: pytest.fail("the scale screen ran"))
     piece = [_kid(i) for i in range(20, 35)]
+    thin = piece[:7]
+    room_rows = {}
 
     def register(s, **k):
         reg = _registration(s, truth, pts, piece)
         for j, kk in enumerate(piece):
-            reg.obs[kk] = reg.obs[kk][:5] + [(9000 + j, ("n", 77))]   # 5 room points, one new point
-            reg.xy[(kk, 9000 + j)] = (1.0, 1.0)
-        reg.points[77] = {"xyz": np.array([0.0, 0.0, 4.0]), "error": 0.5,
-                          "track": [(kk, 9000 + j) for j, kk in enumerate(piece)]}
+            rows = reg.obs[kk][:5] if kk in thin else reg.obs[kk]
+            room_rows[kk] = len(rows)
+            own = [(9000 + 100 * j + n, ("n", 77 + n)) for n in range(40)]
+            reg.obs[kk] = rows + own
+            for f, _ref in own:
+                reg.xy[(kk, f)] = (1.0, 1.0)
+        for n in range(40):
+            reg.points[77 + n] = {"xyz": np.array([0.01 * n, 0.0, 4.0]), "error": 0.5,
+                                  "track": [(kk, 9000 + 100 * j + n) for j, kk in enumerate(piece)]}
         return reg
 
     out_sol, out_a, record = _step(sol, a, cams, kfs, name_of, register_fn=register,
                                    params=RC.ReplaceParams(anchors="room"))
-    assert record["replaced"] == 15 and out_a["pieces"] == []
+    assert record["refused_keyframe_ids"] == {RC.BELOW_FLOOR: thin}
+    assert record["replaced"] == 8 and [p["keyframe_ids"] for p in out_a["pieces"]] == [thin]
     assert len(out_sol.xyz) == len(sol.xyz)          # no new point
-    assert all(out_sol.poses[k]["observations"] == 5 for k in piece)
+    assert all(out_sol.poses[k]["observations"] == room_rows[k] >= RC.ReplaceParams().min_obs
+               for k in piece[7:])
     assert [u["uncertified"] for u in out_a["uncertified"] if u.get("replaced")] == [RC.UNCERTIFIED_REPLACED]
 
 
