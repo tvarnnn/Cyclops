@@ -587,15 +587,15 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         "coverage": {"phone": A.coverage(scores, order),
                      "all": A.coverage(scores, range(len(frames)))},
     }
-    # The display gauge (§5.4): one factor on every observed gain, so the page
-    # draws the phone set at its captured median. A keyframe with no
-    # observation keeps [1, 1, 1], which under this gauge means "as captured".
+    # The display gauge (§5.4): one factor on every gain, so the page draws
+    # the phone set at its captured median. It is computed over the phone set
+    # with an unobserved keyframe's [1, 1, 1] (the solve gauge's typical gain)
+    # included, so it is applied to every keyframe, observed or not: the set
+    # it is computed over is the set it is applied to.
     if params.exposure_display_gauge == A.EXPOSURE_GAUGE_PHONE_MEDIAN:
-        m, gauge = A.display_gauge([fr.source.rgb for fr in frames], opaque, gains,
-                                   slopes, vignette, order)
+        gains, gauge = A.apply_display_gauge([fr.source.rgb for fr in frames], opaque, gains,
+                                             slopes, vignette, order)
         observed = np.asarray(gain_obs) > 0
-        gains = np.asarray(gains, np.float32).copy()
-        gains[observed] *= np.float32(m)
         if observed.any():
             exposure["gain_range"] = [round(float(gains[observed].mean(1).min()), 4),
                                       round(float(gains[observed].mean(1).max()), 4)]

@@ -539,13 +539,16 @@ symmetric) and one radial lens falloff `(k1, k2)` shared by every keyframe
 The solve fixes only ratios, and its gauge says nothing about how bright the
 phone set is drawn: measured drawn/captured pixel medians over the phone set
 were 0.88 (walk 10.1), 0.93 (walk 10), 1.01 (pre1, the same frames as 10.1)
-and 1.01 (9.3) -- per run, not per room. After selection, every OBSERVED
+and 1.01 (9.3) -- per run, not per room. After selection, EVERY keyframe's
 gain is multiplied by one factor `m` so that the median luminance (channel
 mean) a renderer draws over the phone keyframes' opaque texels,
-`captured / (gain × field)`, equals their median captured luminance. No ratio
-between keyframes, channels or texels moves; the transient vote and the
-selection ran on the solve's gauge. A keyframe with no observation keeps
-`[1, 1, 1]`. Recorded as `exposure.display_gauge: {rule, frames, scale,
+`captured / (gain × field)`, equals their median captured luminance. `m` is
+computed over the phone set with the gains as the solve left them, a keyframe
+with no observation at `[1, 1, 1]` (the solve gauge's typical gain) included,
+and applied to every keyframe, observed or not: so the drawn median over the
+phone set is exactly the captured median, and no ratio between keyframes,
+channels or texels moves. The transient vote and the selection ran on the
+solve's gauge. Recorded as `exposure.display_gauge: {rule, frames, scale,
 captured_median, drawn_median_solve_gauge}`; `keyframes` publishes the solve's
 gauge (`{rule: "keyframes"}`).
 
@@ -554,7 +557,8 @@ re-projected into every keyframe; a sample is kept when it is inside that frame
 8 px from the border, within 3% of that frame's proxy depth, on an opaque texel
 there, and neither dark (< 0.02) nor saturated (> 0.97) in a 7×7 box blur;
 points seen by fewer than three keyframes are dropped; at most 6,000,000,
-seeded. A keyframe with no kept observation has gain `[1, 1, 1]`, `gain_slope`
+seeded. A keyframe with no kept observation has gain `[1, 1, 1]` in the
+solve's gauge (`[m, m, m]` once the display gauge applies), `gain_slope`
 `[0, 0]` and `gain_observations: 0`.
 
 Solve (`gain`): alternating Huber-IRLS means (δ = 0.15 in log, 30 iterations).

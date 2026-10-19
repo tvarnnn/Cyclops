@@ -1545,6 +1545,21 @@ def display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride: int = 4):
                "drawn_median_solve_gauge": round(d_med, 2)}
 
 
+def apply_display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride: int = 4):
+    """(gains, record): EVERY keyframe's gain multiplied by the display gauge
+    `m` of `rows` (§5.4), observed or not.
+
+    `display_gauge` computes `m` over `rows` with the gains as they are, an
+    unobserved keyframe's `[1, 1, 1]` (the solve gauge's typical gain: mean
+    log gain 0 over the observed) included. So the set the factor is computed
+    over and the set it is applied to are the same -- every row gets it, and
+    the drawn median over `rows` is exactly their captured median -- and
+    because every other keyframe gets it too, no ratio between any two
+    keyframes moves."""
+    m, record = display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride)
+    return np.asarray(gains, np.float32) * np.float32(m), record
+
+
 # ---------------------------------------------------------------------------
 # selection
 # ---------------------------------------------------------------------------

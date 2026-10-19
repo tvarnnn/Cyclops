@@ -1111,6 +1111,43 @@ def test_the_display_gauge_draws_the_phone_set_at_its_captured_median():
     assert m0 == 1.0 and rec0["frames"] == 0
 
 
+def test_the_display_gauge_is_applied_to_every_frame_it_is_computed_over():
+    """§5.4: the factor is computed over the phone set with an UNOBSERVED
+    keyframe's gain [1, 1, 1] in it, so it must reach that keyframe too:
+    applied to every keyframe, the drawn median over the phone set is its
+    captured median exactly and every keyframe's gain moves by one ratio.
+    Applied to the observed keyframes only (the bug), the median misses."""
+    H_, W_ = 40, 60
+    rng = np.random.default_rng(2)
+    rgbs = [np.clip(rng.normal(mu, 30, (H_, W_, 3)), 1, 255).astype(np.uint8) for mu in (100, 100, 100, 60)]
+    opaque = [np.ones((H_, W_), bool) for _ in range(4)]
+    # keyframe 2 is in the phone set but had no exposure observation; 3 is outside it
+    gains = np.array([[1.3, 1.25, 1.35], [1.4, 1.4, 1.4], [1.0, 1.0, 1.0], [0.4, 0.4, 0.4]], np.float32)
+    observed = np.array([True, True, False, True])
+    slopes = np.zeros((4, 2), np.float32)
+    vignette = (-0.2, 0.05)
+    rows = [0, 1, 2]
+
+    def drawn_over_captured(g):
+        cap, drw = [], []
+        for i in rows:
+            f = A.exposure_field(slopes[i], vignette, W_, H_)[opaque[i]][:, None]
+            px = rgbs[i][opaque[i]].astype(np.float64)
+            cap.append(px.mean(1))
+            drw.append((px / (np.asarray(g[i], np.float64)[None] * f)).mean(1))
+        return np.median(np.concatenate(drw)) / np.median(np.concatenate(cap))
+
+    out, rec = A.apply_display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride=1)
+    m = rec["scale"]
+    assert abs(m - 1.0) > 0.1 and rec["frames"] == 3, "the setup must need a gauge"
+    assert drawn_over_captured(out) == pytest.approx(1.0, rel=1e-4)
+    assert out / gains == pytest.approx(np.full_like(gains, m), rel=1e-4)    # every keyframe, one ratio
+    assert out[2] == pytest.approx([m, m, m], rel=1e-4)                      # the unobserved one included
+    observed_only = gains.copy()
+    observed_only[observed] *= np.float32(m)
+    assert abs(drawn_over_captured(observed_only) - 1.0) > 0.01
+
+
 def _published_drawn_over_captured(world, man):
     """The page's own arithmetic on the published phone set: median drawn
     luminance over median captured luminance, opaque texels only."""
