@@ -18,6 +18,7 @@ Pinned:
 
 from __future__ import annotations
 
+import json
 import math
 import types
 
@@ -450,6 +451,67 @@ def test_at_the_seam_off_is_the_guard_alone_and_on_re_places(monkeypatch):
     assert all(int(on.solution.poses[k]["component"]) == 0 for k in piece)
     placed = next(c for c in on.result.components["components"] if c["state"] == CP.CG_PLACED)
     assert set(piece) <= set(placed["keyframe_ids"])
+
+
+def _replaced_seam(monkeypatch, *, register_record=None, failing_apply=False):
+    """(the guard alone, the guard with the step) on a walk whose piece 20-34 the step re-places."""
+    sol, truth, pts = _scene(60)
+    kfs = _keyframes(60)
+    piece = [_kid(i) for i in range(20, 35)]
+    calls = []
+
+    def log_of(i):
+        return math.log(0.05) if (20 <= i < 35 and not calls) else 0.0
+
+    def register(s, **k):
+        calls.append(1)
+        reg = _registration(s, truth, pts, piece)
+        reg.record = dict(register_record or {})
+        return reg
+
+    if failing_apply:
+        apply0 = FSG.apply
+
+        def apply(solution, assessment, **kw):
+            if any(p.get("registration") for p in solution.poses.values()):
+                raise ValueError("the relabel failed")
+            return apply0(solution, assessment, **kw)
+
+        monkeypatch.setattr(FSG, "apply", apply)
+    off = _guard(monkeypatch, sol, kfs, replace=False, log_of=log_of, register=register)
+    on = _guard(monkeypatch, sol, kfs, replace=True, log_of=log_of, register=register)
+    assert calls, "the step ran"
+    return off, on, piece
+
+
+def _is_the_cut(off, on, piece):
+    assert on.decision == FSG.DECISION_PUBLISHED and on.solution is not None and on.result is not None
+    assert on.summary["keyframes_isolated"] == 15 == off.summary["keyframes_isolated"]
+    assert on.summary["replace_cut"]["state"] == "error" and on.summary["replace_cut"]["replaced"] == 0
+    rec = on.audit["assessment"]["replace_cut"]
+    assert rec["state"] == "error" and rec["withdrawn_keyframe_ids"] == piece and rec["replaced_keyframe_ids"] == []
+    assert not any(p.get("registration") for p in on.solution.poses.values())
+    # what is published is the guard's cut: the switch-off publication's poses, points and components
+    assert on.solution.poses == off.solution.poses
+    assert np.array_equal(on.solution.observations, off.solution.observations)
+    assert on.result.components["components"] == off.result.components["components"]
+    json.dumps(on.audit)                      # what `_records_before_publish` writes
+    json.dumps(on.result.components)
+    return rec
+
+
+def test_a_failure_publishing_the_re_placed_candidate_publishes_the_cut(monkeypatch):
+    off, on, piece = _replaced_seam(monkeypatch, failing_apply=True)
+    rec = _is_the_cut(off, on, piece)
+    assert rec["error"] == "publication: ValueError: the relabel failed"
+
+
+def test_a_re_placed_record_that_cannot_be_written_publishes_the_cut(monkeypatch):
+    # `_records_before_publish` writes the audit as JSON: a record it could not serialise would withhold
+    # the finish; the guard publishes the cut instead
+    off, on, piece = _replaced_seam(monkeypatch, register_record={"not json": {1, 2}})
+    rec = _is_the_cut(off, on, piece)
+    assert rec["error"].startswith("publication: TypeError")
 
 
 # ---------------------------------------------------------------------------

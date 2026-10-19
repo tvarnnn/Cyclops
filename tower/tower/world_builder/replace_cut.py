@@ -49,8 +49,10 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      are dropped; its observations of room points and the points newly triangulated with it are added. The
      room's own points and poses are never moved.
 
-It never raises: any failure leaves the guard's decision as it was, with the error in the record. With
-`TOWER_WORLD_REPLACE_CUT=off` it does not run and the publication is today's, byte for byte.
+It never raises: any failure leaves the guard's decision as it was, with the error in the record; and
+if publishing its candidate fails afterwards (the guard's `apply`, its records), the guard publishes its own
+cut instead (`final_scale_guard.guard_publication`, record `withdrawn`). With `TOWER_WORLD_REPLACE_CUT=off`
+it does not run and the publication is today's, byte for byte.
 
 ANCHORS (`ReplaceParams.anchors`, default "room"). A re-placed stretch frame's pose is right where a room camera
 vouches for it (cm level against a good draw of the same frames), but most of the points triangulated while it
@@ -751,6 +753,13 @@ def _counts_of(refused: dict) -> dict:
     for why in refused.values():
         out[why] = out.get(why, 0) + 1
     return dict(sorted(out.items()))
+
+
+def withdrawn(record: dict, why: str) -> dict:
+    """The record of a re-placement that was not published (its candidate failed after the step, in the
+    guard's publication): state `error`, nothing re-placed, and the keyframes it had re-placed."""
+    return dict(record, state="error", error=why, replaced=0, replaced_keyframe_ids=[],
+                withdrawn_keyframe_ids=list(record.get("replaced_keyframe_ids") or []))
 
 
 def summary(record: dict | None) -> dict | None:

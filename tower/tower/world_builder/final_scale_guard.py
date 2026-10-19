@@ -949,8 +949,11 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     assessment and `apply`, the keyframes the room would not hold are offered to COLMAP's incremental
     registration against the room, and those that pass the support floor and this guard's own pose and
     scale screens join the room (their keyframe ids leave the isolated pieces). It never raises; a failure
-    there leaves the assessment as it was. Its record is in the audit (`assessment.replace_cut`) and the
-    summary (`replace_cut`). Off, or with nothing to offer, the publication is exactly the guard's alone."""
+    there leaves the assessment as it was, and a failure publishing its candidate (`apply`, the summary,
+    the audit, or a record `_records_before_publish` could not serialise) publishes the guard's own cut
+    instead, the record then `error` with what it had re-placed (`replace_cut.withdrawn`): the step can
+    never cost a publication. Its record is in the audit (`assessment.replace_cut`) and the summary
+    (`replace_cut`). Off, or with nothing to offer, the publication is exactly the guard's alone."""
     from tower.world_builder import coherence_publish as CP  # noqa: PLC0415
     from tower.world_builder.coherence_publish import GateResult  # noqa: PLC0415
 
@@ -968,41 +971,63 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         assessment = dict(assess_v2(cams, metric_log, params), evidence=inputs["source"])
         if assessment["decision"] != "publish":
             raise _Withhold(assessment["why"])
-        replaced = None
-        if _replace_wanted(replace):
-            from tower.world_builder import replace_cut as RC  # noqa: PLC0415
-
-            solution, assessment, replaced = RC.replace_cut(
-                store, world_id, session_id, solution, assessment, cams=cams, keyframes=keyframes,
-                name_of=name_of, database_path=database_path, gparams=params, groups_of=groups_of,
-                live_metric_fn=live_metric_fn)
-            if replaced is not None:
-                assessment = dict(assessment, replace_cut=replaced)
         session = store.read_session(world_id, session_id)
         gate_block = None
         if result is not None and result.components is not None:
             g = result.components.get("gate") or {}
             gate_block = {"gate": g.get("id"), "params": g.get("params"), "params_digest": g.get("params_digest"),
                           "masks_applied": g.get("masks_applied"), "metric_available": g.get("metric_available")}
-        published, doc = apply(solution, assessment, session_id=session_id, keyframes=keyframes,
-                               started_at=session.started_at, gate_block=gate_block, min_obs=params.min_obs)
-        secs = time.perf_counter() - started
-        summ = summary(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED, seconds=secs)
-        if replaced is not None:
-            from tower.world_builder import replace_cut as RC  # noqa: PLC0415
 
-            summ["replace_cut"] = RC.summary(replaced)
-        doc["final_scale_guard"] = {"id": GUARD_ID, "params_digest": params.digest(),
-                                    "pieces_isolated": summ["pieces_isolated"], "audit": AUDIT_FILENAME,
-                                    "scale_status": summ["scale_status"]}
-        published = dataclasses.replace(published, solve=dict(solution.solve or {}, final_scale_guard=summ))
-        if result is not None:
-            new_result = dataclasses.replace(result, solution=published, components=doc)
-        else:
-            new_result = GateResult(solution=published, record={}, components=doc)
-        return GuardOutcome(MODE_ON, DECISION_PUBLISHED, published, new_result, summ,
-                            audit_document(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED,
-                                           solution=published, inputs=inputs, seconds=secs))
+        def publication(solution, assessment, replaced) -> GuardOutcome:
+            published, doc = apply(solution, assessment, session_id=session_id, keyframes=keyframes,
+                                   started_at=session.started_at, gate_block=gate_block, min_obs=params.min_obs)
+            secs = time.perf_counter() - started
+            summ = summary(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED, seconds=secs)
+            if replaced is not None:
+                from tower.world_builder import replace_cut as RC  # noqa: PLC0415
+
+                summ["replace_cut"] = RC.summary(replaced)
+            doc["final_scale_guard"] = {"id": GUARD_ID, "params_digest": params.digest(),
+                                        "pieces_isolated": summ["pieces_isolated"], "audit": AUDIT_FILENAME,
+                                        "scale_status": summ["scale_status"]}
+            published = dataclasses.replace(published, solve=dict(solution.solve or {}, final_scale_guard=summ))
+            if result is not None:
+                new_result = dataclasses.replace(result, solution=published, components=doc)
+            else:
+                new_result = GateResult(solution=published, record={}, components=doc)
+            return GuardOutcome(MODE_ON, DECISION_PUBLISHED, published, new_result, summ,
+                                audit_document(assessment, mode_=MODE_ON, decision=DECISION_PUBLISHED,
+                                               solution=published, inputs=inputs, seconds=secs))
+
+        if not _replace_wanted(replace):
+            return publication(solution, assessment, None)
+        from tower.world_builder import replace_cut as RC  # noqa: PLC0415
+
+        cut = (solution, assessment)
+        solution, assessment, replaced = RC.replace_cut(
+            store, world_id, session_id, solution, assessment, cams=cams, keyframes=keyframes,
+            name_of=name_of, database_path=database_path, gparams=params, groups_of=groups_of,
+            live_metric_fn=live_metric_fn)
+        if replaced is None:
+            return publication(solution, assessment, None)
+        if solution is cut[0]:
+            return publication(solution, dict(assessment, replace_cut=replaced), replaced)
+        # ANY FAILURE PUBLISHING THE RE-PLACED CANDIDATE FALLS BACK TO THE CUT. `replace_cut` never raises,
+        # but its candidate must still be relabelled, recorded and written (`_records_before_publish`
+        # serialises the audit and the components record). If any of that fails here, the guard's own
+        # decision is published, as with the switch off, and the audit and the summary say why.
+        try:
+            out = publication(solution, dict(assessment, replace_cut=replaced), replaced)
+            json.dumps(out.audit)
+            json.dumps(out.result.components)
+            return out
+        except Exception as exc:  # noqa: BLE001 -- an optional improvement: failing it is today's outcome
+            logger.exception("[Tower][WorldBuilder] publishing the re-placed candidate of %s/%s failed; the "
+                             "guard's cut is published", world_id, session_id)
+            # the record itself may be what could not be serialised: the cut's audit carries it as text
+            safe = json.loads(json.dumps(_jsonable(replaced), default=str))
+            withdrawn = RC.withdrawn(safe, f"publication: {type(exc).__name__}: {exc}")
+            return publication(cut[0], dict(cut[1], replace_cut=withdrawn), withdrawn)
     except Exception as exc:  # noqa: BLE001 -- fail-closed
         secs = time.perf_counter() - started
         why = str(exc) if isinstance(exc, _Withhold) else f"{type(exc).__name__}: {exc}"
