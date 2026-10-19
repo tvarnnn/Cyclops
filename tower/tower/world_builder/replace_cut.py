@@ -109,10 +109,18 @@ class ReplaceParams:
     min_obs: int = 30
     # RANSAC and the mapper are seeded so that one solve and one database give one result.
     seed: int = 20261019
-    # A bound on the cost, not a quality knob: images not registered by then stay where they were. It
-    # bounds the whole registration (`register`): checked before every pass and every image attempt, and
-    # every bundle adjustment is capped at what is left. The step runs on one thread (`_pipeline_options`).
+    # THE HARD BOUND on the registration, a bound on the cost, not a quality knob: it runs in a child
+    # process (`register`) that is KILLED if it is still running this long after it started (spawn, the
+    # database read and every COLMAP call included); then nothing is re-placed and the guard's cut stands.
     max_seconds: float = 180.0
+    # The soft deadline inside the child, `max_seconds - soft_margin_seconds`: no pass or image attempt
+    # starts after it and every bundle adjustment is capped at it, so a long registration returns what it
+    # has registered instead of being killed. The margin is for the one call already running when it
+    # passes (an image attempt, a triangulation, a refinement, the database read), none of which can be
+    # interrupted: the longest measured on the 9 patchy-run worlds is recorded with every run
+    # (`registration.longest_call_s`); 30 s is a multiple of it, so the kill is for a hang, not for a
+    # registration that is merely long.
+    soft_margin_seconds: float = 30.0
     # The registration loop. "pnp": register (PnP), triangulate, local BA, until a pass registers nothing.
     # "colmap": COLMAP's own incremental loop (`IncrementalPipeline`): after a pass that registers nothing,
     # one global refinement (track completion, retriangulation, global BA with the room fixed) and another
@@ -252,11 +260,41 @@ def _pipeline_options(pycolmap, params: ReplaceParams):
 def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
              params: ReplaceParams | None = None) -> Registration:
     """Register `target_kids` into the room made of `room_kids` (poses fixed) and the points they
-    triangulate, with COLMAP's incremental mapper over the solve database. Reads the database only."""
+    triangulate, with COLMAP's incremental mapper over the solve database. Reads the database only.
+
+    BOUNDED: `_register` runs in a child process (`_in_child`) that is killed at `params.max_seconds`;
+    a kill raises `TimeoutError` (the step then re-places nothing). Inside, `_register` keeps the soft
+    deadline `max_seconds - soft_margin_seconds`. One input, one result: the child runs the same seeded,
+    one-thread code on the same inputs."""
+    params = params or ReplaceParams()
+    started = time.perf_counter()
+    reg = _in_child(f"{__name__}:_register", kwargs=dict(
+        solution=solution, room_kids=list(room_kids), target_kids=list(target_kids),
+        database_path=str(database_path), name_of=dict(name_of), params=params,
+        deadline_s=params.max_seconds - params.soft_margin_seconds), timeout=params.max_seconds)
+    reg.record["child_seconds"] = round(time.perf_counter() - started, 3)
+    return reg
+
+
+def _register(solution, *, room_kids, target_kids, database_path, name_of: dict,
+              params: ReplaceParams | None = None, deadline_s: float | None = None) -> Registration:
+    """`register`'s work, in this process: stops starting work at `deadline_s` after it started (None:
+    `params.max_seconds - params.soft_margin_seconds`)."""
     import pycolmap  # noqa: PLC0415 -- optional, as everywhere in the solve
 
     params = params or ReplaceParams()
+    if deadline_s is None:
+        deadline_s = params.max_seconds - params.soft_margin_seconds
     started = time.perf_counter()
+    longest: dict[str, float] = {}
+
+    def timed(kind, fn, *a):
+        t0 = time.perf_counter()
+        try:
+            return fn(*a)
+        finally:
+            longest[kind] = max(longest.get(kind, 0.0), time.perf_counter() - t0)
+
     reg = Registration()
     opts = _pipeline_options(pycolmap, params)
     mopts = opts.get_mapper()
@@ -270,7 +308,7 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
         copts.min_num_matches = int(opts.min_num_matches)
         copts.ignore_watermarks = bool(opts.ignore_watermarks)
         copts.image_names = names
-        cache = pycolmap.DatabaseCache.create(db, copts)
+        cache = timed("database", pycolmap.DatabaseCache.create, db, copts)
     finally:
         db.close()
     rec = pycolmap.Reconstruction()
@@ -313,13 +351,13 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
     colmap_loop = params.loop == "colmap"
     prev_success = True
 
-    # THE BUDGET bounds the whole registration, not only the loop: it is read before every pass and every
-    # image attempt (one attempt is one COLMAP pose estimate: RANSAC under its own trial cap, then a
-    # refinement), and every bundle adjustment is told what is left (Ceres' `max_solver_time_in_seconds`,
-    # read only when it is reached). An image not registered when it runs out stays where it was.
-    # Finishing in time, nothing here changes the result.
+    # THE SOFT DEADLINE: read before every pass and every image attempt (one attempt is one COLMAP pose
+    # estimate: RANSAC under its own trial cap, then a refinement), and every bundle adjustment is told
+    # what is left (Ceres' `max_solver_time_in_seconds`, read only when it is reached). An image not
+    # registered by then stays where it was. A call already running cannot be interrupted: that is what
+    # the margin to the hard kill (`register`) is for. Finishing in time, nothing here changes the result.
     def left() -> float:
-        return params.max_seconds - (time.perf_counter() - started)
+        return deadline_s - (time.perf_counter() - started)
 
     def capped(options):
         options.ceres.solver_options.max_solver_time_in_seconds = max(left(), 1e-3)
@@ -338,27 +376,26 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
                 stopped_by_budget = True
                 break
             attempts += 1
-            ok = (mapper.register_next_structure_less_image(mopts, iid) if less
-                  else mapper.register_next_image(mopts, iid))
+            ok = timed("attempt", mapper.register_next_structure_less_image if less
+                       else mapper.register_next_image, mopts, iid)
             if ok:
                 placed = iid
                 break
         if placed is not None:
             structure_less += int(less)
             pnp_inliers[placed] = int(rec.image(placed).num_points3D)
-            mapper.triangulate_image(tri, placed)
-            mapper.iterative_local_refinement(int(opts.ba_local_max_refinements),
-                                              float(opts.ba_local_max_refinement_change), mopts, capped(ba),
-                                              tri, placed)
+            timed("triangulate", mapper.triangulate_image, tri, placed)
+            timed("refine", mapper.iterative_local_refinement, int(opts.ba_local_max_refinements),
+                  float(opts.ba_local_max_refinement_change), mopts, capped(ba), tri, placed)
             prev_success = True
             stopped_by_budget = left() <= 0
             continue
         if stopped_by_budget:
             break
         if colmap_loop and prev_success:
-            mapper.iterative_global_refinement(int(opts.ba_global_max_refinements),
-                                               float(opts.ba_global_max_refinement_change), mopts,
-                                               capped(opts.get_global_bundle_adjustment()), tri, False)
+            timed("global_refine", mapper.iterative_global_refinement, int(opts.ba_global_max_refinements),
+                  float(opts.ba_global_max_refinement_change), mopts,
+                  capped(opts.get_global_bundle_adjustment()), tri, False)
             global_refinements += 1
             prev_success = False
             stopped_by_budget = left() <= 0
@@ -415,12 +452,89 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
         "loop": params.loop, "structure_less_registered": structure_less,
         "global_refinements": global_refinements, "room_moved": moved,
         "stopped_by_budget": stopped_by_budget, "seconds": round(time.perf_counter() - started, 3),
+        "longest_call_s": {k: round(v, 3) for k, v in sorted(longest.items())},
         "colmap": {"mapper": {k: v for k, v in mopts.todict().items() if isinstance(v, (int, float, bool))},
                    "triangulation": {k: v for k, v in tri.todict().items() if isinstance(v, (int, float, bool))},
                    "min_num_matches": int(opts.min_num_matches)},
     }
     mapper.end_reconstruction(False)
     return reg
+
+
+def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, timeout: float):
+    """`module:function`(*args, **kwargs) in a child Python process, its result returned; KILLED after
+    `timeout` seconds (`TimeoutError`). Inputs and the result travel as pickles in a private temporary
+    directory, which is also the child's working directory; the child imports this tree's `tower`
+    package. Its output (COLMAP's log) goes to a file there and its tail is in any error. Never leaves a
+    process behind: a timeout kills the child's whole process tree (on Windows a venv's `python.exe` is a
+    launcher that runs the interpreter as ITS child, so killing the launcher alone would not stop it)."""
+    import os  # noqa: PLC0415
+    import pickle  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+    import sys  # noqa: PLC0415
+    import tempfile  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    root = str(Path(__file__).resolve().parents[2])        # the directory that holds the `tower` package
+    paths = [root] + [p for p in os.environ.get("PYTHONPATH", "").split(os.pathsep) if p and p != root]
+    env = dict(os.environ, PYTHONPATH=os.pathsep.join(paths))
+    with tempfile.TemporaryDirectory(prefix="replace-cut-", ignore_cleanup_errors=True) as tmp:
+        inp, out, log = Path(tmp) / "in.pkl", Path(tmp) / "out.pkl", Path(tmp) / "child.log"
+        inp.write_bytes(pickle.dumps((target, tuple(args), dict(kwargs or {})), protocol=pickle.HIGHEST_PROTOCOL))
+        code = ("import sys; from tower.world_builder.replace_cut import _child_main; "
+                "_child_main(sys.argv[1], sys.argv[2])")
+        with open(log, "wb") as sink:
+            proc = subprocess.Popen([sys.executable, "-c", code, str(inp), str(out)], cwd=tmp, env=env,
+                                    stdin=subprocess.DEVNULL, stdout=sink, stderr=subprocess.STDOUT,
+                                    start_new_session=os.name != "nt")
+            try:
+                status = proc.wait(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                raise TimeoutError(f"{target} ran past {timeout:g} s and was stopped") from None
+        if status != 0 or not out.exists():
+            tail = log.read_text(encoding="utf-8", errors="replace")[-400:]
+            raise RuntimeError(f"{target} failed in its process (exit {status}): {tail}")
+        ok, value = pickle.loads(out.read_bytes())
+    if not ok:
+        raise RuntimeError(value)
+    return value
+
+
+def _kill_tree(proc) -> None:
+    """Kill `proc` and every process it started, then reap it."""
+    import os  # noqa: PLC0415
+    import signal  # noqa: PLC0415
+    import subprocess  # noqa: PLC0415
+
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], stdin=subprocess.DEVNULL,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
+        else:
+            os.killpg(proc.pid, signal.SIGKILL)       # its own session (`start_new_session`)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+    proc.wait()
+
+
+def _child_main(inp: str, out: str) -> None:
+    """The child side of `_in_child`: run the pickled call, pickle (ok, result or the error's text)."""
+    import importlib  # noqa: PLC0415
+    import pickle  # noqa: PLC0415
+    from pathlib import Path  # noqa: PLC0415
+
+    target, args, kwargs = pickle.loads(Path(inp).read_bytes())
+    module, name = target.split(":")
+    try:
+        result = (True, getattr(importlib.import_module(module), name)(*args, **kwargs))
+    except Exception as exc:  # noqa: BLE001 -- reported to the parent, which raises it
+        result = (False, f"{type(exc).__name__}: {exc}")
+    Path(out).write_bytes(pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL))
 
 
 # ---------------------------------------------------------------------------

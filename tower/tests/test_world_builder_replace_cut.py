@@ -685,21 +685,77 @@ def test_the_registration_runs_seeded_on_one_thread_as_the_solve_maps():
     assert opts.random_seed == seed and opts.mapper.random_seed == seed and opts.triangulation.random_seed == seed
 
 
-def test_the_budget_bounds_the_registration_inside_the_loop(tmp_path, monkeypatch):
-    """The budget is read before every image attempt, not only between passes: with a clock that runs out
-    after the first registered image, that image is kept (with its refinement) and no other is tried; with
-    no time at all, nothing is attempted. Either way the step records it, and the room does not move."""
+def test_the_soft_deadline_is_read_inside_the_loop(tmp_path, monkeypatch):
+    """The soft deadline is read before every image attempt, not only between passes: with a clock that
+    runs out after the first registered image, that image is kept (with its refinement) and no other is
+    tried; with no time at all, nothing is attempted. Either way it is recorded, and the room does not move."""
     pycolmap = pytest.importorskip("pycolmap")
     sol, kfs, db_path, truth, collapsed, room, name_of = _synthetic(tmp_path, pycolmap)
-    ticks = iter(np.arange(0.0, 100.0, 0.1))
-    # perf_counter calls: start 0.0; before the loop 0.1; before attempt 1 0.2; the refinement's cap 0.3;
-    # after it 0.4 -- past the 0.35 s budget
+    ticks = iter(np.arange(0.0, 1000.0, 0.1))
+    # perf_counter calls: start 0.0; the database read 0.1-0.2; before the loop 0.3; before attempt 1 0.4;
+    # the attempt 0.5-0.6; the triangulation 0.7-0.8; the refinement's cap 0.9; the refinement 1.0-1.1;
+    # after it 1.2 -- past the 1.15 s deadline
     monkeypatch.setattr(RC, "time", types.SimpleNamespace(perf_counter=lambda: float(next(ticks))))
-    reg = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
-                      params=RC.ReplaceParams(max_seconds=0.35))
+    reg = RC._register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
+                       deadline_s=1.15)
     assert reg.record["stopped_by_budget"] and reg.record["registration_attempts"] == 1
     assert len(reg.poses) == 1 and reg.record["room_moved"] <= 1e-6
-    ticks = iter(np.arange(0.0, 100.0, 1.0))
-    reg = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
-                      params=RC.ReplaceParams(max_seconds=0.5))
+    assert set(reg.record["longest_call_s"]) == {"database", "attempt", "triangulate", "refine"}
+    ticks = iter(np.arange(0.0, 1000.0, 1.0))
+    reg = RC._register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
+                       deadline_s=1.5)
     assert reg.record["stopped_by_budget"] and reg.record["registration_attempts"] == 0 and reg.poses == {}
+
+
+def test_the_registration_runs_in_a_child_with_the_same_result(tmp_path):
+    """`register` runs `_register` in a child process: the same seeded one-thread code on the same
+    inputs gives the same registration as running it here."""
+    pycolmap = pytest.importorskip("pycolmap")
+    sol, kfs, db_path, truth, collapsed, room, name_of = _synthetic(tmp_path, pycolmap)
+    child = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of)
+    here = RC._register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of)
+    assert set(child.poses) == set(here.poses) == set(collapsed)
+    for k in collapsed:
+        assert np.allclose(child.poses[k][0], here.poses[k][0], atol=1e-9)
+        assert np.allclose(child.poses[k][1], here.poses[k][1], atol=1e-9)
+    assert child.obs == here.obs and set(child.points) == set(here.points)
+    assert child.record["child_seconds"] >= child.record["seconds"]
+
+
+def test_a_child_past_its_timeout_is_killed_and_an_error_is_reported():
+    """The hard bound: `_in_child` kills the process at its timeout (TimeoutError); a failure inside the
+    child comes back as an error, a result as the result."""
+    import time
+
+    t0 = time.perf_counter()
+    with pytest.raises(TimeoutError):
+        RC._in_child("time:sleep", args=(120,), timeout=1.0)
+    assert time.perf_counter() - t0 < 30
+    with pytest.raises(RuntimeError, match="ValueError"):
+        RC._in_child("math:sqrt", args=(-1.0,), timeout=60)
+    assert RC._in_child("math:sqrt", args=(4.0,), timeout=60) == 2.0
+
+
+def test_a_child_that_crashes_or_exits_non_zero_is_an_error():
+    """A native crash in COLMAP ends the child, not the finish: an exit without a result is an error."""
+    with pytest.raises(RuntimeError, match="exit 3"):
+        RC._in_child("os:_exit", args=(3,), timeout=60)
+    with pytest.raises(RuntimeError, match="failed in its process"):
+        RC._in_child("os:abort", timeout=60)
+
+
+@pytest.mark.parametrize("child", [("time:sleep", (120,), 1.0), ("os:abort", (), 60), ("os:_exit", (3,), 60)],
+                         ids=["killed-at-the-bound", "crashed", "non-zero-exit"])
+def test_a_registration_child_that_is_killed_crashes_or_fails_publishes_the_cut(child):
+    """The step through a REAL child process: killed at its bound, crashed, or exited non-zero, the
+    step's record is an error and the guard's decision stands (the cut)."""
+    target, args, timeout = child
+    sol, _, _, kfs, cams, a, name_of = _isolated_world()
+
+    def register(*a_, **k):
+        return RC._in_child(target, args=args, timeout=timeout)
+
+    out_sol, out_a, record = _step(sol, a, cams, kfs, name_of, register_fn=register)
+    assert out_sol is sol and out_a is a
+    assert record["state"] == "error"
+    assert record["error"].startswith("TimeoutError" if target == "time:sleep" else "RuntimeError")
