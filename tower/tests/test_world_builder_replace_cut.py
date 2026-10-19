@@ -802,6 +802,7 @@ def test_a_child_past_its_timeout_is_killed_and_an_error_is_reported():
         RC._in_child("time:sleep", args=(120,), timeout=1.0, timings=timings)
     assert time.perf_counter() - t0 < 30
     assert timings["tree_killed"] and timings["interpreter_pid"] and not _running(timings["interpreter_pid"])
+    assert timings["cleanup"] == "verified"
     with pytest.raises(RuntimeError, match="ValueError"):
         RC._in_child("math:sqrt", args=(-1.0,), timeout=60)
     assert RC._in_child("math:sqrt", args=(4.0,), timeout=60) == 2.0
@@ -816,7 +817,7 @@ def test_a_failed_tree_kill_still_leaves_no_interpreter(monkeypatch):
     timings = {}
     with pytest.raises(TimeoutError):
         RC._in_child("time:sleep", args=(120,), timeout=2.0, timings=timings)
-    assert timings["tree_killed"] is False
+    assert timings["tree_killed"] is False and timings["cleanup"] == "verified"
     pid = timings["interpreter_pid"]
     assert pid and not _running(pid)
 
@@ -830,8 +831,26 @@ def test_an_interpreter_that_survives_every_kill_is_killed_by_its_own_handle(mon
     with pytest.raises(TimeoutError):
         RC._in_child("time:sleep", args=(120,), timeout=2.0, timings=timings)
     assert timings["tree_killed"] is False and timings["killed_by_pid"] is True
+    assert timings["cleanup"] == "verified"
     pid = timings["interpreter_pid"]
     assert pid and not _running(pid)
+
+
+def test_a_missing_pid_file_leaves_the_cleanup_unverified_and_the_publication_the_cut(monkeypatch):
+    """R2 round 4: "gone" is never inferred from what cannot be seen. With the interpreter's PID never
+    seen (the PID file missing), the stop records the cleanup as unverified -- with why -- and the step's
+    record carries it; the publication is the guard's cut, as for any stopped step."""
+    monkeypatch.setattr(RC._Interpreter, "of", classmethod(lambda cls, proc, pid_file: None))
+    timings = {}
+    with pytest.raises(RC.ChildStopped) as caught:
+        RC._in_child("time:sleep", args=(120,), timeout=1.0, timings=timings)
+    assert caught.value.cleanup == timings["cleanup"] == "unverified (the interpreter's PID was never written)"
+    assert timings["interpreter_pid"] is None
+    sol, _, _, kfs, cams, a, name_of = _isolated_world()
+    out_sol, out_a, record = _step(sol, a, cams, kfs, name_of,
+                                   register_fn=lambda *a_, **k: RC._in_child("time:sleep", args=(120,), timeout=1.0))
+    assert out_sol is sol and out_a is a and record["state"] == "error"
+    assert record["cleanup"] == "unverified (the interpreter's PID was never written)"
 
 
 def test_the_deadline_counts_from_the_step_start_and_covers_the_input_write():
@@ -860,6 +879,29 @@ def test_the_deadline_counts_from_the_step_start_and_covers_the_input_write():
         RC.motion_refusals(room, [_cam(20, [STEP * 20, 0, 0])], 1.0, P, deadline=time.perf_counter() - 1.0)
 
 
+def test_the_final_boundary_checks_the_deadline(monkeypatch):
+    """R2 round 4: a re-placement that passed every gate in time but whose last piece of work crossed the
+    deadline is not returned: the step's final boundary checks it, and the guard's cut stands. Mocked
+    clock: time stands still until the work just before the return."""
+    sol, truth, pts, kfs, cams, a, name_of = _isolated_world()
+    piece = [_kid(i) for i in range(20, 35)]
+    clock = [0.0]
+    monkeypatch.setattr(RC, "time", types.SimpleNamespace(perf_counter=lambda: clock[0]))
+    spans = RC._replaced_spans
+
+    def late(*a_, **k):                          # the last work before the re-placement is returned
+        clock[0] = 1000.0
+        return spans(*a_, **k)
+
+    monkeypatch.setattr(RC, "_replaced_spans", late)
+    out_sol, out_a, record = _step(sol, a, cams, kfs, name_of,
+                                   register_fn=lambda s, **k: _registration(s, truth, pts, piece))
+    assert out_sol is sol and out_a is a and record["state"] == "error"
+    assert record["error"] == ("TimeoutError: the step ran past its 180 s deadline "
+                               "(before the re-placement is returned)")
+    assert record["replaced"] == 0 and record["replaced_keyframe_ids"] == []
+
+
 def test_a_child_that_crashes_or_exits_non_zero_is_an_error():
     """A native crash in COLMAP ends the child, not the finish: an exit without a result is an error."""
     with pytest.raises(RuntimeError, match="exit 3"):
@@ -882,4 +924,6 @@ def test_a_registration_child_that_is_killed_crashes_or_fails_publishes_the_cut(
     out_sol, out_a, record = _step(sol, a, cams, kfs, name_of, register_fn=register)
     assert out_sol is sol and out_a is a
     assert record["state"] == "error"
-    assert record["error"].startswith("TimeoutError" if target == "time:sleep" else "RuntimeError")
+    assert record["error"].startswith("ChildStopped" if target == "time:sleep" else "RuntimeError")
+    if target == "time:sleep":                   # a TimeoutError, with its cleanup recorded
+        assert issubclass(RC.ChildStopped, TimeoutError) and record["cleanup"] == "verified"

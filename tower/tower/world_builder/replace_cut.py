@@ -113,13 +113,13 @@ class ReplaceParams:
     min_obs: int = 30
     # RANSAC and the mapper are seeded so that one solve and one database give one result.
     seed: int = 20261019
-    # THE STEP'S DEADLINE, from its start, a bound on the cost, not a quality knob. Everything counts
-    # against it: the registration's input write, its child's start and the wait for it (the child is
-    # STOPPED there, `_in_child` / `_stop`), and every gate round after it (`replace_cut`, `in_time`).
-    # Past it nothing is re-placed and the guard's cut stands. It can be overrun only by the one piece
-    # running when it passes, none of which can be interrupted: stopping the child (0.2 s measured; the
-    # stop gives up after 30 s of tree kill plus 10 s of confirming the interpreter gone), or reading a
-    # result that arrived in time (0.06 s on live 10.1) and one gate round (all the gates, ~1 s there).
+    # THE STEP'S DEADLINE, from its start, a bound on the cost, not a quality knob. It is checked at every
+    # boundary: after the registration's input is written, while its child runs (stopped there:
+    # `_in_child` / `_stop`), when the registration returns, at every gate round and pose-screen round,
+    # and before a re-placement is returned. Past it nothing is re-placed and the guard's cut stands. A
+    # single piece that cannot be interrupted can overrun it: the input write (0.01 s on live 10.1), the
+    # read of a result that arrived in time (0.06 s there), one gate round (all the gates ~1 s there), or
+    # the stop (0.2 s measured, at most 32.5 s by its bounded waits).
     max_seconds: float = 180.0
     # The soft deadline inside the child, `max_seconds - soft_margin_seconds`: no pass or image attempt
     # starts after it and every bundle adjustment is capped at it, so a long registration returns what it
@@ -479,18 +479,20 @@ def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, time
               deadline: float | None = None, timings: dict | None = None):
     """`module:function`(*args, **kwargs) in a child Python process, its result returned.
 
-    BOUNDED by `deadline` (a `time.perf_counter()` instant), else `timeout` seconds from the call: writing
-    the input counts against it (past it, no child is started), and the child is STOPPED there
-    (`TimeoutError`, `_stop`). Reading a result that arrived in time is the one step after it; its time is
-    in `timings["read_s"]` (and the input write's in `"write_s"`). A crash or non-zero exit is a
+    BOUNDED by `deadline` (a `time.perf_counter()` instant), else `timeout` seconds from the call: it is
+    checked after the input is written (past it, no child is started) and while the child runs, which is
+    STOPPED there (`ChildStopped`, a `TimeoutError`; `_stop`, every wait bounded). The input write and the
+    read of a result that arrived in time cannot be interrupted; their times are in `timings`
+    (`write_s`, `read_s`). A crash or non-zero exit is a
     `RuntimeError`. Inputs and the result travel as pickles in a private temporary directory, which is
     also the child's working directory; the child imports this tree's `tower`; its output (COLMAP's log)
     goes to a file there, and its tail is in any error.
 
     The INTERPRETER is not always the process started: on Windows a venv's python.exe is a launcher that
     runs the interpreter as its child. So the child writes its own PID first, and the parent opens a
-    handle to it (`_Interpreter`), which also keeps the PID from being reused; `_stop` uses it to confirm
-    the interpreter is gone, killing it by its own handle if the tree kill did not."""
+    handle to it (`_Interpreter`), which also keeps the PID from being reused; `_stop` uses it to verify
+    the interpreter's end, killing it by that handle if needed, and records the cleanup as "verified" or
+    "unverified (<why>)" (`ChildStopped.cleanup`, `timings["cleanup"]`)."""
     import os  # noqa: PLC0415
     import pickle  # noqa: PLC0415
     import subprocess  # noqa: PLC0415
@@ -525,7 +527,8 @@ def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, time
                     left = end - time.perf_counter()
                     if left <= 0:
                         timings.update(_stop(proc, interpreter, pid))
-                        raise TimeoutError(f"{target} ran past its deadline and was stopped")
+                        raise ChildStopped(f"{target} ran past its deadline and was stopped",
+                                           cleanup=timings["cleanup"])
                     try:
                         status = proc.wait(timeout=min(0.05, left))
                         break
@@ -545,15 +548,28 @@ def _in_child(target: str, *, args: tuple = (), kwargs: dict | None = None, time
     return value
 
 
+class ChildStopped(TimeoutError):
+    """The child was stopped at its deadline; `cleanup` says whether its interpreter was verified gone:
+    "verified" or "unverified (<why>)"."""
+
+    def __init__(self, message: str, *, cleanup: str):
+        super().__init__(message)
+        self.cleanup = cleanup
+
+
 class _Interpreter:
     """The child's interpreter process, from the PID it wrote, held by a handle so the PID cannot be
-    reused while the parent may still kill it. On POSIX the interpreter is the process started."""
+    reused while the parent may still kill it. On POSIX the interpreter is the process started. Nothing
+    here infers "gone" from what it cannot see: without a handle (`OpenProcess` failed) it is
+    UNVERIFIABLE, and `unverifiable` says why."""
 
-    def __init__(self, pid: int, handle=None, proc=None):
-        self.pid, self._handle, self._proc = pid, handle, proc
+    def __init__(self, pid: int, handle=None, proc=None, unverifiable: str | None = None):
+        self.pid, self._handle, self._proc, self.unverifiable = pid, handle, proc, unverifiable
 
     @classmethod
     def of(cls, proc, pid_file) -> "_Interpreter | None":
+        """The interpreter, or None while its PID is not written."""
+        import ctypes  # noqa: PLC0415
         import os  # noqa: PLC0415
 
         if os.name != "nt":
@@ -561,12 +577,14 @@ class _Interpreter:
         try:
             pid = int(pid_file.read_text())
         except (OSError, ValueError):
-            return None                           # not written yet
-        k32 = _kernel32()
-        handle = k32.OpenProcess(0x0001 | 0x00100000, False, pid)     # PROCESS_TERMINATE | SYNCHRONIZE
-        return cls(pid, handle=handle) if handle else cls(pid)        # no handle: it has already exited
+            return None                           # not written (yet)
+        handle = _kernel32().OpenProcess(0x0001 | 0x00100000, False, pid)   # PROCESS_TERMINATE | SYNCHRONIZE
+        if handle:
+            return cls(pid, handle=handle)
+        return cls(pid, unverifiable=f"OpenProcess({pid}) failed: error {ctypes.get_last_error()}")
 
     def gone(self, wait_s: float = 0.0) -> bool:
+        """True only when its end was SEEN (reaped, or its handle signalled) within `wait_s`."""
         if self._proc is not None:
             try:
                 self._proc.wait(timeout=wait_s)
@@ -574,7 +592,7 @@ class _Interpreter:
             except Exception:  # noqa: BLE001 -- subprocess.TimeoutExpired
                 return False
         if not self._handle:
-            return True
+            return False
         return _kernel32().WaitForSingleObject(self._handle, int(wait_s * 1000)) == 0    # WAIT_OBJECT_0
 
     def kill(self) -> None:
@@ -603,42 +621,68 @@ def _kernel32():
     return k32
 
 
+# Every wait in the stop path is bounded (seconds): the tree kill's own command, each wait for a process
+# to end, and the wait for a PID the interpreter has not written yet. With them `_stop` takes at most
+# TASKKILL_S + STOP_WAIT_S (`_kill_tree`) + PID_WAIT_S + 0.5 + 3 x STOP_WAIT_S = 32.5 s; 0.2 s measured.
+TASKKILL_S = 10.0
+STOP_WAIT_S = 5.0
+PID_WAIT_S = 2.0
+
+
 def _stop(proc, interpreter, pid_file) -> dict:
-    """Stop the child at its deadline and CONFIRM its interpreter is gone: the tree kill (`_kill_tree`),
-    then, if the interpreter is still there -- the tree kill failed, or the launcher was killed before
-    the interpreter wrote its PID -- the interpreter killed by its own handle. Raises when it cannot be
-    confirmed gone. Returns what it took ({stop_s, tree_killed, killed_by_pid, interpreter_pid})."""
+    """Stop the child at its deadline: the tree kill (`_kill_tree`), then its interpreter -- whose end the
+    tree kill does not prove (on Windows a venv's python.exe is a launcher, the interpreter its child) --
+    checked through its own handle, and killed by that handle if it is still running. Every wait is
+    bounded. Returns what it took, with `cleanup`: "verified" when the interpreter's end was seen, else
+    "unverified (<why>)" -- its PID never written, its handle not obtained, or still running after its
+    kill. Logged either way; it changes no publication (a stopped step re-places nothing)."""
     t0 = time.perf_counter()
     tree = _kill_tree(proc)
-    if interpreter is None:                       # killed while it was starting: wait for its PID briefly
-        for _ in range(40):
-            interpreter = _Interpreter.of(proc, pid_file)
-            if interpreter is not None:
-                break
+    if interpreter is None:                       # stopped before its PID was seen: wait for it briefly
+        until = time.perf_counter() + PID_WAIT_S
+        while interpreter is None and time.perf_counter() < until:
             time.sleep(0.05)
+            interpreter = _Interpreter.of(proc, pid_file)
     by_pid = False
     try:
-        if interpreter is not None and not interpreter.gone(0.5):
+        if interpreter is None:
+            cleanup = "unverified (the interpreter's PID was never written)"
+        elif interpreter.unverifiable:
+            cleanup = f"unverified ({interpreter.unverifiable})"
+        elif interpreter.gone(0.5):
+            cleanup = "verified"
+        else:
             interpreter.kill()
             by_pid = True
-            if not interpreter.gone(10.0):
-                raise RuntimeError(f"the child interpreter {interpreter.pid} could not be stopped")
+            cleanup = ("verified" if interpreter.gone(STOP_WAIT_S)
+                       else f"unverified (interpreter {interpreter.pid} still running after its kill)")
     finally:
         if interpreter is not None:
             interpreter.close()
         if proc.poll() is None:                   # a launcher whose interpreter is gone exits by itself
-            try:
-                proc.wait(timeout=10)
-            except Exception:  # noqa: BLE001 -- subprocess.TimeoutExpired
+            _wait(proc)
+            if proc.poll() is None:
                 proc.kill()
-                proc.wait()
+                _wait(proc)
+    pid = None if interpreter is None else interpreter.pid
+    log = logger.info if cleanup == "verified" else logger.warning
+    log("[Tower][WorldBuilder] re-place child stopped at its deadline: interpreter %s, cleanup %s", pid, cleanup)
     return {"stop_s": round(time.perf_counter() - t0, 3), "tree_killed": tree, "killed_by_pid": by_pid,
-            "interpreter_pid": None if interpreter is None else interpreter.pid}
+            "interpreter_pid": pid, "cleanup": cleanup}
+
+
+def _wait(proc, timeout: float = STOP_WAIT_S) -> None:
+    import subprocess  # noqa: PLC0415
+
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
 
 
 def _kill_tree(proc) -> bool:
     """Kill `proc` and every process it started (best effort; True when the tree kill reported success),
-    then reap `proc` itself."""
+    then kill `proc` itself and wait for it (bounded)."""
     import os  # noqa: PLC0415
     import signal  # noqa: PLC0415
 
@@ -647,7 +691,7 @@ def _kill_tree(proc) -> bool:
         proc.kill()
     except OSError:
         pass
-    proc.wait()
+    _wait(proc)
     return ok
 
 
@@ -656,7 +700,8 @@ def _taskkill_tree(pid: int) -> bool:
 
     try:
         done = subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], stdin=subprocess.DEVNULL,
-                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+                              timeout=TASKKILL_S)
         return done.returncode == 0
     except (OSError, subprocess.SubprocessError):
         return False
@@ -897,8 +942,9 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
 
     params = params or ReplaceParams()
     started = time.perf_counter()
-    # THE STEP'S DEADLINE, from its start: the registration's child is stopped there (`register`), and
-    # every gate round after it checks it, so a step past it re-places nothing (the guard's cut).
+    # THE STEP'S DEADLINE, from its start (`ReplaceParams.max_seconds`): the registration's child is
+    # stopped there (`register`), and every boundary after it checks it -- the registration's return,
+    # every gate round, the final return -- so a step past it re-places nothing (the guard's cut).
     deadline = started + params.max_seconds
 
     def in_time(stage: str) -> None:
@@ -1021,12 +1067,15 @@ def replace_cut(store, world_id, session_id, solution, assessment: dict, *, cams
                 out["scale_status"] = FSG.SCALE_UNCERTIFIED
                 out["why"] = f"{sum(len(u['keyframe_ids']) for u in extra)} re-placed keyframes are not certified"
         ordered = sorted(accepted, key=kidx.get)
+        in_time("before the re-placement is returned")       # the final boundary
         done("replaced", replaced=len(ordered), replaced_keyframe_ids=ordered)
         out["replace_cut"] = record
         return cand, out, record
     except Exception as exc:  # noqa: BLE001 -- an optional improvement: failing it is today's outcome
         logger.exception("[Tower][WorldBuilder] re-placing the cut keyframes of %s/%s failed; the guard's "
                          "decision stands", world_id, session_id)
+        if getattr(exc, "cleanup", None):
+            record["cleanup"] = exc.cleanup
         return solution, assessment, done("error", error=f"{type(exc).__name__}: {exc}")
 
 
