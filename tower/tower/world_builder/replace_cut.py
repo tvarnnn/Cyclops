@@ -49,6 +49,14 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
 
 It never raises: any failure leaves the guard's decision as it was, with the error in the record. With
 `TOWER_WORLD_REPLACE_CUT=off` it does not run and the publication is today's, byte for byte.
+
+ANCHORS (`ReplaceParams.anchors`, default "room"). A re-placed stretch frame's pose is right where a room camera
+vouches for it (cm level against a good draw of the same frames), but most of the points triangulated while it
+was registered come from the stretch's own low-parallax pairs: on walk 10.1's live draw their depth scale read
+x1.6-1.8 and, anchored on them, the depth stage pushed the surface back (a phantom). "room" keeps only a
+re-placed frame's observations of room points, so it brings no scale of its own: no support floor and no scale
+screen apply, and its depth comes from the room -- its own fit on room points, or a fit borrowed from its fused
+neighbours (`neighbour_fit`). "own" (gates a-c) is the measured alternative (patchy run 2026-10-19, lane R).
 """
 
 from __future__ import annotations
@@ -103,7 +111,7 @@ class ReplaceParams:
     # geometry is unchanged and the depth stage scales a re-placed frame only on room points (or, with too
     # few, borrows a fit from its fused neighbours where the surface does that). No support floor, no scale
     # screen then: the registration's own >= 30 inliers are the measurement, and the frame brings no scale.
-    anchors: str = "own"
+    anchors: str = "room"
 
     def digest(self) -> str:
         return hashlib.sha1(json.dumps({"step": STEP_ID, **asdict(self)}, sort_keys=True).encode()

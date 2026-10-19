@@ -31,6 +31,7 @@ from tower.world_builder import replace_cut as RC
 from tower.world_builder.records import Keyframe
 
 P = FSG.GuardParams()
+OWN = RC.ReplaceParams(anchors="own")   # the gates of a re-placed frame that brings its own points
 CAM = {"fx": 300.0, "fy": 300.0, "cx": 180.0, "cy": 320.0, "width": 360, "height": 640}
 CLOCK0 = 1_790_000_000.0
 STEP = 0.05          # solve units per keyframe
@@ -288,7 +289,7 @@ def test_a_camera_that_passes_every_gate_leaves_its_piece(monkeypatch):
     monkeypatch.setattr(FSG, "read_evidence", _evidence(lambda i: 0.0))
     piece = [_kid(i) for i in range(20, 35)]
     out_sol, out_a, record = _step(sol, a, cams, kfs, name_of,
-                                   register_fn=lambda s, **k: _registration(s, truth, pts, piece))
+                                   register_fn=lambda s, **k: _registration(s, truth, pts, piece), params=OWN)
     assert record["state"] == "replaced" and record["replaced"] == 15 and record["refused"] == {}
     assert out_a["pieces"] == [] and set(piece) <= set(out_a["room_keyframes"])
     assert all(out_sol.poses[k]["registration"] == RC.STEP_ID for k in piece)
@@ -301,7 +302,7 @@ def test_what_the_scale_screen_would_isolate_stays_cut(monkeypatch):
     # re-placed, the piece still reads x0.05: the rule that cut it cuts it again
     monkeypatch.setattr(FSG, "read_evidence", _evidence(lambda i: math.log(0.05) if 20 <= i < 35 else 0.0))
     out_sol, out_a, record = _step(sol, a, cams, kfs, name_of,
-                                   register_fn=lambda s, **k: _registration(s, truth, pts, piece))
+                                   register_fn=lambda s, **k: _registration(s, truth, pts, piece), params=OWN)
     assert out_sol is sol and out_a is a
     assert record["state"] == "none-passed" and record["refused"] == {RC.SCALE: 15}
 
@@ -348,7 +349,7 @@ def test_a_camera_below_the_support_floor_is_refused(monkeypatch):
         reg.obs[_kid(30)] = reg.obs[_kid(30)][:10]
         return reg
 
-    _, _, record = _step(sol, a, cams, kfs, name_of, register_fn=register)
+    _, _, record = _step(sol, a, cams, kfs, name_of, register_fn=register, params=OWN)
     assert record["refused_keyframe_ids"] == {RC.BELOW_FLOOR: [_kid(30)]} and record["replaced"] == 14
 
 
@@ -358,11 +359,15 @@ def test_without_the_scale_screen_the_re_placed_cameras_are_recorded_uncertified
     piece = [_kid(i) for i in range(20, 35)]
     _, out_a, record = _step(sol, a, cams, kfs, name_of,
                              register_fn=lambda s, **k: _registration(s, truth, pts, piece),
-                             params=RC.ReplaceParams(scale_screen=False))
+                             params=RC.ReplaceParams(anchors="own", scale_screen=False))
     assert record["replaced"] == 15 and out_a["scale_status"] == FSG.SCALE_UNCERTIFIED
     spans = [u for u in out_a["uncertified"] if u.get("replaced")]
     assert [(u["first_index"], u["last_index"], u["uncertified"]) for u in spans] == [(20, 34,
                                                                                         RC.UNCERTIFIED_REPLACED)]
+
+
+def test_the_default_anchors_are_the_rooms():
+    assert RC.ReplaceParams().anchors == "room"
 
 
 def test_room_anchors_drop_the_registrations_own_points_and_judge_no_floor(monkeypatch):
