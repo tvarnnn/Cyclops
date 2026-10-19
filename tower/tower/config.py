@@ -902,8 +902,9 @@ def world_solve_gate_setting() -> bool:
 # observations of the ROOM's points (`anchors="room"`: the only points they keep) and when they pass the
 # guard's own pose screen and anchoring. No scale screen judges them (they bring no scale of their own):
 # they are published uncertified, kind `re-placed`. The registration runs in a child process; the whole
-# step has a 180 s deadline from its start (the child stopped there, its interpreter confirmed gone;
-# overrun only by the one uninterruptible piece running then, `replace_cut.ReplaceParams.max_seconds`).
+# step has a 180 s deadline from its start, checked at every boundary (the child stopped there, its
+# cleanup recorded as verified or unverified); a single uninterruptible piece can overrun it
+# (`replace_cut.ReplaceParams.max_seconds`).
 # A failure (an error, the deadline passed, the child crashed, the records not written) publishes the
 # guard's cut. Read by the guard at every final publication.
 WORLD_REPLACE_CUT_ENV = "TOWER_WORLD_REPLACE_CUT"

@@ -952,8 +952,9 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
     RE-PLACE, DON'T CUT (`replace_cut`; `replace`, None = `TOWER_WORLD_REPLACE_CUT`, on): between the
     assessment and `apply`, the keyframes the room would not hold are offered to COLMAP's incremental
     registration against the room (one thread, in a child process; the whole step has a deadline of
-    `ReplaceParams.max_seconds` from its start, at which the child is stopped and its interpreter
-    confirmed gone, overrun only by the one uninterruptible piece running then -- see `ReplaceParams`),
+    `ReplaceParams.max_seconds` from its start, checked at every boundary -- the child is stopped there,
+    its cleanup recorded as verified or unverified -- and overrun only by a single uninterruptible piece;
+    see `ReplaceParams`),
     and those with >= 30 observations of the ROOM's points that pass this guard's own pose screen and are anchored to the room
     by steps it can test join the room at their registered poses (their keyframe ids leave the isolated
     pieces). With the default `anchors="room"` a re-placed keyframe keeps only those room-point
