@@ -218,17 +218,18 @@ class AppearanceParams:
     # a build without keyframe times, is the vote as it was.
     transient_static_gap_s: float = 30.0
     transient_static_views: int = 2
-    # ...AND FROM ELSEWHERE. What moves with the wearer -- their legs while
-    # seated, a hand, the phone -- comes back to the same proxy point only
-    # when the wearer is back where they were: walk 10.1 begins and ends
-    # seated at one desk, and with time alone the wearer's knee was kept in
-    # ki 189, 190 and 1378. So a corroborating keyframe must also have been
-    # taken at least this many times the point's depth away from this one.
-    # From there anything nearer than 0.6 of the surface depth (the near
-    # test's own bound) lands >= f/3 px (about a third of the image width)
-    # away from where it was, while a thing within about 10% of the surface
-    # (a poster, a skateboard against the wall) stays inside the vote's box.
-    # 0 = time alone.
+    # ...AND FROM ELSEWHERE IN THE ROOM. What moves with the wearer -- their
+    # legs while seated, a hand, the phone -- comes back to the same proxy
+    # point only when the wearer is back where they were: walk 10.1 begins
+    # and ends seated at one desk, and with time alone the wearer's knee was
+    # kept in ki 189, 190 and 1378. The proxy has a surface there (about
+    # 0.6 of the floor depth behind the knee), so a parallax test on the
+    # point is no guard (a separation of 0.5 x the point's depth, tried
+    # first, still kept much of it). So a corroborating keyframe's camera
+    # centre must
+    # be at least this many times the walk's median proxy depth (`z_ref`)
+    # from this one's: the wearer was somewhere else in the room, and what
+    # moves with them was too. 0 = time alone.
     transient_static_baseline: float = 0.5
     # the transient DETECTOR (transients.py, contract §5.3a): `union`
     # (Grounding DINO + SAM 2.1 with OneFormer), `oneformer`, or `off`
@@ -1031,7 +1032,7 @@ def occluder_mask(zs: np.ndarray, zp: np.ndarray, unobserved: np.ndarray,
 
 
 def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParams, device=None,
-                    should_stop=None, slopes=None, vignette=None, times=None):
+                    should_stop=None, slopes=None, vignette=None, times=None, z_ref=None):
     """Where a keyframe shows something most OTHER keyframes did not see there.
 
     The depth test above removes what is nearer than the proxy. It cannot
@@ -1058,9 +1059,10 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     With `times` (seconds, one per keyframe; NaN = unknown), a hit is kept
     unmasked as STATIC when at least `transient_static_views` other keyframes
     at least `transient_static_gap_s` away, and with their camera centre at
-    least `transient_static_baseline` x the point's depth from this one's,
-    also disagree with the reference there and agree with this keyframe's
-    colour (within the same tolerance).
+    least `transient_static_baseline` x `z_ref` (the walk's median proxy
+    depth; the median of `zps` when not given) from this one's, also disagree
+    with the reference there and agree with this keyframe's colour (within
+    the same tolerance).
     The misregistration fraction counts every disagreement, static or not.
 
     Returns one (coarse bool grid, record or None) per keyframe, or None if
@@ -1089,6 +1091,11 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         tn = np.asarray(times, np.float64).reshape(-1)
         if len(tn) == N and np.isfinite(tn).any():
             tt = torch.as_tensor((tn - np.nanmin(tn)).astype(np.float32), device=dev)
+            if z_ref is None:
+                zs_ = np.concatenate([np.asarray(z)[::8, ::8].astype(np.float32).ravel() for z in zps])
+                zs_ = zs_[np.isfinite(zs_) & (zs_ > 0)]
+                z_ref = float(np.median(zs_)) if zs_.size else 0.0
+    sep = beta * float(z_ref or 0.0)
     # A wide box: a hand is tens of pixels across, and a one-pixel
     # misregistration along a shelf edge must not read as a colour change.
     b = params.transient_box_px
@@ -1190,11 +1197,10 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
             # Comparisons with NaN (an unseen view, an unknown time) are False.
             vv = torch.cat(views)
             far = (tt[vv] - tt[a]).abs() >= gap                              # (views,)
-            apart = ((centres[vv] - centres[a]).norm(dim=1)[:, None]
-                     >= beta * z0[None])                                     # (views, P)
+            apart = (centres[vv] - centres[a]).norm(dim=1) >= sep           # (views,)
             same = (C - (own / scale)[None]).abs().amax(2) <= tol[None]      # agrees with me
             odd = dev_views > tol[None]                                      # not with the rest
-            static = hit & ((same & odd & far[:, None] & apart).sum(0) >= kmin)
+            static = hit & ((same & odd & (far & apart)[:, None]).sum(0) >= kmin)
             hit = hit & ~static
         # A keyframe that disagrees with the rest of the walk nearly everywhere
         # is misregistered (a pose or proxy error), not full of transients:

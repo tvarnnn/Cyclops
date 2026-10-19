@@ -1019,7 +1019,8 @@ def _wall_walk(n=20):
 
 
 # Twenty keyframes: 0, 1 and 18, 19 at the two ends of the line (2.1 m and
-# more apart, against 0.5 x a 3 m depth), 2 and 3 a few decimetres from 0.
+# more apart, against 0.5 x the walk's ~3 m median depth), 2 and 3 a few
+# decimetres from 0.
 ONE_VISIT = [0.0, 0.3, 0.6, 0.9] + [2.0 + i for i in range(14)] + [1.2, 1.5]
 REVISIT = [0.0, 0.3, 90.0, 90.3] + [2.0 + i for i in range(14)] + [90.6, 90.9]
 
@@ -1100,7 +1101,7 @@ def test_a_build_records_the_time_gate_and_still_masks_a_one_frame_hand(world):
     man = world.manifest()
     gate = man["occluders"]["transient_time_gate"]
     assert gate["frames_with_time"] == N_FRAMES and gate["gap_s"] == 30.0 and gate["views"] == 2
-    assert gate["baseline_z"] == 0.5
+    assert gate["baseline_z_ref"] == 0.5 and gate["baseline"] > 0
     entry = next(k for k in man["keyframes"] if k["ki"] == 3)
     assert entry["transient"]["static_kept"] == 0
     assert entry["transient_fraction"] > 0.05

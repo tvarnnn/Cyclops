@@ -560,7 +560,7 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
                               [fr.zp for fr in frames], gains,
                               [fr.R for fr in frames], [fr.t for fr in frames], K, params,
                               device=device, should_stop=should_stop,
-                              slopes=slopes, vignette=vignette, times=times)
+                              slopes=slopes, vignette=vignette, times=times, z_ref=z_ref)
     if votes is None:
         return _stop(root, STAGE_TRANSIENTS, seconds)
     for i, (fr, (grid, vrec)) in enumerate(zip(frames, votes)):
@@ -833,11 +833,12 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
                                f"diff>max({params.transient_abs},{params.transient_rel}*luma)|"
                                f"shift{params.transient_shift_px}|framemax{params.transient_frame_max}|"
                                f"static>={params.transient_static_views}@{params.transient_static_gap_s}s"
-                               f",{params.transient_static_baseline}z"),
+                               f",{params.transient_static_baseline}zref"),
                       "transient_time_gate": {
                           "gap_s": params.transient_static_gap_s,
                           "views": params.transient_static_views,
-                          "baseline_z": params.transient_static_baseline,
+                          "baseline_z_ref": params.transient_static_baseline,
+                          "baseline": round(params.transient_static_baseline * z_ref, 4),
                           "clock": "tower-receipt",
                           "frames_with_time": int(sum(1 for x in times if np.isfinite(x))),
                           "points_kept_static": int(sum(
