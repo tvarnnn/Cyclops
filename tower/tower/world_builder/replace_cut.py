@@ -27,8 +27,10 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      and local bundle adjustment of the newly registered image. COLMAP's registration gates, unchanged:
      >= 30 inliers (`abs_pose_min_num_inliers`), inlier ratio >= 0.25, <= 12 px (`abs_pose_max_error`),
      at most 3 trials an image. Intrinsics are fixed, as in the solve. Seeded and on one thread, as the
-     seeded solve maps: one input, one result. Bounded by `ReplaceParams.max_seconds` (every pass, every
-     image attempt, every bundle adjustment); what is not registered by then stays where it was.
+     seeded solve maps: one input, one result. In a child process (`register`), killed at
+     `ReplaceParams.max_seconds` (then nothing is re-placed); inside it a soft deadline
+     `max_seconds - soft_margin_seconds`, read before every pass and image attempt and capping every
+     bundle adjustment, keeps what is registered by then.
   4. GATES (`replace_cut`), each a rule that already exists; a keyframe that fails one stays where it was
      (cut, unsupported or unposed -- today's outcome):
        a. the support floor: >= `MIN_IMAGE_OBSERVATIONS` (30) 3-D observations, the solve's own rule for a
@@ -52,9 +54,10 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      are dropped; its observations of room points and the points newly triangulated with it are added. The
      room's own points and poses are never moved.
 
-It never raises: any failure leaves the guard's decision as it was, with the error in the record; and
-if publishing its candidate fails afterwards (the guard's `apply`, its records), the guard publishes its own
-cut instead (`final_scale_guard.guard_publication`, record `withdrawn`). With `TOWER_WORLD_REPLACE_CUT=off`
+It never raises: any failure -- its registration process killed, crashed or failing included -- leaves the
+guard's decision as it was, with the error in the record; and if publishing its candidate fails afterwards
+(the guard's `apply`, or writing its records), the guard's own cut is published instead
+(`final_scale_guard.guard_publication`, `coherence_publish._records_before_publish`; record `withdrawn`). With `TOWER_WORLD_REPLACE_CUT=off`
 it does not run and the publication is today's, byte for byte.
 
 ANCHORS (`ReplaceParams.anchors`, default "room"). A re-placed stretch frame's pose is right where a room camera
