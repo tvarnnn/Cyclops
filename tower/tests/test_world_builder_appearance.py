@@ -1073,6 +1073,98 @@ def test_an_unknown_exposure_model_is_refused():
                       A.AppearanceParams(exposure_model="gain+magic"), device="cpu")
 
 
+def test_the_display_gauge_draws_the_phone_set_at_its_captured_median():
+    """§5.4 display gauge: the factor on every gain that puts the median the
+    page draws (captured / (gain x field)) over the given rows' opaque texels
+    on their captured median. Rows outside the set and transparent texels do
+    not count, and the factor is exact because a median commutes with a
+    positive scale."""
+    H_, W_ = 40, 60
+    rng = np.random.default_rng(1)
+    rgbs = [np.clip(rng.normal(100, 25, (H_, W_, 3)), 1, 255).astype(np.uint8) for _ in range(3)]
+    rgbs[2][:] = 250                                   # not in the set: ignored
+    opaque = [np.ones((H_, W_), bool) for _ in range(3)]
+    opaque[1][:, :20] = False
+    rgbs[1][:, :20] = 5                                # transparent: ignored
+    gains = np.array([[1.25, 1.2, 1.3], [1.4, 1.4, 1.4], [0.3, 0.3, 0.3]], np.float32)
+    slopes = np.array([[0.2, -0.1], [0.0, 0.0], [0.0, 0.0]], np.float32)
+    vignette = (-0.2, 0.05)
+    m, rec = A.display_gauge(rgbs, opaque, gains, slopes, vignette, [0, 1], stride=1)
+    assert m < 1.0 and rec["frames"] == 2 and rec["scale"] == pytest.approx(m, abs=1e-5)
+
+    def medians(g):
+        cap, drw = [], []
+        for i in (0, 1):
+            a = opaque[i]
+            f = A.exposure_field(slopes[i], vignette, W_, H_)[a][:, None]
+            px = rgbs[i][a].astype(np.float64)
+            cap.append(px.mean(1))
+            drw.append((px / (np.asarray(g[i], np.float64)[None] * f)).mean(1))
+        return np.median(np.concatenate(cap)), np.median(np.concatenate(drw))
+
+    c0, d0 = medians(gains)
+    assert d0 < 0.9 * c0                               # the solve's gauge draws it darker
+    c1, d1 = medians(gains * m)
+    assert d1 == pytest.approx(c1, rel=1e-4)
+    # nothing opaque: no rescale
+    m0, rec0 = A.display_gauge(rgbs, [np.zeros((H_, W_), bool)] * 3, gains, None, None, [0, 1])
+    assert m0 == 1.0 and rec0["frames"] == 0
+
+
+def _published_drawn_over_captured(world, man):
+    """The page's own arithmetic on the published phone set: median drawn
+    luminance over median captured luminance, opaque texels only."""
+    vig = man["exposure"].get("vignette") or [0.0, 0.0]
+    cap, drw = [], []
+    for k in man["keyframes"]:
+        if k["tier"] != A.TIER_PHONE:
+            continue
+        rgba = world.decoded(k["ki"])
+        a = _opaque(rgba)
+        f = A.exposure_field(k["gain_slope"], vig, W, H)[a][:, None]
+        px = rgba[..., :3][a].astype(np.float64)
+        cap.append(px.mean(1))
+        drw.append((px / (np.asarray(k["gain"], np.float64)[None] * f)).mean(1))
+    return float(np.median(np.concatenate(drw)) / np.median(np.concatenate(cap)))
+
+
+def test_a_build_publishes_gains_that_draw_the_phone_set_at_its_captured_brightness(tmp_path):
+    """The build applies the gauge to the PUBLISHED gains: four of eight
+    keyframes go to the phone and the frames were shot at unequal exposures,
+    so the solve's own gauge (mean log gain 0 over all eight) is not the
+    phone set's. `keyframes` publishes the solve's gauge unchanged."""
+    w = World(tmp_path)
+    w.gain = [1.45, 1.4, 1.5, 1.45, 0.75, 0.7, 0.8, 0.75]
+    for i in range(N_FRAMES):
+        w.set_image(i, w.render(i))
+    w.write_align()
+    base = dict(selection_samples=4000, phone_budget=4)
+    w.build(redactor_factory=_never_redact, params=A.AppearanceParams(
+        exposure_display_gauge=A.EXPOSURE_GAUGE_KEYFRAMES, **base))
+    man0 = w.manifest()
+    assert man0["exposure"]["display_gauge"] == {"rule": A.EXPOSURE_GAUGE_KEYFRAMES}
+    g0 = np.array([k["gain"] for k in man0["keyframes"] if k["gain_observations"] > 0])
+    assert np.exp(np.log(g0).mean(0)) == pytest.approx([1.0, 1.0, 1.0], abs=0.02)
+    before = _published_drawn_over_captured(w, man0)
+
+    w.build(redactor_factory=_never_redact, force=True, params=A.AppearanceParams(**base))
+    man = w.manifest()
+    gauge = man["exposure"]["display_gauge"]
+    assert gauge["rule"] == A.EXPOSURE_GAUGE_PHONE_MEDIAN and gauge["frames"] == 4
+    assert _published_drawn_over_captured(w, man) == pytest.approx(1.0, abs=0.02)
+    assert abs(before - 1.0) > 0.05, "the setup must separate the two gauges"
+    # one factor on every gain: no ratio between keyframes moves
+    r0 = {k["ki"]: np.asarray(k["gain"]) for k in man0["keyframes"]}
+    r1 = {k["ki"]: np.asarray(k["gain"]) for k in man["keyframes"]}
+    ratios = np.array([r1[ki] / r0[ki] for ki in r0])
+    assert ratios == pytest.approx(np.full_like(ratios, gauge["scale"]), rel=0.02)
+
+
+def test_an_unknown_display_gauge_is_refused():
+    with pytest.raises(ValueError):
+        A.AppearanceParams(exposure_display_gauge="brighter")
+
+
 def test_the_manifest_carries_the_photometric_model(world):
     world.build(redactor_factory=_never_redact)
     man = world.manifest()

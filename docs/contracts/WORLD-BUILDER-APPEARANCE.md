@@ -535,6 +535,20 @@ symmetric) and one radial lens falloff `(k1, k2)` shared by every keyframe
 (**`exposure.vignette`**). With `gain` the tilt and falloff are 0. Gauge
 `mean(log g) = 0` over keyframes with observations.
 
+**Display gauge** (`params.exposure_display_gauge`, default `phone-median`).
+The solve fixes only ratios, and its gauge says nothing about how bright the
+phone set is drawn: measured drawn/captured pixel medians over the phone set
+were 0.88 (walk 10.1), 0.93 (walk 10), 1.01 (pre1, the same frames as 10.1)
+and 1.01 (9.3) -- per run, not per room. After selection, every OBSERVED
+gain is multiplied by one factor `m` so that the median luminance (channel
+mean) a renderer draws over the phone keyframes' opaque texels,
+`captured / (gain × field)`, equals their median captured luminance. No ratio
+between keyframes, channels or texels moves; the transient vote and the
+selection ran on the solve's gauge. A keyframe with no observation keeps
+`[1, 1, 1]`. Recorded as `exposure.display_gauge: {rule, frames, scale,
+captured_median, drawn_median_solve_gauge}`; `keyframes` publishes the solve's
+gauge (`{rule: "keyframes"}`).
+
 Samples: a 16-pixel grid of each keyframe's proxy depth, back-projected and
 re-projected into every keyframe; a sample is kept when it is inside that frame
 8 px from the border, within 3% of that frame's proxy depth, on an opaque texel
