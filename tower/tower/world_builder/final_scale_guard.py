@@ -1022,6 +1022,17 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
             live_metric_fn=live_metric_fn)
         if replaced is None:
             return publication(solution, assessment, None)
+        # The step's record reaches the audit and the summary, which are written as JSON
+        # (`_records_before_publish`): it is carried JSON-safe on every path -- a value JSON cannot encode
+        # as its text -- so a record never costs the write. One that cannot be carried at all leaves the
+        # cut, with an error record.
+        try:
+            replaced = json.loads(json.dumps(_jsonable(replaced), default=str))
+        except Exception as exc:  # noqa: BLE001 -- an optional improvement: failing it is today's outcome
+            logger.exception("[Tower][WorldBuilder] the re-place record of %s/%s cannot be recorded; the guard's "
+                             "cut is published", world_id, session_id)
+            replaced = RC.withdrawn({"id": RC.STEP_ID}, f"record: {type(exc).__name__}: {exc}")
+            solution, assessment = cut
         if solution is cut[0]:
             return publication(solution, dict(assessment, replace_cut=replaced), replaced)
         # ANY FAILURE PUBLISHING THE RE-PLACED CANDIDATE FALLS BACK TO THE CUT. `replace_cut` never raises,
@@ -1030,9 +1041,7 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         # own decision, as with the switch off; a failure writing the records publishes it there
         # (`GuardOutcome.cut`). The audit and the summary say why.
         def cut_publication(why: str) -> GuardOutcome:
-            # the record itself may be what could not be serialised: the cut's audit carries it as text
-            safe = json.loads(json.dumps(_jsonable(replaced), default=str))
-            withdrawn = RC.withdrawn(safe, why)
+            withdrawn = RC.withdrawn(replaced, why)
             return publication(cut[0], dict(cut[1], replace_cut=withdrawn), withdrawn)
 
         try:

@@ -576,14 +576,30 @@ def test_a_re_placed_publication_whose_records_cannot_be_written_publishes_the_c
     assert CP._records_before_publish(tmp_path, on).decision == FSG.DECISION_WITHHELD
 
 
-def test_a_re_placed_record_that_cannot_be_serialised_publishes_the_cut(monkeypatch, tmp_path):
-    # `_records_before_publish` writes the audit as JSON: a record it cannot serialise would withhold the
-    # finish; the guard's cut is published instead, carrying the record as text
+def test_the_steps_record_is_carried_json_safe_on_every_path(monkeypatch, tmp_path):
+    """R1 N2b: `_records_before_publish` writes the audit as JSON, and the step's record goes into it on
+    every path -- re-placed or not. A value JSON cannot encode is carried as its text, so the record never
+    costs the write: the re-placed publication is written as it is."""
     off, on, piece = _replaced_seam(monkeypatch, register_record={"not json": {1, 2}})
+    assert on.audit["assessment"]["replace_cut"]["registration"] == {"not json": "{1, 2}"}
     got = CP._records_before_publish(tmp_path, on)
-    rec = _is_the_cut(off, got, piece)
-    assert rec["error"].startswith("records: TypeError")
-    assert json.loads((tmp_path / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))["decision"] == "published"
+    assert got is on and got.summary["replace_cut"]["state"] == "replaced"
+    on_disk = json.loads((tmp_path / FSG.AUDIT_FILENAME).read_text(encoding="utf-8"))
+    assert on_disk["decision"] == "published" and on_disk["assessment"]["replace_cut"]["state"] == "replaced"
+    # nothing re-placed (every target refused), the same record: written, not withheld
+    sol, truth, pts, kfs, cams, a, name_of = _isolated_world()
+
+    def nothing(s, **k):
+        reg = RC.Registration()
+        reg.record = {"not json": {1, 2}}
+        return reg
+
+    monkeypatch.setattr(FSG, "read_evidence", _evidence(lambda i: math.log(0.05) if 20 <= i < 35 else 0.0))
+    monkeypatch.setattr(RC, "register", nothing)
+    store = types.SimpleNamespace(read_session=lambda w, s: types.SimpleNamespace(started_at=CLOCK0))
+    out = FSG.guard_publication(store, "w", "s", sol, None, database_path="unused.db", keyframes=kfs, replace=True)
+    assert out.summary["replace_cut"]["state"] == "none-passed" and out.cut is None
+    assert CP._records_before_publish(tmp_path / "none", out).decision == FSG.DECISION_PUBLISHED
 
 
 # ---------------------------------------------------------------------------
