@@ -231,6 +231,15 @@ class AppearanceParams:
     # from this one's: the wearer was somewhere else in the room, and what
     # moves with them was too. 0 = time alone.
     transient_static_baseline: float = 0.5
+    # ...AND SAW THE SAME THING. A corroborator must match this keyframe's
+    # colour within this fraction of the vote's tolerance. That tolerance,
+    # max(transient_abs, transient_rel x luma), is built to call two colours
+    # DIFFERENT with room for misregistration along edges; one object seen
+    # twice under one light differs only by what the exposure model leaves
+    # (median |log residual| 0.09 on walk 10.1, about a fifth of it). At 1.0
+    # any light surface seen through a stray proxy surface "matched" the
+    # wearer's beige knee. 1.0 = the vote's own tolerance.
+    transient_static_match: float = 0.5
     # the transient DETECTOR (transients.py, contract §5.3a): `union`
     # (Grounding DINO + SAM 2.1 with OneFormer), `oneformer`, or `off`
     transient_detector: str = "union"
@@ -1198,7 +1207,8 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
             vv = torch.cat(views)
             far = (tt[vv] - tt[a]).abs() >= gap                              # (views,)
             apart = (centres[vv] - centres[a]).norm(dim=1) >= sep           # (views,)
-            same = (C - (own / scale)[None]).abs().amax(2) <= tol[None]      # agrees with me
+            same = ((C - (own / scale)[None]).abs().amax(2)
+                    <= float(params.transient_static_match) * tol[None])     # agrees with me
             odd = dev_views > tol[None]                                      # not with the rest
             static = hit & ((same & odd & (far & apart)[:, None]).sum(0) >= kmin)
             hit = hit & ~static
