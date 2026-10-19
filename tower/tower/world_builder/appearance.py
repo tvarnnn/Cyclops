@@ -123,6 +123,12 @@ CONSENSUS_PLAUSIBLE = "plausible"
 CONSENSUS_UNION = "union"
 CONSENSUS_MODES = (CONSENSUS_OFF, CONSENSUS_PLAUSIBLE, CONSENSUS_UNION)
 
+# The brightness the published gains are stated in (`exposure_display_gauge`,
+# contract §5.4).
+EXPOSURE_GAUGE_KEYFRAMES = "keyframes"
+EXPOSURE_GAUGE_PHONE_MEDIAN = "phone-median"
+EXPOSURE_GAUGES = (EXPOSURE_GAUGE_KEYFRAMES, EXPOSURE_GAUGE_PHONE_MEDIAN)
+
 # Alpha is 0 over the transparent core dilated by this much: one ASTC 6x6
 # block plus one bilinear tap, so no block that holds a zeroed texel also holds
 # an opaque one, and a bilinear fetch of an opaque texel never reaches a zeroed
@@ -258,6 +264,16 @@ class AppearanceParams:
     exposure_vignette_ridge: float = 0.0
     exposure_cg_outer: int = 4
     exposure_cg_iterations: int = 40
+    # Which brightness the published gains are stated in (§5.4). The solve
+    # fixes only ratios; its own gauge (mean log gain 0 over every keyframe)
+    # says nothing about how bright the PHONE SET is drawn. Measured on the
+    # phone sets of four walks: drawn / captured pixel median 0.88 (10.1,
+    # night), 0.93 (walk 10), 1.01 (pre1: the same frames as 10.1), 1.01 (9.3)
+    # -- per-run, not per-room. `phone-median` rescales every observed gain
+    # by one factor so the page draws the phone set's opaque texels at their
+    # captured median, which is what DISPLAY_EXPOSURE 1.0 was validated as
+    # (median 1.01x the keyframe). `keyframes` publishes the solve's gauge.
+    exposure_display_gauge: str = EXPOSURE_GAUGE_PHONE_MEDIAN
     # selection (§5.5)
     selection_samples: int = 60_000
     selection_vis_tol: float = 0.03
@@ -276,6 +292,9 @@ class AppearanceParams:
     alpha_feather_px: int = 8
 
     def __post_init__(self):
+        if self.exposure_display_gauge not in EXPOSURE_GAUGES:
+            raise ValueError(f"unknown exposure display gauge "
+                             f"{self.exposure_display_gauge!r}; one of {EXPOSURE_GAUGES}")
         if self.redaction_consensus not in CONSENSUS_MODES:
             raise ValueError(f"unknown redaction consensus mode "
                              f"{self.redaction_consensus!r}; one of {CONSENSUS_MODES}")
@@ -1486,6 +1505,41 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     if dev.type == "cuda":
         torch.cuda.empty_cache()
     return gains, per_frame.astype(int), record
+
+
+def display_gauge(rgbs, opaque, gains, slopes, vignette, rows, stride: int = 4):
+    """The display gauge of §5.4: the one factor every observed gain is
+    multiplied by so that the median luminance the page draws over the opaque
+    texels of keyframes `rows` (the phone set) is their median CAPTURED
+    luminance.
+
+    The page draws a texel as `captured / (gain x field)`, field =
+    `exp_field(gain_slope, vignette)`, so multiplying every gain by `m`
+    divides every drawn value by `m`, and the drawn median by exactly `m`.
+    It moves no ratio between keyframes, channels or texels: the solve, the
+    transient vote and the selection are untouched.
+
+    Luminance is the channel mean; texels are sampled every `stride` pixels.
+    Returns (m, record); m is 1.0 when nothing is opaque."""
+    cap, drw = [], []
+    for i in rows:
+        a = np.asarray(opaque[i], bool)[::stride, ::stride]
+        if not a.any():
+            continue
+        H, W = np.asarray(opaque[i]).shape
+        rgb = np.asarray(rgbs[i])[::stride, ::stride][a].astype(np.float32)
+        field = exposure_field(None if slopes is None else slopes[i], vignette, W, H)
+        div = np.asarray(gains[i], np.float32)[None, :] * field[::stride, ::stride][a][:, None]
+        cap.append(rgb.mean(1))
+        drw.append((rgb / np.maximum(div, 1e-6)).mean(1))
+    record = {"rule": EXPOSURE_GAUGE_PHONE_MEDIAN, "frames": len(cap)}
+    if not cap:
+        return 1.0, {**record, "scale": 1.0}
+    c_med = float(np.median(np.concatenate(cap)))
+    d_med = float(np.median(np.concatenate(drw)))
+    m = d_med / c_med if (c_med > 0 and d_med > 0) else 1.0
+    return m, {**record, "scale": round(m, 5), "captured_median": round(c_med, 2),
+               "drawn_median_solve_gauge": round(d_med, 2)}
 
 
 # ---------------------------------------------------------------------------
