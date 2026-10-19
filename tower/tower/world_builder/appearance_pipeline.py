@@ -832,10 +832,12 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
                                f"views>={params.transient_min_views}|consensus{params.transient_consensus}|"
                                f"diff>max({params.transient_abs},{params.transient_rel}*luma)|"
                                f"shift{params.transient_shift_px}|framemax{params.transient_frame_max}|"
-                               f"static>={params.transient_static_views}@{params.transient_static_gap_s}s"),
+                               f"static>={params.transient_static_views}@{params.transient_static_gap_s}s"
+                               f",{params.transient_static_baseline}z"),
                       "transient_time_gate": {
                           "gap_s": params.transient_static_gap_s,
                           "views": params.transient_static_views,
+                          "baseline_z": params.transient_static_baseline,
                           "clock": "tower-receipt",
                           "frames_with_time": int(sum(1 for x in times if np.isfinite(x))),
                           "points_kept_static": int(sum(

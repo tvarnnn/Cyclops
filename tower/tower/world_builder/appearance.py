@@ -218,6 +218,18 @@ class AppearanceParams:
     # a build without keyframe times, is the vote as it was.
     transient_static_gap_s: float = 30.0
     transient_static_views: int = 2
+    # ...AND FROM ELSEWHERE. What moves with the wearer -- their legs while
+    # seated, a hand, the phone -- comes back to the same proxy point only
+    # when the wearer is back where they were: walk 10.1 begins and ends
+    # seated at one desk, and with time alone the wearer's knee was kept in
+    # ki 189, 190 and 1378. So a corroborating keyframe must also have been
+    # taken at least this many times the point's depth away from this one.
+    # From there anything nearer than 0.6 of the surface depth (the near
+    # test's own bound) lands >= f/3 px (about a third of the image width)
+    # away from where it was, while a thing within about 10% of the surface
+    # (a poster, a skateboard against the wall) stays inside the vote's box.
+    # 0 = time alone.
+    transient_static_baseline: float = 0.5
     # the transient DETECTOR (transients.py, contract §5.3a): `union`
     # (Grounding DINO + SAM 2.1 with OneFormer), `oneformer`, or `off`
     transient_detector: str = "union"
@@ -1045,8 +1057,10 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
 
     With `times` (seconds, one per keyframe; NaN = unknown), a hit is kept
     unmasked as STATIC when at least `transient_static_views` other keyframes
-    at least `transient_static_gap_s` away also disagree with the reference
-    there and agree with this keyframe's colour (within the same tolerance).
+    at least `transient_static_gap_s` away, and with their camera centre at
+    least `transient_static_baseline` x the point's depth from this one's,
+    also disagree with the reference there and agree with this keyframe's
+    colour (within the same tolerance).
     The misregistration fraction counts every disagreement, static or not.
 
     Returns one (coarse bool grid, record or None) per keyframe, or None if
@@ -1069,6 +1083,8 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     gap = float(params.transient_static_gap_s)
     kmin = int(params.transient_static_views)
     tt = None
+    beta = float(params.transient_static_baseline)
+    centres = -torch.einsum("nji,nj->ni", R, t)                         # (N, 3) camera centres
     if times is not None and gap > 0 and kmin > 0:
         tn = np.asarray(times, np.float64).reshape(-1)
         if len(tn) == N and np.isfinite(tn).any():
@@ -1172,10 +1188,13 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         static = None
         if tt is not None and bool(hit.any()) and bool(torch.isfinite(tt[a])):
             # Comparisons with NaN (an unseen view, an unknown time) are False.
-            far = (tt[torch.cat(views)] - tt[a]).abs() >= gap               # (views,)
+            vv = torch.cat(views)
+            far = (tt[vv] - tt[a]).abs() >= gap                              # (views,)
+            apart = ((centres[vv] - centres[a]).norm(dim=1)[:, None]
+                     >= beta * z0[None])                                     # (views, P)
             same = (C - (own / scale)[None]).abs().amax(2) <= tol[None]      # agrees with me
             odd = dev_views > tol[None]                                      # not with the rest
-            static = hit & ((same & odd & far[:, None]).sum(0) >= kmin)
+            static = hit & ((same & odd & far[:, None] & apart).sum(0) >= kmin)
             hit = hit & ~static
         # A keyframe that disagrees with the rest of the walk nearly everywhere
         # is misregistered (a pose or proxy error), not full of transients:

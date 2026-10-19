@@ -1000,27 +1000,48 @@ def _paint_wall_square(rgbs, zps, Rs, ts, K, frames, colour, centre=(0.0, -0.2),
     return out
 
 
-def _votes_with_times(times, painted=(0, 1, 12, 13), **kw):
-    n = 20
-    rgbs, opaque, zps, Rs, ts, K = _exposure_inputs([[1.0, 1.0, 1.0]] * n, [(0.0, 0.0)] * n, (0.0, 0.0), n)
+def _wall_walk(n=20):
+    """`n` keyframes of the box room in the SOLVE camera, eyes along a 2.4 m
+    line 3 m from the far wall, all looking near one square of it."""
+    K = np.array([[FX, 0, W / 2], [0, FX, H / 2], [0, 0, 1.0]])
+    rgbs, zps, Rs, ts = [], [], [], []
+    for i in range(n):
+        x = -1.2 + 2.4 * i / (n - 1)
+        R, t = _look_from(np.array([x, 0.1 * ((i % 3) - 1), 0.0]), np.array([0.3 * x, -0.2, 3.0]))
+        z = _render_box_depth(R, t, K, W, H)
+        vv, uu = np.mgrid[0:H, 0:W].astype(float)
+        X = (np.stack([(uu + 0.5 - K[0, 2]) / FX * z, (vv + 0.5 - K[1, 2]) / FX * z, z], -1) - t) @ R
+        rgbs.append(np.clip(_pattern(X), 0, 255).astype(np.uint8))
+        zps.append(z.astype(np.float32))
+        Rs.append(R)
+        ts.append(t)
+    return rgbs, [np.ones((H, W), bool)] * n, zps, Rs, ts, K
+
+
+# Twenty keyframes: 0, 1 and 18, 19 at the two ends of the line (2.1 m and
+# more apart, against 0.5 x a 3 m depth), 2 and 3 a few decimetres from 0.
+ONE_VISIT = [0.0, 0.3, 0.6, 0.9] + [2.0 + i for i in range(14)] + [1.2, 1.5]
+REVISIT = [0.0, 0.3, 90.0, 90.3] + [2.0 + i for i in range(14)] + [90.6, 90.9]
+
+
+def _votes_with_times(times, painted=(0, 1, 18, 19), **kw):
+    rgbs, opaque, zps, Rs, ts, K = _wall_walk(20)
     rgbs = _paint_wall_square(rgbs, zps, Rs, ts, K, painted, (40, 210, 60))
     params = A.AppearanceParams(**kw)
-    return A.transient_votes(rgbs, opaque, zps, np.ones((n, 3), np.float32), Rs, ts, K, params,
+    return A.transient_votes(rgbs, opaque, zps, np.ones((20, 3), np.float32), Rs, ts, K, params,
                              device="cpu", times=times)
 
 
 def test_a_disagreement_seen_again_on_another_visit_is_static_not_transient():
     """§5.3 time gate. The same twenty keyframes, the same green square on
-    the wall in keyframes 0, 1, 12 and 13 -- 4 of 20, so the rest agree on the
+    the wall in keyframes 0, 1, 18 and 19 -- 4 of 20, so the rest agree on the
     wall and every one of the four is outvoted. Only WHEN they were taken
-    differs. All four within one second: one dwell, a hand, masked. 12 and 13
-    a minute and a half later: the walk came back and it was still there, so
-    it is the room, kept."""
-    one_visit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [0.6, 0.9] + [12.0 + i for i in range(6)]
-    revisit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [90.0, 90.3] + [92.0 + i for i in range(6)]
-    a = _votes_with_times(one_visit)
-    b = _votes_with_times(revisit)
-    for i in (0, 1, 12, 13):
+    differs. All four within two seconds: one dwell, a hand, masked. 18 and 19
+    a minute and a half later, from the other end of the room: the walk came
+    back and it was still there, so it is the room, kept."""
+    a = _votes_with_times(ONE_VISIT)
+    b = _votes_with_times(REVISIT)
+    for i in (0, 1, 18, 19):
         grid_a, rec_a = a[i]
         grid_b, rec_b = b[i]
         assert rec_a["applied"] and grid_a.sum() >= 8, (i, rec_a)
@@ -1029,24 +1050,36 @@ def test_a_disagreement_seen_again_on_another_visit_is_static_not_transient():
         assert rec_b["static_kept"] >= 0.8 * grid_a.sum()
         # the misregistration test still counts every disagreement
         assert rec_b["disagreeing_fraction"] == rec_a["disagreeing_fraction"]
-    for i in (2, 5, 9, 16):
+    for i in (5, 9, 12, 16):
         assert a[i][0].sum() == 0 and b[i][0].sum() == 0
+
+
+def test_a_revisit_from_the_same_spot_does_not_corroborate():
+    """What moves with the wearer comes back only when the wearer does: the
+    green square seen again 90 s later by keyframes 2 and 3, a few decimetres
+    from where 0 and 1 saw it, stays masked; with no baseline asked, time
+    alone keeps it."""
+    masked = int(_votes_with_times(ONE_VISIT, painted=(0, 1, 2, 3))[0][0].sum())
+    assert masked >= 8
+    near = _votes_with_times(REVISIT, painted=(0, 1, 2, 3))
+    assert int(near[0][0].sum()) == masked and near[0][1]["static_kept"] == 0
+    time_only = _votes_with_times(REVISIT, painted=(0, 1, 2, 3), transient_static_baseline=0.0)
+    assert int(time_only[0][0].sum()) <= 0.2 * masked
 
 
 def test_the_time_gate_needs_two_far_views_and_is_off_without_times():
     """One far view agreeing is a coincidence, not a revisit; and a build
     without keyframe times (or with the gate at 0) votes as before."""
-    revisit = [0.0, 0.3] + [2.0 + i for i in range(10)] + [90.0, 90.3] + [92.0 + i for i in range(6)]
     masked = int(_votes_with_times(None)[0][0].sum())
     assert masked >= 8
     assert "static_kept" not in _votes_with_times(None)[0][1]
-    assert int(_votes_with_times(revisit, transient_static_gap_s=0.0)[0][0].sum()) == masked
-    # only keyframe 12 came back: one far corroborator
-    single = _votes_with_times(revisit, painted=(0, 1, 2, 12))
+    assert int(_votes_with_times(REVISIT, transient_static_gap_s=0.0)[0][0].sum()) == masked
+    # only keyframe 19 came back: one far corroborator
+    single = _votes_with_times(REVISIT, painted=(0, 1, 5, 19))
     assert int(single[0][0].sum()) >= 0.8 * masked
     # an unknown time never corroborates
-    unknown = list(revisit)
-    unknown[12] = unknown[13] = float("nan")
+    unknown = list(REVISIT)
+    unknown[18] = unknown[19] = float("nan")
     assert int(_votes_with_times(unknown)[0][0].sum()) >= 0.8 * masked
 
 
@@ -1067,6 +1100,7 @@ def test_a_build_records_the_time_gate_and_still_masks_a_one_frame_hand(world):
     man = world.manifest()
     gate = man["occluders"]["transient_time_gate"]
     assert gate["frames_with_time"] == N_FRAMES and gate["gap_s"] == 30.0 and gate["views"] == 2
+    assert gate["baseline_z"] == 0.5
     entry = next(k for k in man["keyframes"] if k["ki"] == 3)
     assert entry["transient"]["static_kept"] == 0
     assert entry["transient_fraction"] > 0.05

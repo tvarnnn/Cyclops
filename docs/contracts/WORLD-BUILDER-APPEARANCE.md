@@ -376,7 +376,16 @@ keyframes received at least 30 s away (the Tower's receipt clock,
 that point AND agree with this keyframe's colour, within the same tolerance.
 30 s: the one measured hand-and-phone dwell (the canonical capture's desk,
 ki 308-366) spans 20 s. 2: a revisit at 2-5 keyframes a second yields
-several, and one alone can be a coincidence. An unknown time never
+several, and one alone can be a coincidence. **And from elsewhere**
+(`transient_static_baseline` 0.5): each corroborating keyframe's camera centre
+must be at least 0.5 × the point's depth from this keyframe's. What moves with
+the wearer -- their legs while seated, a hand, the phone -- comes back to the
+same proxy point only when the wearer is back where they were: walk 10.1
+begins and ends seated at one desk, and with time alone the wearer's knee was
+kept in ki 189, 190 and 1378. From half the depth away, anything nearer than
+0.6 of the surface depth (the near test's own bound) lands at least f/3 px
+from where it was, while a thing within about 10% of the surface (a poster, a
+skateboard against the wall) stays inside the vote's box. An unknown time never
 corroborates; without the journal, or with either value 0, the vote is as
 before. Its cost: a hand resting at one spot across two visits 30 s apart
 survives. The misregistration fraction below still counts every disagreement.
