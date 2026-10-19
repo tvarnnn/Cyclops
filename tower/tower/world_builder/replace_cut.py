@@ -26,7 +26,9 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
      `fix_existing_frames` -- next-best-image ranking, PnP by LO-RANSAC and refinement, then triangulation
      and local bundle adjustment of the newly registered image. COLMAP's registration gates, unchanged:
      >= 30 inliers (`abs_pose_min_num_inliers`), inlier ratio >= 0.25, <= 12 px (`abs_pose_max_error`),
-     at most 3 trials an image. Intrinsics are fixed, as in the solve. Seeded: one input, one result.
+     at most 3 trials an image. Intrinsics are fixed, as in the solve. Seeded and on one thread, as the
+     seeded solve maps: one input, one result. Bounded by `ReplaceParams.max_seconds` (every pass, every
+     image attempt, every bundle adjustment); what is not registered by then stays where it was.
   4. GATES (`replace_cut`), each a rule that already exists; a keyframe that fails one stays where it was
      (cut, unsupported or unposed -- today's outcome):
        a. the support floor: >= `MIN_IMAGE_OBSERVATIONS` 3-D observations, the solve's own rule for a camera
@@ -94,7 +96,9 @@ class ReplaceParams:
     min_obs: int = 30
     # RANSAC and the mapper are seeded so that one solve and one database give one result.
     seed: int = 20261019
-    # A bound on the cost, not a quality knob: images not registered by then stay where they were.
+    # A bound on the cost, not a quality knob: images not registered by then stay where they were. It
+    # bounds the whole registration (`register`): checked before every pass and every image attempt, and
+    # every bundle adjustment is capped at what is left. The step runs on one thread (`_pipeline_options`).
     max_seconds: float = 180.0
     # The registration loop. "pnp": register (PnP), triangulate, local BA, until a pass registers nothing.
     # "colmap": COLMAP's own incremental loop (`IncrementalPipeline`): after a pass that registers nothing,
@@ -211,6 +215,8 @@ def room_points(solution, room_kids, *, max_error: float, min_angle_deg: float) 
 
 
 def _pipeline_options(pycolmap, params: ReplaceParams):
+    from tower.world_builder.global_solve import _seed_incremental_options  # noqa: PLC0415
+
     opts = pycolmap.IncrementalPipelineOptions()
     # The solve keeps the calibrated pinhole fixed (global_solve._map_candidate); so does this.
     opts.ba_refine_focal_length = False
@@ -220,9 +226,12 @@ def _pipeline_options(pycolmap, params: ReplaceParams):
     opts.mapper.abs_pose_refine_extra_params = False
     # The room's cameras are measurements already published; only the new images move.
     opts.fix_existing_frames = True
-    opts.random_seed = int(params.seed)
-    opts.mapper.random_seed = int(params.seed)
-    opts.triangulation.random_seed = int(params.seed)
+    # Seeded, so ONE thread, exactly as the seeded solve maps (`_map_candidate`: `inc.num_threads` is the
+    # mapper's threads, 1 when seeded; `_seed_incremental_options`: every seed and `mapper.num_threads` 1).
+    # `num_threads` is what `get_mapper()` and the bundle adjusters read; its default, -1, is every core
+    # of the Tower, inside the final solve.
+    opts.num_threads = 1
+    _seed_incremental_options(opts, int(params.seed))
     return opts
 
 
@@ -287,13 +296,23 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
     attempts = 0
     structure_less = 0
     global_refinements = 0
-    stopped_by_budget = False
     colmap_loop = params.loop == "colmap"
     prev_success = True
-    while True:
-        if time.perf_counter() - started > params.max_seconds:
-            stopped_by_budget = True
-            break
+
+    # THE BUDGET bounds the whole registration, not only the loop: it is read before every pass and every
+    # image attempt (one attempt is one COLMAP pose estimate: RANSAC under its own trial cap, then a
+    # refinement), and every bundle adjustment is told what is left (Ceres' `max_solver_time_in_seconds`,
+    # read only when it is reached). An image not registered when it runs out stays where it was.
+    # Finishing in time, nothing here changes the result.
+    def left() -> float:
+        return params.max_seconds - (time.perf_counter() - started)
+
+    def capped(options):
+        options.ceres.solver_options.max_solver_time_in_seconds = max(left(), 1e-3)
+        return options
+
+    stopped_by_budget = left() <= 0
+    while not stopped_by_budget:
         nxt = [i for i in mapper.find_next_images(mopts, False) if i in target_images]
         less = False
         if not nxt and colmap_loop and opts.structure_less_registration_fallback:
@@ -301,6 +320,9 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
             less = True
         placed = None
         for iid in nxt:
+            if left() <= 0:
+                stopped_by_budget = True
+                break
             attempts += 1
             ok = (mapper.register_next_structure_less_image(mopts, iid) if less
                   else mapper.register_next_image(mopts, iid))
@@ -312,15 +334,20 @@ def register(solution, *, room_kids, target_kids, database_path, name_of: dict,
             pnp_inliers[placed] = int(rec.image(placed).num_points3D)
             mapper.triangulate_image(tri, placed)
             mapper.iterative_local_refinement(int(opts.ba_local_max_refinements),
-                                              float(opts.ba_local_max_refinement_change), mopts, ba, tri, placed)
+                                              float(opts.ba_local_max_refinement_change), mopts, capped(ba),
+                                              tri, placed)
             prev_success = True
+            stopped_by_budget = left() <= 0
             continue
+        if stopped_by_budget:
+            break
         if colmap_loop and prev_success:
             mapper.iterative_global_refinement(int(opts.ba_global_max_refinements),
                                                float(opts.ba_global_max_refinement_change), mopts,
-                                               opts.get_global_bundle_adjustment(), tri, False)
+                                               capped(opts.get_global_bundle_adjustment()), tri, False)
             global_refinements += 1
             prev_success = False
+            stopped_by_budget = left() <= 0
             continue
         break
     # The room is fixed by construction (`fix_existing_frames`); checked, because every re-placed pose is

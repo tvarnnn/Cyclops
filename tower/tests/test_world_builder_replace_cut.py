@@ -457,8 +457,9 @@ def test_at_the_seam_off_is_the_guard_alone_and_on_re_places(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_colmap_registration_puts_collapsed_cameras_back_with_the_room_fixed(tmp_path):
-    pycolmap = pytest.importorskip("pycolmap")
+def _synthetic(tmp_path, pycolmap):
+    """COLMAP's synthetic dataset as a solve: 16 frames of one PINHOLE camera; keyframes 6-8 collapsed
+    onto keyframe 6's centre. (solution, keyframes, database path, true poses, collapsed, room, name_of)."""
     pycolmap.set_random_seed(1)
     opts = pycolmap.SyntheticDatasetOptions()
     opts.num_rigs = 1
@@ -489,9 +490,15 @@ def test_colmap_registration_puts_collapsed_cameras_back_with_the_room_fixed(tmp
         R, _t = truth[k]
         sol.poses[k] = dict(sol.poses[k], translation=(-R @ c6).tolist())
     room = [k for k in sol.keyframe_ids if k not in collapsed]
-    name_of = CP._image_names(kfs)
+    return sol, kfs, db_path, truth, collapsed, room, CP._image_names(kfs)
+
+
+def test_colmap_registration_puts_collapsed_cameras_back_with_the_room_fixed(tmp_path):
+    pycolmap = pytest.importorskip("pycolmap")
+    sol, kfs, db_path, truth, collapsed, room, name_of = _synthetic(tmp_path, pycolmap)
     reg = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of)
     assert set(reg.poses) == set(collapsed) and reg.record["room_moved"] <= 1e-6
+    assert not reg.record["stopped_by_budget"]
     extent = np.ptp(np.stack([-truth[k][0].T @ truth[k][1] for k in room]), axis=0).max()
     for k in collapsed:
         R, t = reg.poses[k]
@@ -503,3 +510,33 @@ def test_colmap_registration_puts_collapsed_cameras_back_with_the_room_fixed(tmp
     assert all(out.poses[k]["observations"] >= 30 for k in collapsed)
     for k in room:
         assert out.poses[k]["translation"] == sol.poses[k]["translation"]
+
+
+def test_the_registration_runs_seeded_on_one_thread_as_the_solve_maps():
+    pycolmap = pytest.importorskip("pycolmap")
+    opts = RC._pipeline_options(pycolmap, RC.ReplaceParams())
+    # `num_threads` is what the mapper and the bundle adjusters read (`get_mapper`, `get_*_bundle_adjustment`)
+    assert opts.num_threads == 1 and opts.mapper.num_threads == 1 and opts.get_mapper().num_threads == 1
+    assert opts.get_local_bundle_adjustment().ceres.solver_options.num_threads == 1
+    seed = RC.ReplaceParams().seed
+    assert opts.random_seed == seed and opts.mapper.random_seed == seed and opts.triangulation.random_seed == seed
+
+
+def test_the_budget_bounds_the_registration_inside_the_loop(tmp_path, monkeypatch):
+    """The budget is read before every image attempt, not only between passes: with a clock that runs out
+    after the first registered image, that image is kept (with its refinement) and no other is tried; with
+    no time at all, nothing is attempted. Either way the step records it, and the room does not move."""
+    pycolmap = pytest.importorskip("pycolmap")
+    sol, kfs, db_path, truth, collapsed, room, name_of = _synthetic(tmp_path, pycolmap)
+    ticks = iter(np.arange(0.0, 100.0, 0.1))
+    # perf_counter calls: start 0.0; before the loop 0.1; before attempt 1 0.2; the refinement's cap 0.3;
+    # after it 0.4 -- past the 0.35 s budget
+    monkeypatch.setattr(RC, "time", types.SimpleNamespace(perf_counter=lambda: float(next(ticks))))
+    reg = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
+                      params=RC.ReplaceParams(max_seconds=0.35))
+    assert reg.record["stopped_by_budget"] and reg.record["registration_attempts"] == 1
+    assert len(reg.poses) == 1 and reg.record["room_moved"] <= 1e-6
+    ticks = iter(np.arange(0.0, 100.0, 1.0))
+    reg = RC.register(sol, room_kids=room, target_kids=collapsed, database_path=db_path, name_of=name_of,
+                      params=RC.ReplaceParams(max_seconds=0.5))
+    assert reg.record["stopped_by_budget"] and reg.record["registration_attempts"] == 0 and reg.poses == {}
