@@ -193,6 +193,31 @@ def test_merge_drops_a_point_only_the_re_placed_keyframe_saw():
     assert not np.isclose(out.xyz, [9.0, 9.0, 9.0]).all(axis=1).any()
 
 
+def test_merge_track_lengths_follow_the_rows_dropped_and_added():
+    """R2: a point the re-placed keyframe observed before loses that observation's support; one it observes
+    again gets it back; a point it never sees keeps its length. The photo floorplan selects points by track
+    length, so an overstated one would pass its floor."""
+    sol, truth, pts = _scene(30, collapsed=(10,))
+    k10 = _kid(10)
+    room = set(sol.keyframe_ids) - {k10}
+    assert np.array_equal(sol.track_length, np.bincount(sol.observations[:, 2], minlength=len(sol.xyz)))
+    reg = _registration(sol, truth, pts, [k10])
+    old10 = {int(p) for p in sol.observations[sol.observations[:, 0] == 10][:, 2]}
+    new10 = {ref for _f, (_kind, ref) in reg.obs[k10]}
+    # k10 observes again only half of the points it held before, plus points it never held
+    keep_again = sorted(old10)[: len(old10) // 2]
+    reg.obs[k10] = [row for row in reg.obs[k10] if row[1][1] in set(keep_again) or row[1][1] not in old10]
+    out = RC.merge(sol, reg, {k10}, room_kids=room)
+    assert len(out.xyz) == len(sol.xyz)                              # every point still has another observer
+    counts = np.bincount(out.observations[:, 2], minlength=len(out.xyz))
+    assert np.array_equal(out.track_length, counts)
+    dropped = sorted(old10 - set(keep_again))
+    assert dropped and all(out.track_length[p] == sol.track_length[p] - 1 for p in dropped)
+    assert all(out.track_length[p] == sol.track_length[p] for p in keep_again)
+    gained = sorted((new10 - old10) & {ref for _f, (_kind, ref) in reg.obs[k10]})
+    assert gained and all(out.track_length[p] == sol.track_length[p] + 1 for p in gained)
+
+
 # ---------------------------------------------------------------------------
 # the motion screen
 # ---------------------------------------------------------------------------

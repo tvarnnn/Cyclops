@@ -432,7 +432,8 @@ def merge(solution, reg: Registration, accepted, *, room_kids, new_points: bool 
     """The solution with every `accepted` keyframe re-placed: in component 0 at its registered pose, its old
     observation rows dropped (a point left with none is dropped too), its rows to room points and the points
     triangulated with it added. A new point keeps only observations of room or accepted keyframes that no
-    other point already holds, and needs two. The room's points and poses are not moved."""
+    other point already holds, and needs two. The room's points and poses are not moved. Track lengths
+    follow the rows: a kept point loses one per row dropped and gains one per row added."""
     accepted = set(accepted)
     if not accepted:
         return solution
@@ -446,6 +447,9 @@ def merge(solution, reg: Registration, accepted, *, room_kids, new_points: bool 
     n_old = len(solution.xyz)
     seen_before = np.zeros(n_old, bool)
     seen_before[obs[:, 2]] = True
+    # every observation row dropped here leaves its point's track: a point keeps the support it still has
+    # (the photo floorplan selects points by track length)
+    removed = np.bincount(obs[~keep, 2], minlength=n_old)
     obs, xy = obs[keep], (xy[keep] if has_xy else xy)
     alive = ~seen_before
     alive[obs[:, 2]] = True
@@ -456,7 +460,7 @@ def merge(solution, reg: Registration, accepted, *, room_kids, new_points: bool 
     xyz = [np.asarray(solution.xyz, np.float32)[alive]]
     rgb = [np.asarray(solution.rgb, np.uint8).reshape(-1, 3)[alive]]
     comp = [np.asarray(solution.component, np.int32)[alive]]
-    tlen = np.asarray(solution.track_length, np.int32)[alive].copy()
+    tlen = (np.asarray(solution.track_length, np.int64) - removed)[alive].astype(np.int32)
     err = [np.asarray(solution.error, np.float32)[alive]]
     n_alive = int(alive.sum())
     rows, rows_xy = [], []
