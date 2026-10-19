@@ -35,8 +35,9 @@ positioning lacked -- and refuses an image it cannot pose instead of collapsing 
           cameras in capture order: a re-placed camera in a step beyond the walking allowance
           (2.0 m/s x dt + 0.3 m) or a height jump, in a hard step, with a room defect, or outside the core
           cluster is refused (consistency with its neighbours in time); and one that no chain of steps the
-          screen can test (<= 3 journal indices, <= 2 s) joins to a room camera is refused: the screen
-          cannot place an island relative to the room;
+          screen can test (<= 3 journal indices, <= 2 s) joins to an anchor -- a room camera the screen can
+          test against another room camera -- is refused: the screen cannot place an island relative to the
+          room, and a lone room camera inside a collapsed stretch is no anchor;
        c. the guard's scale screen, re-run (`assess_v2`) on the room plus the re-placed cameras with their
           metric ratios recomputed from the live depth cache: a re-placed camera the guard would isolate is
           refused (the rule that cut the stretch must now keep it);
@@ -525,18 +526,21 @@ def motion_refusals(room_cams, new_cams, mpu: float, gparams) -> dict:
         dt = float(b.t - a.t)
         return b.index - a.index <= gparams.step_max_index_gap and 0 < dt <= gparams.step_max_dt_s
 
+    # An ANCHOR is a room camera the screen can test against another room camera: a room camera that is
+    # itself an island in time (a lone survivor of a collapsed stretch) carries a chain but cannot start one.
+    room_seq = sorted(room_cams, key=lambda c: c.index)
+    anchors = {c.kid for i, c in enumerate(room_seq)
+               if (i > 0 and testable(room_seq[i - 1], c)) or (i + 1 < len(room_seq) and testable(c, room_seq[i + 1]))}
     anchored = set()
     for seq in (cams, cams[::-1]):
         prev = None
         reach = False
         for c in seq:
-            if c.kid not in new:
-                reach = True
-            else:
-                a, b = (prev, c) if seq is cams else (c, prev)
-                reach = reach and prev is not None and testable(a, b)
-                if reach:
-                    anchored.add(c.kid)
+            a, b = (prev, c) if seq is cams else (c, prev)
+            linked = prev is not None and testable(a, b)
+            reach = c.kid in anchors or (reach and linked)
+            if reach and c.kid in new:
+                anchored.add(c.kid)
             prev = c
     for c in pending:
         if c.kid not in anchored:
