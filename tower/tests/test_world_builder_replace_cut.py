@@ -219,6 +219,18 @@ def test_an_island_the_screen_cannot_test_against_the_room_is_refused():
     assert got == {_kid(i): "unanchored" for i in (30, 31, 32, 33)}
 
 
+def test_a_lone_room_camera_inside_a_stretch_is_no_anchor():
+    # room 0-19 and 40-59, plus a lone room camera 30 (its nearest room cameras are 10 indices away);
+    # re-placed 31-33 are joined to 30 by testable steps, but 30 is no anchor
+    room = [_cam(i, [STEP * i, 0, 0]) for i in list(range(20)) + [30] + list(range(40, 60))]
+    new = [_cam(i, [STEP * i, 0, 0]) for i in (20, 31, 32, 33)]
+    got = RC.motion_refusals(room, new, 1.0, P)
+    assert got == {_kid(i): "unanchored" for i in (31, 32, 33)}
+    # a chain may pass THROUGH a lone room camera to an anchor
+    new = [_cam(i, [STEP * i, 0, 0]) for i in range(20, 30)] + [_cam(i, [STEP * i, 0, 0]) for i in (31, 32, 33)]
+    assert RC.motion_refusals(room, new, 1.0, P) == {}
+
+
 # ---------------------------------------------------------------------------
 # the step
 # ---------------------------------------------------------------------------
