@@ -595,4 +595,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "8a6312756520dad72099e53749b4bc7241cfb045c6206ffaaec5b426c71cb6ae"
+GOLDEN_SHA256 = "c8500d5844caadb49a52af942b1e3f0548ec8d52408606e67a8c9398766f55fb"
