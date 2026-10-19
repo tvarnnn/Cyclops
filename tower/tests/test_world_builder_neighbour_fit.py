@@ -433,6 +433,47 @@ class TestTheRoomsGaugeInTheSurfaceStage:
             SP._scale_band("loose")
 
 
+class TestTheAnchoredFootprint:
+    """THE ANCHORED FOOTPRINT (`neighbour_fit.py`): an adopted frame's prediction exists only
+    where its fit was scored."""
+
+    def test_the_cells_holding_an_anchor_dilated_by_one_cell(self):
+        fp = NF.anchored_footprint(np.array([9]), np.array([17]), (32, 24))
+        want = np.zeros((32, 24), bool)
+        want[12:24, 4:16] = True        # cell (4, 2) and its eight neighbours, 4 px each
+        assert (fp == want).all()
+        corner = NF.anchored_footprint(np.array([0]), np.array([0]), (10, 10))
+        want = np.zeros((10, 10), bool)
+        want[:8, :8] = True
+        assert (corner == want).all()
+        assert not NF.anchored_footprint(np.zeros(0, int), np.zeros(0, int), (8, 8)).any()
+
+    def test_an_adopted_frame_is_fused_only_where_its_neighbours_measured(self, tmp_path):
+        """The donors saw one wall of the corner; the candidate sees both. Its other wall is
+        geometry no anchor checked -- a pose error parallel to a plain wall would move it
+        unseen -- so it does not exist for the surface."""
+        wall = (ROOM, 0.0, 1.0)
+        donors = [(i, (1.4, dy, 1.0 + dz), wall, "ok", 0)
+                  for i, (dy, dz) in enumerate([(0.0, -0.3), (0.2, 0.0), (-0.2, 0.2), (0.0, 0.4)])]
+        frames, align, solution, params = _world(
+            tmp_path, donors + [(10, (0.0, 0.0, -0.55), CORNER, "no-fit", 0)])
+        rec = _adopt(frames, align, solution, params)
+        assert rec["adopted"] == 1
+        fp = frames.footprint[10]
+        share = rec["adopted_frames"][0]["footprint_share"]
+        assert share == pytest.approx(float(fp.mean()), abs=1e-4) and 0.05 < share < 0.9
+        pred, _img, _fill = frames.load(10, image=False)
+        assert np.isnan(pred[~fp]).all() and np.isfinite(pred[fp]).all()
+        # Where it exists it is the room: the borrowed affine recovers the true depth.
+        R, _t, z = _view((0.0, 0.0, -0.55), CORNER)
+        _ki, a, b, *_ = next(it for it in frames.items if it[0] == 10)
+        zf = SP._depth_from_prediction(pred, a, b, "depth")
+        assert np.nanmedian(np.abs(zf[fp] - z[fp]) / z[fp]) < 0.01
+        # A frame fused with its own fit is untouched.
+        own, _i, _f = frames.load(0, image=False)
+        assert np.isfinite(own).all()
+
+
 class TestTheParameter:
     def test_on_by_default_and_named_in_the_digest(self):
         p = S.SurfaceParams()

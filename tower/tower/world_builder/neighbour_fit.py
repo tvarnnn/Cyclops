@@ -27,17 +27,22 @@ WHAT KEEPS IT FROM INVENTING GEOMETRY
     never itself an extrapolation.
   * The fit must pass the gate every fused frame passes: a physical slope and a held-out error
     within `gate_rel`, on at least `min_sparse_points` anchors, which must come from at least
-    `min_support_frames` distinct fused frames -- one frame's opinion is not evidence, the rule
-    the evidence filter applies per face.
-  * A wrong pose projects the room's points onto the wrong pixels, so the frame's predicted
-    depth cannot follow them and the held-out error rises: the gate is the consistency check.
-  * The anchors must be in the ROOM'S GAUGE (below): the held-out error cannot see a gauge
-    error the anchors share.
-  * The far bound of an adopted frame is `anchor_depth_multiple` x its farthest anchor, the
-    same allowance an SfM-anchored frame gets.
+    `min_support_frames` distinct fused frames.
+  * The anchors must be in the ROOM'S GAUGE, against the frame's own metric prediction (below).
+  * The frame is fused only on its ANCHORED FOOTPRINT (below): nowhere its fit was not scored.
   * After adoption the frame is an ordinary fused frame: the consistency field, the evidence
     filter (>= 2 supporting frames, the contradiction ratio, back-facing) and the component
-    filter all apply to what it contributes.
+    filter all apply to what it contributes. Its far bound is `anchor_depth_multiple` x its
+    farthest anchor, as an SfM-anchored frame's.
+
+What the held-out error does NOT do. A wrong pose that moves the anchors across the scene's
+structure (a corner, an edge) puts them on pixels the prediction cannot follow, and the error
+rises. But the candidates are, by selection, frames that see little structure, and the held-out
+anchors are the odd entries of the same dense grid as the fitted ones. On a plain wall a pose
+error along the view is absorbed by the affine shift and one parallel to the wall moves nothing
+the fit can see (a CPU probe of review R1, 2026-10-19: poses 0.6-2 m wrong adopted at 0.07 %);
+and anchors that share an error with the candidate -- a stretch of the solve drawn in its own
+gauge -- agree with it by construction. The two rules below close what it cannot see.
 
 Occlusion: a fused frame can see a surface the candidate cannot (behind something nearer in
 the candidate's view). Per small cell of the candidate's image only anchors within the fusion's
@@ -70,6 +75,19 @@ setting, its SCREEN band [0.8, 1.25] (`SurfaceParams.neighbour_fit_scale_band`).
 witness also sees a pose error along the view direction, which the affine shift absorbs: the
 anchors' depth then moves by that error and the metric prediction does not. Without a metric
 prediction ("disparity" backends) there is no such witness and nothing is borrowed.
+
+THE ANCHORED FOOTPRINT
+
+The fit was scored only where the anchors are. Beyond them -- the ceiling over a wall the donors
+saw, the far side of a doorway -- the frame's depth is its own prediction carried through its
+pose, which nothing checked: a pose error parallel to a plain wall moves that geometry by the
+error, and on cc3 28 % of the far-surface support of the stretch's adopted frames came from such
+pixels. An adopted frame's prediction is therefore kept only on the cells of the anchor grid
+(`ANCHOR_STRIDE`) that hold a kept anchor, dilated by one cell (the grid's own spacing: a donor's
+4-px samples projected into another view leave one-cell gaps), and is unknown elsewhere for every
+consumer (`anchored_footprint`, `surface_pipeline._Frames.load`). Measured before the rule, the
+surface that ONLY such pixels supported was 0.5 % of the area on walk 10.1 and 0.5 % on the
+pre1-u2 draw (laneG `phantom_who.py`).
 """
 
 from __future__ import annotations
@@ -196,6 +214,23 @@ def scale_log(z, pred) -> float | None:
     if not ok.any():
         return None
     return float(np.log(np.median(z[ok] / p[ok])))
+
+
+def anchored_footprint(u, v, shape, *, cell: int = ANCHOR_STRIDE) -> np.ndarray:
+    """(H, W) bool: the `cell` x `cell` blocks of the candidate's image that hold an anchor
+    (`u`, `v` integer pixels), dilated by one block (module docstring, THE ANCHORED FOOTPRINT)."""
+    H, W = int(shape[0]), int(shape[1])
+    hc, wc = (H + cell - 1) // cell, (W + cell - 1) // cell
+    c = np.zeros((hc + 2, wc + 2), bool)
+    u = np.asarray(u, np.int64)
+    v = np.asarray(v, np.int64)
+    if len(u):
+        c[v // cell + 1, u // cell + 1] = True
+    d = np.zeros((hc, wc), bool)
+    for dy in (0, 1, 2):
+        for dx in (0, 1, 2):
+            d |= c[dy:dy + hc, dx:dx + wc]
+    return np.repeat(np.repeat(d, cell, 0), cell, 1)[:H, :W]
 
 
 def fit_from_neighbours(pred, kind: str, u, v, z, src, *, gate_rel: float, min_anchors: int,

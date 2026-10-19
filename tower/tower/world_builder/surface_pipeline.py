@@ -516,6 +516,9 @@ class _Frames:
         self.consistency = None
         # What `adopt_neighbour_fits` did, when it ran.
         self.neighbour_fit = None
+        # {ki: (H, W) bool}: an adopted frame's anchored footprint, the only pixels
+        # of its prediction any consumer sees (`neighbour_fit.anchored_footprint`).
+        self.footprint: dict[int, np.ndarray] = {}
         held = []
         # Keyframe indices refused because their depth fit is not physical:
         # inverted (`fit_is_physical`), or unscorable because the held-out
@@ -648,16 +651,24 @@ class _Frames:
         for ki, _a, _b, R, t, _ho, _zmax in self.items:
             yield self.kids[ki], R, t
 
-    def load(self, ki, *, image: bool = True):
+    def load(self, ki, *, image: bool = True, borrowed: bool = False):
+        """(prediction, RGB image or None, redaction fill or None) of one frame.
+
+        A frame adopted with a borrowed fit (`adopt_neighbour_fits`), or a
+        candidate for one (`borrowed`), reads the raw prediction THIS depth
+        stage made (`{ki}_pred.npy`; `{ki}.npy` is written only for a frame
+        whose own fit was admitted, and may be left from an earlier solve of
+        the session), and an adopted frame's prediction is unknown (NaN) off
+        its anchored footprint, for every consumer."""
         import cv2
 
+        footprint = self.footprint.get(int(ki))
         path = self.work / "depth" / f"{ki:05d}.npy"
-        if not path.exists():
-            # A frame adopted with a borrowed fit (`adopt_neighbour_fits`): the
-            # depth stage keeps its raw prediction under this name and writes
-            # the name above only for a frame its own fit admitted.
+        if borrowed or footprint is not None or not path.exists():
             path = self.work / "depth" / f"{ki:05d}_pred.npy"
         pred = np.load(path).astype(np.float32)
+        if footprint is not None and footprint.shape == pred.shape:
+            pred = np.where(footprint, pred, np.float32(np.nan))
         img = None
         if image:
             img = cv2.imread(str(self.work / "undist" / f"{ki:05d}.jpg"),
@@ -816,7 +827,7 @@ class _Frames:
                     > self.pose_gate_threshold):
                 refused["pose"] = refused.get("pose", 0) + 1
                 continue
-            pred, _img, fill = self.load(ki, image=False)
+            pred, _img, fill = self.load(ki, image=False, borrowed=True)
             blocked = None
             if fill is not None:
                 blocked = _dilate_fill(torch.as_tensor(fill, device=dev),
@@ -835,6 +846,8 @@ class _Frames:
                 continue
             by["adopted"] += 1
             record["adopted"] += 1
+            fp = NF.anchored_footprint(u, v, pred.shape)
+            self.footprint[int(ki)] = fp
             self.kids[ki] = kid
             self.image_sha1[ki] = _r.get("image_sha1")
             self.items.append((ki, fit["a"], fit["b"], R, t, fit["held_out_rel"],
@@ -846,6 +859,7 @@ class _Frames:
                 "ki": ki, "kid": kid, "prior": prior, "a": fit["a"], "b": fit["b"],
                 "held_out_rel": round(fit["held_out_rel"], 5),
                 "scale_ratio": round(fit["scale_ratio"], 4),
+                "footprint_share": round(float(fp.mean()), 4),
                 "z_sparse_max": fit["z_anchor_max"], "anchors": fit["anchors"],
                 "anchor_frames": fit["anchor_frames"],
                 "image_sha1": _r.get("image_sha1"), "fill_rule": _r.get("fill_rule")})
