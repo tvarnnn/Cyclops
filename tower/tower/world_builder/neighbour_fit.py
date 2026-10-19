@@ -29,7 +29,8 @@ WHAT KEEPS IT FROM INVENTING GEOMETRY
     within `gate_rel`, on at least `min_sparse_points` anchors, which must come from at least
     `min_support_frames` distinct fused frames.
   * Only CERTIFIED DONORS lend anchors (below): frames the final scale guard kept in the room.
-  * The frame is fused only on its ANCHORED FOOTPRINT (below): nowhere its fit was not scored.
+  * Optionally (`SurfaceParams.neighbour_fit_footprint`, off by default), the frame is fused only
+    on its ANCHORED FOOTPRINT (below): nowhere its fit was not scored.
   * After adoption the frame is an ordinary fused frame: the consistency field, the evidence
     filter (>= 2 supporting frames, the contradiction ratio, back-facing) and the component
     filter all apply to what it contributes. Its far bound is `anchor_depth_multiple` x its
@@ -42,8 +43,8 @@ anchors are the odd entries of the same dense grid as the fitted ones. On a plai
 error along the view is absorbed by the affine shift and one parallel to the wall moves nothing
 the fit can see (a CPU probe of review R1, 2026-10-19: poses 0.6-2 m wrong adopted at 0.07 %);
 and anchors that share an error with the candidate -- a stretch of the solve drawn in its own
-gauge -- agree with it by construction. The two rules below close what it cannot see: the
-donors must be placed in the room, and the candidate then only re-states what they measured.
+gauge -- agree with it by construction. CERTIFIED DONORS closes the second, which made the
+phantoms measured on broken draws; THE ANCHORED FOOTPRINT, an option, closes the first.
 
 Occlusion: a fused frame can see a surface the candidate cannot (behind something nearer in
 the candidate's view). Per small cell of the candidate's image only anchors within the fusion's
@@ -96,9 +97,14 @@ within the fusion's truncation band (what the fusion calls one surface), dilated
 grid's own spacing: a donor's 4-px samples projected into another view leave one-cell gaps) but
 never into a cell holding an anchor it disagrees with; it is unknown elsewhere for every consumer
 (`anchored_footprint`, `surface_pipeline._Frames.load`). In R1's probe that leaves 96 ceiling
-pixels in every case, the dilation's fringe, which the true pose fuses correctly too. Measured before the rule, the
-surface that ONLY such pixels supported was 0.5 % of the area on walk 10.1 and 0.5 % on the
-pre1-u2 draw (laneG `phantom_who.py`).
+pixels in every case, the dilation's fringe, which the true pose fuses correctly too.
+
+It is OFF by default (`SurfaceParams.neighbour_fit_footprint`): measured on four DEV draws with
+certified donors (laneG `phantom_who.py`, `fillcheck.py`), it removed no phantom the donor rule
+had not, and it cost walk-view void (+0.9 pt live, +4.7 pt on pre1-u2, that draw's whole gain):
+the borrowed frames' surface beyond their donors' is the fill. That surface was 0.4-1.2 % of the
+area; against a good draw of the same frames its p50 distance was 6-19 cm, and 0-22 % of it lay
+beyond 30 cm.
 """
 
 from __future__ import annotations
