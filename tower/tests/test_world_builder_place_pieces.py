@@ -1026,10 +1026,12 @@ def test_every_basin_is_refined_and_compared_on_the_fine_evidence():
     partition = (np.array([2.6, 0.0, 0.0]), np.array([2.7, 2.5, 1.4]))
     solids = FURNITURE + [partition]
     w = World(anchor_offset_m=(1.3, 0.0, 0.2), piece_dt=0.6, piece_forward=(1.0, 0.0, 0.0),
-              piece_step=(0.0, 0.0, 0.05), room_solids=solids, piece_solids=solids, noise=False)
-    rec = w.plan()
+              piece_step=(0.0, 0.0, 0.05), room_solids=solids, piece_solids=solids, noise=False, tail_room=4,
+              tail_offset_m=(-1.3, 0.0, 0.0))
+    rec = w.plan(dataclasses.replace(PARAMS, max_basins=32))
     piece = rec["pieces"][0]
     assert piece["basins"] >= 2
+    assert piece["uniqueness"] < PARAMS.min_peak_drop          # the alias's basin is the winner's rival
     # and a region with more basins than the step can refine is refused, not searched in part
     rec = w.plan(dataclasses.replace(PARAMS, max_basins=1))
     assert rec["pieces"][0]["refused"] == [PP.REFUSE_COVERAGE] and rec["pieces"][0]["translation"] is None
@@ -1043,6 +1045,12 @@ def test_a_region_past_the_cap_is_refused_before_its_lattice_is_built(monkeypatc
     assert PP.lattice_size(500.0, 0.3, 2000) == 2001
     monkeypatch.undo()
     assert PP.lattice_size(1.0, 0.3, 2000) == len(PP.region_lattice(1.0, 0.3))
+
+
+def test_the_rooms_evidence_is_built_from_a_bounded_number_of_frames():
+    w = World(tail_room=6)
+    room, frames = _room(w, dataclasses.replace(PARAMS, max_room_frames=12))
+    assert room.frames == 12 < len(frames)
 
 
 def test_searches_and_the_room_stop_at_the_deadline():
