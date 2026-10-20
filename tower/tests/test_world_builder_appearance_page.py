@@ -2390,6 +2390,195 @@ assert.strictEqual(supC([2.5, 0, -9], 0), 0, "outside the tube it is still nothi
 """)
 
 
+# ---------------------------------------------------------------------------
+# bug-fix lane F (2026-10-20): a camera list holding poses the solver put
+# nowhere near the room. Walk 10.2 published six of 207, one 158 km out; the
+# field was sized from the box of every pose, `new Int32Array` threw a
+# RangeError inside `buildNav`'s slice, nothing caught it, and the page sat on
+# "Preparing the view…" with no field (no Best view, ring, dark hint or walk
+# collision). Glasses-scratch/bugfix-2026-10-20/LANE-F.md.
+# ---------------------------------------------------------------------------
+
+# Walk 10.2's own far poses (its cams 57, 160 and 149), spliced into NAV_ROOM's
+# walk. The keyframes that SAW the wall are unchanged: a camera list is where
+# to stand, the sources are what was seen.
+FAR_POSES = r"""
+const far = [[158178.2, -9095.5, 178526.3, 0, 0, 1], [2113.6, 5887.4, -14933.2, 0, 0, 1],
+             [6101.1, -1177.2, -2752.7, 0, 0, 1]];
+const withFar = cams.slice(0, 4).concat([far[0]], cams.slice(4, 8), [far[1], far[2]], cams.slice(8));
+const onPath = (list) => Object.assign({}, F.input, {path: NAV.makePath(list, up)});
+const boxField = (G) => {   // the cells the bounding box keeps: the oracle for a per-pose field
+  const sp = G.spacing, margin = 1 + sp / NAV.UNIT * 1.2, out = [];
+  for (let z = 0; z < G.dims[2]; z++) for (let y = 0; y < G.dims[1]; y++) for (let x = 0; x < G.dims[0]; x++){
+    const p = [G.lo[0] + x * sp, G.lo[1] + y * sp, G.lo[2] + z * sp];
+    if (NAV.pathDist(G.input.path, p).e <= margin) out.push(p[0], p[1], p[2]);
+  }
+  return Array.from(Float32Array.from(out));
+};
+"""
+
+
+def _run_far(script):
+    _run_nav(FAR_POSES + script)
+
+
+class TestAWalkWithPosesFarFromTheRoom:
+
+    def test_a_pose_158_km_out_no_longer_stops_the_field(self):
+        _run_far(r"""
+const G = NAV.fieldJob(onPath(withFar)), C = NAV.fieldJob(onPath(withFar), NAV.SPACING * 2);
+for (const H of [G, C]){
+  assert.ok(!H.failed && !H.index && H.lookup, "enumerated per pose, not across a 1e14-cell box");
+  while (!NAV.fieldWork(H, 200)) { /* slices */ }
+}
+// each far pose costs at most one cube of its own
+const cube = Math.pow(2 * Math.ceil((1 + 1.2 * NAV.SPACING / NAV.UNIT) * NAV.R_MAX / NAV.SPACING) + 5, 3);
+assert.ok(G.count < F.count + 3 * cube, G.count + " vs " + F.count);
+// and where the walk is, it answers what the field without them answers
+const supG = (p, yaw) => NAV.support(G, p, dir(yaw, 0), up, V.fy, V.aspect).s;
+let worst = 0;
+for (let i = 0; i < 24; i++){
+  const yaw = i * Math.PI / 12;
+  worst = Math.max(worst, Math.abs(supG(at, yaw) - sup(at, yaw)));
+  assert.strictEqual(supG(at, yaw) > 0.5, sup(at, yaw) > 0.5, "yaw " + yaw);
+}
+assert.ok(worst < 0.2, "nowhere far apart (the lattice is anchored elsewhere): " + worst);
+assert.ok(supG(at, 0) > 0.95, "facing the wall every camera saw: " + supG(at, 0));
+assert.strictEqual(supG([2.5, 0, -9], 0), 0, "outside the tube it is still nothing");
+""")
+
+    def test_a_per_pose_field_is_the_boxs_own_field_cell_for_cell(self):
+        """Not an approximation: the same lattice, the same cells, the same order, so a
+        compact walk (which still takes the box) and a far-flung one get the same field
+        rule. A pose 250 units out keeps the box small enough to enumerate as the oracle."""
+        _run_far(r"""
+const list = cams.slice(0, 5).concat([[200, 5, -150, 0, 0, 1]], cams.slice(5));
+for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
+  const H = NAV.fieldJob(onPath(list), sp);
+  assert.ok(H.lookup && !H.index, "the cubes are cheaper than this box at " + sp);
+  for (let k = 0; k < 3; k++){
+    const lo = Math.min(...list.map(c => c[k])) - (NAV.R_MAX + sp);
+    assert.strictEqual(H.lo[k], lo, "the box's own corner anchors the lattice");
+  }
+  assert.deepStrictEqual(Array.from(H.where), boxField(H), "the same cells in the same order at " + sp);
+  while (!NAV.fieldWork(H, 500)) { /* slices */ }
+  for (let a = 0; a < H.count; a += 7){
+    const g = [0, 1, 2].map(k => Math.round((H.where[a*3+k] - H.lo[k]) / sp));
+    assert.strictEqual(NAV.voxelAt(H, g[0], g[1], g[2]), a, "and each is found where it is");
+  }
+}
+// a compact walk still takes the box: nothing changes on a healthy world
+assert.ok(F.index && !F.lookup, "the synthetic room is enumerated over its box, as before");
+assert.deepStrictEqual(Array.from(F.where), boxField(F));
+""")
+
+    def test_a_field_too_large_to_build_degrades_instead_of_throwing(self):
+        _run_far(r"""
+// a thousand poses each far from every other: no box and no set of cubes fits
+const scattered = [];
+for (let i = 0; i < 1000; i++) scattered.push([i * 1e4, (i % 7) * 1e4, (i % 13) * 1e4, 0, 0, 1]);
+const X = NAV.fieldJob(onPath(scattered));
+assert.ok(X.failed && /cells/.test(X.failed), "it says why: " + X.failed);
+assert.ok(X.done && X.count === 0 && !X.index && !X.lookup);
+assert.strictEqual(NAV.fieldWork(X, 50), true);
+assert.strictEqual(NAV.support(X, at, dir(0, 0), up, V.fy, V.aspect).s, 0);
+assert.ok(NAV.MAX_FIELD_CELLS === 1 << 22);
+// a non-finite pose is not a place on the lattice: it is skipped, not propagated
+const nan = cams.concat([[NaN, 0, 0, 0, 0, 1], [0, Infinity, 0, 0, 0, 1]]);
+const N = NAV.fieldJob(onPath(nan));
+assert.ok(!N.failed && N.count === F.count && N.lo.every(isFinite), "the walk's own field: " + N.count);
+// past 2^53 cells the keys are strings, and still distinct
+const huge = cams.concat([[3e15, 3e15, 3e15, 0, 0, 1]]);
+const Hg = NAV.fieldJob(onPath(huge), NAV.SPACING * 2);
+assert.ok(!Hg.failed && Hg.lookup && typeof Hg.lookup.keys().next().value === "string");
+assert.strictEqual(new Set(Hg.lookup.keys()).size, Hg.count);
+""")
+
+    def test_what_the_walk_looked_at_leaves_out_only_the_far_poses(self):
+        _run_far(r"""
+const ref = 3, plain = [0, 0, 0];
+for (const c of cams) for (let k = 0; k < 3; k++) plain[k] += (c[k] + c[k + 3] * ref) / cams.length;
+assert.deepStrictEqual(NAV.lookFocus(cams, ref), plain, "no far pose: the plain mean, bit for bit");
+assert.deepStrictEqual(NAV.lookFocus(withFar, ref), plain, "the three far poses out, and nothing else");
+assert.strictEqual(NAV.FAR_RADIUS, 10); assert.strictEqual(NAV.MIN_ROBUST, 8);
+// a pose just inside 10 x the median radius stays in
+const med = 1.5, edge = cams.concat([[2.5 + 9.9 * med, 0, 0, 0, 0, 1]]);
+const fe = NAV.lookFocus(edge, ref);
+assert.ok(Math.abs(fe[0] - plain[0]) > 0.5, "a legitimate tail still counts: " + fe[0]);
+// under eight poses nothing is robust, so nobody is left out
+const few = cams.slice(0, 5).concat([far[0]]);
+assert.ok(NAV.lookFocus(few, ref)[0] > 1e4, "five poses and a far one: the plain mean");
+""")
+
+    def test_a_field_that_cannot_be_built_never_leaves_the_page_preparing(self):
+        """`buildNav` itself, under node, over a stand-in page: a fault anywhere in a
+        slice, or a field too large to build, clears "Preparing the view…" and says why
+        in `S.nav`; a fault after the coarse field landed keeps that field; and the walk
+        10.2 shape now builds both fields and enables Best view."""
+        text = _template()
+        build = _section(text, "  const NAV_COARSE = 2;", "  /* Overview:")
+        harness = r"""
+const PREPARING = "Preparing the view…", NAV_SAMPLES = 6000;
+const timers = [], setTimeout = (f) => { timers.push(f); };
+const flush = () => { let n = 0; while (timers.length && n++ < 100000) timers.shift()(); assert.ok(n < 100000); };
+let navGeneration = 0, navJob = null, navField = null, overviewPose = null, navFine = false;
+let ringProf = null, ringFor = null, darkFor = null, glideState = null, ci = 0, cam = {floor: 1};
+let S = {}, els = null, scored = 0, inputFor = null;
+const $ = id => els[id], status = t => { els.status.textContent = t; }, requestDraw = () => {};
+const scorePoses = () => { scored++; }, floorAt = () => 1, poseOf = () => ({}), pageCams = [];
+function* navInputSteps(){ yield; return inputFor(); }
+// what the page's own input carries beside the field's (its quality and content per sample)
+const pageInput = (list) => { const q = onPath(list), n = q.samples.length / 3;
+  return Object.assign(q, {sampleQ: new Uint8Array(n).fill(255), sampleC: new Uint8Array(n).fill(64)}); };
+const fresh = () => {
+  S = {}; navField = null; navFine = false; navJob = null; scored = 0;
+  els = {status: {textContent: ""}, bBack: {disabled: true}, bOverview: {disabled: true}};
+};
+"""
+        run = r"""
+const realJob = NAV.fieldJob;
+// (1) a fault inside a slice: the page stops saying it is preparing, and says why
+fresh(); inputFor = () => { throw new Error("boom in the input"); };
+buildNav();
+assert.strictEqual(els.status.textContent, PREPARING, "it says so while it works");
+flush();
+assert.strictEqual(els.status.textContent, "", "and not after it has stopped");
+assert.strictEqual(S.nav.phase, "failed"); assert.ok(/boom/.test(S.nav.error), S.nav.error);
+assert.ok(els.bOverview.disabled && els.bBack.disabled, "nothing the field gates is offered");
+// (2) a field too large to build, even coarse: the same, without throwing
+fresh(); const scattered = [];
+for (let i = 0; i < 1500; i++) scattered.push([i * 1e4, (i % 7) * 1e4, (i % 13) * 1e4, 0, 0, 1]);
+inputFor = () => onPath(scattered);
+buildNav(); flush();
+assert.strictEqual(els.status.textContent, ""); assert.strictEqual(S.nav.phase, "failed");
+assert.ok(/cells/.test(S.nav.error), S.nav.error); assert.strictEqual(navField, null);
+// (3) the fine field faults after the coarse one landed: the coarse one stays in use
+fresh(); inputFor = () => pageInput(withFar); let calls = 0;
+NAV.fieldJob = (...a) => { if (++calls === 2) throw new Error("fine fault"); return realJob(...a); };
+buildNav(); flush(); NAV.fieldJob = realJob;
+assert.strictEqual(S.nav.phase, "coarse"); assert.ok(navField && navField.done && !navFine);
+assert.ok(!els.bBack.disabled && els.bOverview.disabled, "Face the room works, Best view waits");
+assert.strictEqual(els.status.textContent, "");
+// (4) the walk 10.2 shape, which threw before: both fields land
+fresh(); inputFor = () => pageInput(withFar);
+buildNav(); flush();
+assert.strictEqual(S.nav.phase, "ready", JSON.stringify(S.nav)); assert.ok(navFine && navField.count > 0);
+assert.ok(!els.bOverview.disabled && !els.bBack.disabled && scored === 1);
+assert.strictEqual(els.status.textContent, ""); assert.ok(!("error" in S.nav));
+// (5) nothing to build from (no layers yet): not "preparing" either
+fresh(); inputFor = () => null;
+buildNav(); flush();
+assert.strictEqual(els.status.textContent, ""); assert.strictEqual(S.nav.phase, "failed");
+"""
+        # The section reads the page's `cams`; the stand-in has none, so `floorAt` is not asked.
+        _run_far(harness + build.replace("cams.length", "pageCams.length") + run)
+
+    def test_best_view_aims_at_what_the_walk_looked_at_robustly(self):
+        over = _section(_template(), "  function findOverview(){", "  function overview(){")
+        assert "const focus = NAV.lookFocus(cams, ref);" in over
+        assert "focus[k] += " not in over, "the plain mean over every pose is gone"
+
+
 def _run_plain(script):
     """A fragment of the page, lifted and run under node with `assert`."""
     import subprocess

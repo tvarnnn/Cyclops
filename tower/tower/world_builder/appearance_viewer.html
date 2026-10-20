@@ -771,27 +771,148 @@ const NAV = (() => {
      a direction is dark until some field is built, and widening the tube
      doubled how long that takes). The page builds a coarse one first, uses it,
      and swaps in the fine one when it lands. */
+  /* THE LATTICE IS WALKED WHERE THE WALK IS, NOT ACROSS ITS BOUNDING BOX.
+     Walk 10.2 (2026-10-20) published six solver blow-up poses in its camera
+     list, one 158 km out: the box of all 207 points was 4.7e14 cells, the
+     Int32Array threw a RangeError inside `buildNav`'s slice, and the page sat
+     on "Preparing the view" with no field at all -- no Best view, no ring, no
+     dark hint, no walk collision -- while the pictures looked fine.
+     A cell is in the field only when it is within the envelope (plus the
+     interpolation margin) of a recorded pose or of a walkable segment, so it
+     lies in a cube around one of the poses: half-side `reach` = the widened
+     envelope (never further than its larger axis times the margin) plus half a
+     JUMP when the pose ends a walkable segment (a point of a segment is within
+     JUMP/2 of one of its ends). Those cubes hold every cell the box would have
+     kept, ON THE SAME LATTICE (anchored at the box's corner), and they are put
+     back in the box's own z, y, x order -- so it is the same field, cell for
+     cell, whichever way it is enumerated, and the cheaper way is taken: the
+     box when it is smaller than the cubes' total (every compact walk; nothing
+     changes there), the cubes when it is not, whose cost is bounded by the
+     NUMBER of poses and not by how far apart the solver put them. A far pose
+     then costs one small cube of its own and nothing else.
+     The page does not decide which poses are real; that is the Tower's
+     (`surface_render.viewable_poses`). This has to hold whatever arrives.
+     MAX_FIELD_CELLS bounds what one synchronous enumeration may visit: 2^22,
+     a 16 MB index and ~1.7e9 path-distance terms at ~400 per cell, about the
+     most one call can hold a phone's main thread. The largest healthy box
+     measured is 105,300 (kitchen 9.1; walks 10 / 10.1: 21,780 / 74,460), and
+     the cubes at the Tower's 240-camera cap total ~2.2M, so it never binds on
+     a list the Tower sends. Past it the field is `failed` rather than built,
+     and the page carries on as it does before any field exists. */
+  const MAX_FIELD_CELLS = 1 << 22;
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
-    const {path} = input, pad = R_MAX + sp;
+    const {path} = input, pad = R_MAX + sp, margin = 1 + sp / UNIT * 1.2;   // a margin for interpolation
+    const finite = i => isFinite(path.P[i*3]) && isFinite(path.P[i*3+1]) && isFinite(path.P[i*3+2]);
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < path.n; i++) for (let k = 0; k < 3; k++){
-      lo[k] = Math.min(lo[k], path.P[i*3+k] - pad); hi[k] = Math.max(hi[k], path.P[i*3+k] + pad);
+    let nf = 0;
+    for (let i = 0; i < path.n; i++){
+      if (!finite(i)) continue;
+      nf++;
+      for (let k = 0; k < 3; k++){
+        lo[k] = Math.min(lo[k], path.P[i*3+k] - pad); hi[k] = Math.max(hi[k], path.P[i*3+k] + pad);
+      }
     }
+    const empty = (failed) => ({input, lo, dims: [0, 0, 0], index: null, lookup: null, spacing: sp,
+                                where: new Float32Array(0), count: 0, cov: new Uint8Array(0),
+                                dist: new Uint8Array(0), con: new Uint8Array(0), near: null,
+                                next: 0, done: true, failed});
+    if (!nf) return empty(null);
     const dims = [0, 1, 2].map(k => Math.max(1, Math.ceil((hi[k] - lo[k]) / sp) + 1));
-    const index = new Int32Array(dims[0] * dims[1] * dims[2]).fill(-1);
+    const box = dims[0] * dims[1] * dims[2];
+    const touches = i => (i > 0 && path.ok[i - 1]) || (i < path.n - 1 && path.ok[i]);
+    const reachOf = i => margin * Math.max(R_MAX, V_MAX) + (touches(i) ? JUMP / 2 : 0);
+    let cubes = 0;
+    for (let i = 0; i < path.n; i++) if (finite(i)) cubes += Math.pow(2 * Math.ceil(reachOf(i) / sp) + 5, 3);
+    const work = Math.min(box, cubes);
+    if (!(work <= MAX_FIELD_CELLS)) return empty("the walk's field would visit " + work + " cells, over "
+                                                 + MAX_FIELD_CELLS);
     const where = [];
-    for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++){
+    let index = null, lookup = null;
+    const keep = (x, y, z) => {
       const p = [lo[0] + x * sp, lo[1] + y * sp, lo[2] + z * sp];
-      if (!path.n || pathDist(path, p).e > 1 + sp / UNIT * 1.2) continue;   // a margin for interpolation
-      index[(z * dims[1] + y) * dims[0] + x] = where.length / 3;
-      where.push(p[0], p[1], p[2]);
+      return pathDist(path, p).e > margin ? null : p;
+    };
+    if (box <= cubes){
+      index = new Int32Array(box).fill(-1);
+      for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++){
+        const p = keep(x, y, z);
+        if (!p) continue;
+        index[(z * dims[1] + y) * dims[0] + x] = where.length / 3;
+        where.push(p[0], p[1], p[2]);
+      }
+    } else {
+      // The same cells, visited per pose and put back in the box's order.
+      const seen = new Set(), cells = [];
+      for (let i = 0; i < path.n; i++){
+        if (!finite(i)) continue;
+        const r = reachOf(i), a = [], b = [];
+        for (let k = 0; k < 3; k++){
+          a.push(Math.max(0, Math.floor((path.P[i*3+k] - r - lo[k]) / sp) - 1));
+          b.push(Math.min(dims[k] - 1, Math.ceil((path.P[i*3+k] + r - lo[k]) / sp) + 1));
+        }
+        for (let z = a[2]; z <= b[2]; z++) for (let y = a[1]; y <= b[1]; y++) for (let x = a[0]; x <= b[0]; x++){
+          const key = voxelKey(dims, x, y, z);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const p = keep(x, y, z);
+          if (p) cells.push([z, y, x, key, p]);
+        }
+      }
+      cells.sort((u, v) => u[0] - v[0] || u[1] - v[1] || u[2] - v[2]);
+      lookup = new Map();
+      for (const c of cells){ lookup.set(c[3], where.length / 3); where.push(c[4][0], c[4][1], c[4][2]); }
     }
     const count = where.length / 3;
-    return {input, lo, dims, index, spacing: sp, where: Float32Array.from(where), count,
+    return {input, lo, dims, index, lookup, spacing: sp, where: Float32Array.from(where), count,
             cov: new Uint8Array(count * CELLS), dist: new Uint8Array(count * CELLS),
             con: new Uint8Array(count * CELLS), near: null,
-            next: 0, done: count === 0};
+            next: 0, done: count === 0, failed: null};
+  }
+  /* WHAT THE WALK LOOKED AT: the mean of the recorded look targets (centre +
+     forward x `ref`), the Best view's "toward" -- over the poses that are
+     where the walk was. One 158 km pose of 207 (walk 10.2) moved the plain
+     mean ~800 units off the room, and "toward" then pointed every candidate
+     the same way across the world. A pose is left out of the mean only by the
+     Tower's own rule for a pose placed nowhere near the rest
+     (`surface.robust_pose_outliers`' scale test, which
+     `surface_render.viewable_poses` applies to this very list): beyond
+     FAR_RADIUS (10, `surface.OUTLIER_RADIUS_MULTIPLE`) x the median distance
+     from the element-wise median centre; with fewer than MIN_ROBUST (8,
+     `surface.MIN_ROBUST_POSES`) poses, or all of them in one place, nobody is
+     left out. On a walk with no such pose this is the plain mean, unchanged. */
+  const FAR_RADIUS = 10, MIN_ROBUST = 8;
+  function lookFocus(cams, ref){
+    const ok = cams.filter(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
+    let use = ok;
+    if (ok.length >= MIN_ROBUST){
+      const mid = [0, 1, 2].map(k => {
+        const v = ok.map(c => c[k]).sort((a, b) => a - b), m = v.length >> 1;
+        return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]);
+      });
+      const rad = ok.map(c => Math.hypot(c[0] - mid[0], c[1] - mid[1], c[2] - mid[2]));
+      const sorted = rad.slice().sort((a, b) => a - b), m = sorted.length >> 1;
+      const med = sorted.length % 2 ? sorted[m] : 0.5 * (sorted[m - 1] + sorted[m]);
+      if (med > 0) use = ok.filter((c, i) => rad[i] <= FAR_RADIUS * med);
+    }
+    const focus = [0, 0, 0];
+    for (const c of use) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / use.length;
+    return focus;
+  }
+  /* A lattice cell's key in a per-pose field: its index in the box while that
+     is an exact integer, and a string past 2^53 (a pose so far out that the
+     box's cell count is not representable), so two cells never share a key. */
+  function voxelKey(dims, x, y, z){
+    return dims[0] * dims[1] * dims[2] <= Number.MAX_SAFE_INTEGER
+      ? (z * dims[1] + y) * dims[0] + x : x + "," + y + "," + z;
+  }
+  /* The field's sample at a lattice cell, or -1 (outside the box, or outside the envelope). */
+  function voxelAt(F, x, y, z){
+    if (x < 0 || y < 0 || z < 0 || x >= F.dims[0] || y >= F.dims[1] || z >= F.dims[2]) return -1;
+    if (F.index) return F.index[(z * F.dims[1] + y) * F.dims[0] + x];
+    if (!F.lookup) return -1;
+    const a = F.lookup.get(voxelKey(F.dims, x, y, z));
+    return a === undefined ? -1 : a;
   }
   function fieldWork(F, budget){
     const {samples, seenOff, seenIdx, seenQ, sampleQ, sampleC, centres} = F.input;
@@ -864,9 +985,7 @@ const NAV = (() => {
     for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++){
       const w = (dx ? fr[0] : 1 - fr[0]) * (dy ? fr[1] : 1 - fr[1]) * (dz ? fr[2] : 1 - fr[2]);
       if (w <= 0) continue;
-      const x = g0[0] + dx, y = g0[1] + dy, z = g0[2] + dz;
-      if (x < 0 || y < 0 || z < 0 || x >= F.dims[0] || y >= F.dims[1] || z >= F.dims[2]) continue;
-      const a = F.index[(z * F.dims[1] + y) * F.dims[0] + x];
+      const a = voxelAt(F, g0[0] + dx, g0[1] + dy, g0[2] + dz);
       if (a < 0) continue;
       let cs = 0, ds = 0, dn = 0, con = 0;
       for (const c of cells){
@@ -1257,13 +1376,13 @@ const NAV = (() => {
     return {index: from, skipped: 0, capped: false};
   }
 
-  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, support, positionBound,
+  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, lookFocus, support, positionBound,
           lookBound, darkness, step, sampleReachable, glide, glideMs, nearest, closeBound, nextPose,
           richness, sampleGrid, ringProfile, bestHeading,
           UNIT, R_SOFT, R_MAX, V_MAX, T_LO, T_HI, SPACING, CELLS, JUMP, PITCH_MAX, PITCH_SOFT, D_MIN, D_SOFT, B_FREE,
           C_LO, C_HI, C_DRIFT_MAX, C_DRIFT_RATE, C_SETTLE, C_GRAD_EPS, C_GRAD_WIDE,
           DARK_LO, DARK_HI,
-          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP};
+          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, FAR_RADIUS, MIN_ROBUST};
 })();
 /* ---------- end navigation */
 
@@ -3235,10 +3354,26 @@ async function main(){
     status(PREPARING);
     const steps = navInputSteps();
     let input = null, job = null, spent = 0, inputMs = 0, coarse = true;
+    // A field that cannot be built must not leave the page saying it is
+    // being prepared. Walk 10.2: `fieldJob` threw inside this slice, nothing
+    // caught it or asked again, and "Preparing the view…" stayed up for good
+    // over a page whose every field-gated control was dead. Now the page says
+    // nothing more, records why (`S.nav.phase` "failed", `S.nav.error`), and
+    // stays as it is before any field exists -- a look turns, a move is held
+    // to the walk's tube by the path alone, Best view and Face the room stay
+    // off -- unless a coarse field already landed, which keeps working.
+    const stop = (why) => {
+      if (gen !== navGeneration) return;
+      navJob = null;
+      S.nav = S.nav || {};
+      S.nav.phase = navField ? (navFine ? "ready" : "coarse") : "failed";
+      S.nav.error = why;
+      if ($("status").textContent === PREPARING) status("");
+      requestDraw();
+    };
     const startJob = (spacing) => {
       const tJob = performance.now();
       job = NAV.fieldJob(input, spacing);
-      navJob = job;
       const key = coarse ? "coarse" : "fine";
       S.nav = S.nav || {};
       Object.assign(S.nav, {phase: "building " + key, samples: NAV_SAMPLES,
@@ -3247,6 +3382,7 @@ async function main(){
       S.nav[key] = {voxels: job.count, spacing, bytes: job.cov.byteLength * 3,
                     jobMs: Math.round(performance.now() - tJob)};
       spent += performance.now() - tJob;
+      if (job.failed) stop(job.failed); else navJob = job;
     };
     const land = () => {
       // The coarse field lands exactly like the fine one: it is a real field,
@@ -3272,6 +3408,9 @@ async function main(){
     };
     const slice = () => {
       if (gen !== navGeneration) return;
+      try { work(); } catch (e){ stop(String(e && e.message ? e.message : e)); }
+    };
+    const work = () => {
       const t = performance.now();
       if (!input){
         // The input, in the same 14 ms budget the field work uses.
@@ -3281,8 +3420,9 @@ async function main(){
         spent += took; inputMs += took;
         if (!r.done){ setTimeout(slice, 0); return; }
         input = r.value;
-        if (!input) return;             // nothing ready to build an envelope from
+        if (!input){ stop("nothing ready to build an envelope from"); return; }
         startJob(NAV.SPACING * NAV_COARSE);
+        if (job.failed) return;
         setTimeout(slice, 0);
         return;
       }
@@ -3297,6 +3437,7 @@ async function main(){
         // (and so the Best view) from 1.0 s to 3.7-4.7 s. Measured both ways.
         coarse = false;
         startJob(NAV.SPACING);
+        if (job.failed) return;
         setTimeout(slice, 0);
         return;
       }
@@ -3412,8 +3553,7 @@ async function main(){
     const ref = CONFIG.median_scene_depth || diag * 0.25;
     let found = [], minContent = OVERVIEW_CONTENT, relaxed = 0;
     // what the walk looked at most: the mean of the recorded look targets
-    const focus = [0, 0, 0];
-    for (const c of cams) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / cams.length;
+    const focus = NAV.lookFocus(cams, ref);
     // INSIDE THE FREE PART OF THE TUBE, not merely inside the tube.
     // Measured 2026-09-21 (fix-it ux lane): the destination this chose sat at
     // envelope 0.52-0.78, which is past R_SOFT -- reachable, but inside the
