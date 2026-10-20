@@ -374,6 +374,10 @@ def test_the_envelope_is_the_good_controls_and_refuses_a_room_it_cannot_trust():
     assert not PP.envelope(good[:2] + bad, UPM, P6)["usable"]
     # Fewer controls than control_segments: unusable.
     assert not PP.envelope(good, UPM, P6)["usable"]
+    # Half good is not enough when that is fewer than min_good_controls (2 of 4 here).
+    P4 = dataclasses.replace(P6, control_segments=4)
+    assert not PP.envelope(good[:2] + bad[:2], UPM, P4)["usable"]
+    assert PP.envelope(good[:3] + bad[:1], UPM, P4)["usable"]
     # No good control's rigidity: no R3 bound, unusable.
     norig = [_control(0.02, rigidity={"through_share": None}) for _ in range(5)]
     assert not PP.envelope(norig + [_control(0.9, agree_share=0.2)], UPM, P6)["usable"]
@@ -387,6 +391,12 @@ def test_a_misplaced_control_with_nothing_measured_does_not_break_the_room():
     blind = _control(0.9, agree_share=None, through_share=None, free_share=None)
     blind.refused.append(PP.REFUSE_OVERLAP)
     env = PP.envelope(good + [blind], UPM, P6)
+    assert env["usable"] and env["misplaced_accepted"] == []
+    # A misplaced control refused while measured (its samples barely met the room) stays refused in the
+    # probe, even when its shares, as far as they go, look fine.
+    thin = _control(0.9)
+    thin.refused.append(PP.REFUSE_OVERLAP)
+    env = PP.envelope(good + [thin], UPM, P6)
     assert env["usable"] and env["misplaced_accepted"] == []
 
 
@@ -571,6 +581,10 @@ def test_a_region_larger_than_the_search_may_cover_is_refused_not_sampled_coarse
 def test_an_anchor_the_placement_disagrees_with_is_a_refusal():
     pl = _measured(anchor_check=[{"ok": True, "centre": True}, {"ok": False, "centre": False, "independent": True}])
     PP.certify(pl, ENV_OK, PARAMS)
+    assert pl.refused == [PP.REFUSE_CORROBORATION]
+    # ... decided before any control is paid for.
+    pl = _measured(anchor_check=[{"ok": True, "centre": True}, {"ok": False, "centre": False, "independent": True}])
+    PP.piece_tests(pl, PARAMS)
     assert pl.refused == [PP.REFUSE_CORROBORATION]
 
 
