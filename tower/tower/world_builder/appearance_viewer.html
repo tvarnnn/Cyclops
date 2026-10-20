@@ -771,27 +771,181 @@ const NAV = (() => {
      a direction is dark until some field is built, and widening the tube
      doubled how long that takes). The page builds a coarse one first, uses it,
      and swaps in the fine one when it lands. */
+  /* THE LATTICE IS WALKED WHERE THE WALK IS. Walk 10.2's list held a pose
+     158 km out; the box of every pose was 4.7e14 cells and `new Int32Array`
+     threw (LANE-F.md). A kept cell lies in a cube round a pose (half-side:
+     margin x the envelope's larger axis, + JUMP/2 at a segment end); the
+     cubes, on the box's lattice and in its z, y, x order, are the box's field
+     cell for cell, and the cheaper of the two is walked. MAX_FIELD_CELLS
+     bounds one enumeration (2^22, ~1.7e9 path terms). */
+  const MAX_FIELD_CELLS = 1 << 22;
+  /* A pose more than LATTICE_STEPS steps (any axis) from the REFERENCE pose
+     -- the finite pose nearest the element-wise median -- is skipped like a
+     non-finite one, keeping indices far below 2^53, where `x++` stops (R1);
+     from the walk, not the origin, so a compact walk 1e12 out is unchanged (R2). */
+  const LATTICE_STEPS = Math.pow(2, 40);
+  /* What the field may COST, checked as cells are kept, before allocation (R2):
+     a cell holds three cube maps (1,152 bytes) and `fieldWork` compares it with
+     every proxy sample. Real fine fields are 5,230-8,840 cells, 6-10 MB, 31-53M
+     comparisons (LANE-F.md §6); the caps are 3x and 5x the largest. Over either
+     the job is `failed`; the final pass then coarsens (`fieldJobWithin`). */
+  const MAX_FIELD_BYTES = Math.pow(2, 25), MAX_FIELD_WORK = Math.pow(2, 28);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
-    const {path} = input, pad = R_MAX + sp;
-    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
-    for (let i = 0; i < path.n; i++) for (let k = 0; k < 3; k++){
-      lo[k] = Math.min(lo[k], path.P[i*3+k] - pad); hi[k] = Math.max(hi[k], path.P[i*3+k] + pad);
+    const {path} = input, pad = R_MAX + sp, margin = 1 + sp / UNIT * 1.2;   // a margin for interpolation
+    // A pose the lattice can hold: finite, and within LATTICE_STEPS steps of the walk's reference
+    // pose on every axis. Any other is skipped exactly like a non-finite one: it gets no cells of its
+    // own, and it stays in the path, where `pathDist` picks it only for a point nearer to it than to
+    // the walk.
+    const isFin = i => isFinite(path.P[i*3]) && isFinite(path.P[i*3+1]) && isFinite(path.P[i*3+2]);
+    const fin = [];
+    for (let i = 0; i < path.n; i++) if (isFin(i)) fin.push(i);
+    let refPose = null;
+    if (fin.length){
+      const med = [0, 1, 2].map(k => {
+        const v = fin.map(i => path.P[i*3+k]).sort((a, b) => a - b), m = v.length >> 1;
+        return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]);
+      });
+      let best = Infinity;
+      for (const i of fin){
+        const d = Math.max(...[0, 1, 2].map(k => Math.abs(path.P[i*3+k] - med[k])));
+        if (d < best){ best = d; refPose = i; }
+      }
     }
+    const finite = i => isFin(i) && refPose !== null
+      && [0, 1, 2].every(k => Math.abs(path.P[i*3+k] - path.P[refPose*3+k]) <= LATTICE_STEPS * sp);
+    const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+    let nf = 0;
+    for (let i = 0; i < path.n; i++){
+      if (!finite(i)) continue;
+      nf++;
+      for (let k = 0; k < 3; k++){
+        lo[k] = Math.min(lo[k], path.P[i*3+k] - pad); hi[k] = Math.max(hi[k], path.P[i*3+k] + pad);
+      }
+    }
+    const empty = (failed) => ({input, lo, dims: [0, 0, 0], index: null, lookup: null, spacing: sp,
+                                where: new Float32Array(0), count: 0, cov: new Uint8Array(0),
+                                dist: new Uint8Array(0), con: new Uint8Array(0), near: null,
+                                next: 0, done: true, failed});
+    if (!nf) return empty("no pose of the walk is finite: there is nothing to build a field around");
     const dims = [0, 1, 2].map(k => Math.max(1, Math.ceil((hi[k] - lo[k]) / sp) + 1));
-    const index = new Int32Array(dims[0] * dims[1] * dims[2]).fill(-1);
-    const where = [];
-    for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++){
+    const box = dims[0] * dims[1] * dims[2];
+    const touches = i => (i > 0 && path.ok[i - 1]) || (i < path.n - 1 && path.ok[i]);
+    const reachOf = i => margin * Math.max(R_MAX, V_MAX) + (touches(i) ? JUMP / 2 : 0);
+    let cubes = 0;
+    for (let i = 0; i < path.n; i++) if (finite(i)) cubes += Math.pow(2 * Math.ceil(reachOf(i) / sp) + 5, 3);
+    const work = Math.min(box, cubes);
+    if (!(work <= MAX_FIELD_CELLS)) return empty("the walk's field would visit " + work + " cells, over "
+                                                 + MAX_FIELD_CELLS);
+    const where = [], nS = input.samples ? input.samples.length / 3 : 0;
+    const most = Math.min(MAX_FIELD_BYTES / (CELLS * 3), nS > 0 ? MAX_FIELD_WORK / nS : Infinity);
+    const costly = (n) => Object.assign(empty("the walk's field would hold over " + Math.floor(most) + " cells ("
+      + n * CELLS * 3 + " bytes, " + n * nS + " sample comparisons), over " + MAX_FIELD_BYTES + " bytes or "
+      + MAX_FIELD_WORK), {costly: true});
+    let index = null, lookup = null;
+    const keep = (x, y, z) => {
       const p = [lo[0] + x * sp, lo[1] + y * sp, lo[2] + z * sp];
-      if (!path.n || pathDist(path, p).e > 1 + sp / UNIT * 1.2) continue;   // a margin for interpolation
-      index[(z * dims[1] + y) * dims[0] + x] = where.length / 3;
-      where.push(p[0], p[1], p[2]);
+      return pathDist(path, p).e > margin ? null : p;
+    };
+    if (box <= cubes){
+      index = new Int32Array(box).fill(-1);
+      for (let z = 0; z < dims[2]; z++) for (let y = 0; y < dims[1]; y++) for (let x = 0; x < dims[0]; x++){
+        const p = keep(x, y, z);
+        if (!p) continue;
+        index[(z * dims[1] + y) * dims[0] + x] = where.length / 3;
+        where.push(p[0], p[1], p[2]);
+        if (where.length / 3 > most) return costly(where.length / 3);
+      }
+    } else {
+      // The same cells, visited per pose and put back in the box's order.
+      const seen = new Set(), cells = [];
+      for (let i = 0; i < path.n; i++){
+        if (!finite(i)) continue;
+        const r = reachOf(i), a = [], b = [];
+        for (let k = 0; k < 3; k++){
+          a.push(Math.max(0, Math.floor((path.P[i*3+k] - r - lo[k]) / sp) - 1));
+          b.push(Math.min(dims[k] - 1, Math.ceil((path.P[i*3+k] + r - lo[k]) / sp) + 1));
+        }
+        for (let z = a[2]; z <= b[2]; z++) for (let y = a[1]; y <= b[1]; y++) for (let x = a[0]; x <= b[0]; x++){
+          const key = voxelKey(dims, x, y, z);
+          if (seen.has(key)) continue;
+          seen.add(key);
+          const p = keep(x, y, z);
+          if (p && cells.push([z, y, x, key, p]) > most) return costly(cells.length);
+        }
+      }
+      cells.sort((u, v) => u[0] - v[0] || u[1] - v[1] || u[2] - v[2]);
+      lookup = new Map();
+      for (const c of cells){ lookup.set(c[3], where.length / 3); where.push(c[4][0], c[4][1], c[4][2]); }
     }
     const count = where.length / 3;
-    return {input, lo, dims, index, spacing: sp, where: Float32Array.from(where), count,
+    return {input, lo, dims, index, lookup, spacing: sp, where: Float32Array.from(where), count,
             cov: new Uint8Array(count * CELLS), dist: new Uint8Array(count * CELLS),
             con: new Uint8Array(count * CELLS), near: null,
-            next: 0, done: count === 0};
+            next: 0, done: count === 0, failed: null};
+  }
+  /* WHAT THE WALK LOOKED AT, for the Best view's "toward": the mean look
+     target (centre + forward x `ref`) over the poses the surface's gate rule
+     (`robust_pose_outliers`, defaults) keeps: out only beyond 10 x the median
+     distance AND 2.5 x the p95, nobody if that is over 5 %, under 8 poses, or
+     all in one place. Walk 10.2's 158 km pose moved the plain mean ~800 units
+     off the room; with nothing dropped it IS the plain mean. LIMIT (R2,
+     accepted): it judges the published list (decimated, rounded), not the
+     poses the surface judged, so on a decimated list it can drop poses the
+     surface kept; it only moves "toward" (0.5-1), never drops over 5 %. */
+  const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
+  function lookKept(cams){
+    const keep = cams.map(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
+    const ok = cams.filter((c, i) => keep[i]);
+    if (ok.length < MIN_ROBUST) return keep;
+    const median = (v) => { const m = v.length >> 1; return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]); };
+    const mid = [0, 1, 2].map(k => median(ok.map(c => c[k]).sort((a, b) => a - b)));
+    // numpy's norm order, ((x^2 + y^2) + z^2), not Math.hypot's
+    const radOf = c => { const dx = c[0] - mid[0], dy = c[1] - mid[1], dz = c[2] - mid[2];
+                         return Math.sqrt(dx * dx + dy * dy + dz * dz); };
+    const rad = ok.map(radOf);
+    const sorted = rad.slice().sort((a, b) => a - b), med = median(sorted);
+    // numpy's default (linear) percentile, in numpy's own two-sided lerp
+    const q = 0.95 * (sorted.length - 1), lo = Math.floor(q), g = q - lo;
+    const a = sorted[lo], b = sorted[Math.min(lo + 1, sorted.length - 1)];
+    const p95 = g >= 0.5 ? b - (b - a) * (1 - g) : a + (b - a) * g;
+    const cut = Math.max(FAR_RADIUS * med, FAR_DETACH * p95);
+    const dropped = rad.filter(r => r > cut).length;
+    if (!(med > 0) || dropped > FAR_SHARE * ok.length) return keep;
+    return cams.map((c, i) => keep[i] && !(radOf(c) > cut));
+  }
+  function lookFocus(cams, ref){
+    const kept = lookKept(cams), use = cams.filter((c, i) => kept[i]);
+    const focus = [0, 0, 0];
+    for (const c of use) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / use.length;
+    return focus;
+  }
+  /* The final field within the cost budget (R2b: a valid 200-pose corridor is
+     over it at SPACING and would never get a Best view). Over budget, the
+     spacing grows by 2^(1/3) -- each step doubles a cell's volume -- up to
+     `coarsest`, the coarse field's own spacing, which already fitted: the
+     finest lattice that fits, to within one doubling, in at most three more
+     (early-stopping) enumerations. A field under budget keeps SPACING. */
+  function fieldJobWithin(input, spacing, coarsest){
+    const n = spacing > 0 && coarsest > spacing ? Math.round(3 * Math.log2(coarsest / spacing)) : 0;
+    let job = fieldJob(input, spacing);
+    for (let k = 1; k <= n && job.costly; k++) job = fieldJob(input, k === n ? coarsest : spacing * Math.pow(2, k / 3));
+    return job;
+  }
+  /* A lattice cell's key in a per-pose field: its index in the box while that
+     is an exact integer, and a string past 2^53 (a pose so far out that the
+     box's cell count is not representable), so two cells never share a key. */
+  function voxelKey(dims, x, y, z){
+    return dims[0] * dims[1] * dims[2] <= Number.MAX_SAFE_INTEGER
+      ? (z * dims[1] + y) * dims[0] + x : x + "," + y + "," + z;
+  }
+  /* The field's sample at a lattice cell, or -1 (outside the box, or outside the envelope). */
+  function voxelAt(F, x, y, z){
+    if (x < 0 || y < 0 || z < 0 || x >= F.dims[0] || y >= F.dims[1] || z >= F.dims[2]) return -1;
+    if (F.index) return F.index[(z * F.dims[1] + y) * F.dims[0] + x];
+    if (!F.lookup) return -1;
+    const a = F.lookup.get(voxelKey(F.dims, x, y, z));
+    return a === undefined ? -1 : a;
   }
   function fieldWork(F, budget){
     const {samples, seenOff, seenIdx, seenQ, sampleQ, sampleC, centres} = F.input;
@@ -864,9 +1018,7 @@ const NAV = (() => {
     for (let dz = 0; dz < 2; dz++) for (let dy = 0; dy < 2; dy++) for (let dx = 0; dx < 2; dx++){
       const w = (dx ? fr[0] : 1 - fr[0]) * (dy ? fr[1] : 1 - fr[1]) * (dz ? fr[2] : 1 - fr[2]);
       if (w <= 0) continue;
-      const x = g0[0] + dx, y = g0[1] + dy, z = g0[2] + dz;
-      if (x < 0 || y < 0 || z < 0 || x >= F.dims[0] || y >= F.dims[1] || z >= F.dims[2]) continue;
-      const a = F.index[(z * F.dims[1] + y) * F.dims[0] + x];
+      const a = voxelAt(F, g0[0] + dx, g0[1] + dy, g0[2] + dz);
       if (a < 0) continue;
       let cs = 0, ds = 0, dn = 0, con = 0;
       for (const c of cells){
@@ -1257,13 +1409,13 @@ const NAV = (() => {
     return {index: from, skipped: 0, capped: false};
   }
 
-  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, support, positionBound,
+  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, fieldJobWithin, lookKept, lookFocus, support, positionBound,
           lookBound, darkness, step, sampleReachable, glide, glideMs, nearest, closeBound, nextPose,
           richness, sampleGrid, ringProfile, bestHeading,
           UNIT, R_SOFT, R_MAX, V_MAX, T_LO, T_HI, SPACING, CELLS, JUMP, PITCH_MAX, PITCH_SOFT, D_MIN, D_SOFT, B_FREE,
           C_LO, C_HI, C_DRIFT_MAX, C_DRIFT_RATE, C_SETTLE, C_GRAD_EPS, C_GRAD_WIDE,
           DARK_LO, DARK_HI,
-          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP};
+          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, MAX_FIELD_BYTES, MAX_FIELD_WORK, LATTICE_STEPS, FAR_RADIUS, FAR_DETACH, FAR_SHARE, MIN_ROBUST};
 })();
 /* ---------- end navigation */
 
@@ -3235,18 +3387,30 @@ async function main(){
     status(PREPARING);
     const steps = navInputSteps();
     let input = null, job = null, spent = 0, inputMs = 0, coarse = true;
+    // A field that cannot be built must not leave "Preparing the view…" up for
+    // good (walk 10.2): stop, say why in `S.nav`, keep a coarse field if any.
+    const stop = (why) => {
+      if (gen !== navGeneration) return;
+      navJob = null;
+      S.nav = S.nav || {};
+      S.nav.phase = navField ? (navFine ? "ready" : "coarse") : "failed";
+      S.nav.error = why;
+      if ($("status").textContent === PREPARING) status("");
+      requestDraw();
+    };
     const startJob = (spacing) => {
       const tJob = performance.now();
-      job = NAV.fieldJob(input, spacing);
-      navJob = job;
+      job = coarse ? NAV.fieldJob(input, spacing) : NAV.fieldJobWithin(input, spacing, NAV.SPACING * NAV_COARSE);
       const key = coarse ? "coarse" : "fine";
       S.nav = S.nav || {};
+      delete S.nav.error;                // a rebuild's record is its own
       Object.assign(S.nav, {phase: "building " + key, samples: NAV_SAMPLES,
                             sources: input.centres.length / 3, seen: input.seenIdx.length,
                             inputMs: Math.round(inputMs)});
-      S.nav[key] = {voxels: job.count, spacing, bytes: job.cov.byteLength * 3,
+      S.nav[key] = {voxels: job.count, spacing: job.spacing, bytes: job.cov.byteLength * 3,
                     jobMs: Math.round(performance.now() - tJob)};
       spent += performance.now() - tJob;
+      if (job.failed) stop(job.failed); else navJob = job;
     };
     const land = () => {
       // The coarse field lands exactly like the fine one: it is a real field,
@@ -3272,6 +3436,9 @@ async function main(){
     };
     const slice = () => {
       if (gen !== navGeneration) return;
+      try { work(); } catch (e){ stop(String(e && e.message ? e.message : e)); }
+    };
+    const work = () => {
       const t = performance.now();
       if (!input){
         // The input, in the same 14 ms budget the field work uses.
@@ -3281,8 +3448,9 @@ async function main(){
         spent += took; inputMs += took;
         if (!r.done){ setTimeout(slice, 0); return; }
         input = r.value;
-        if (!input) return;             // nothing ready to build an envelope from
+        if (!input){ stop("nothing ready to build an envelope from"); return; }
         startJob(NAV.SPACING * NAV_COARSE);
+        if (job.failed) return;
         setTimeout(slice, 0);
         return;
       }
@@ -3297,6 +3465,8 @@ async function main(){
         // (and so the Best view) from 1.0 s to 3.7-4.7 s. Measured both ways.
         coarse = false;
         startJob(NAV.SPACING);
+        if (job.failed) return;
+        if (job.spacing === navField.spacing) job = navField;   // only the coarse lattice fits: it is final
         setTimeout(slice, 0);
         return;
       }
@@ -3412,8 +3582,7 @@ async function main(){
     const ref = CONFIG.median_scene_depth || diag * 0.25;
     let found = [], minContent = OVERVIEW_CONTENT, relaxed = 0;
     // what the walk looked at most: the mean of the recorded look targets
-    const focus = [0, 0, 0];
-    for (const c of cams) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / cams.length;
+    const focus = NAV.lookFocus(cams, ref);
     // INSIDE THE FREE PART OF THE TUBE, not merely inside the tube.
     // Measured 2026-09-21 (fix-it ux lane): the destination this chose sat at
     // envelope 0.52-0.78, which is past R_SOFT -- reachable, but inside the

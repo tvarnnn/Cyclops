@@ -5,10 +5,18 @@ Contract: docs/contracts/WORLD-BUILDER-WORLDS.md §4c (v5 draft), COMPONENTS
 
 NO BIG BANG. Every request that is not exactly `wb-chrome=native` on an
 appearance page is held to dc35d51's bytes by
-`golden/world_builder_native_chrome_dc35d51.json`, recorded on dc35d51 itself by
+`golden/world_builder_native_chrome_e3081b1d.json`, recorded on dc35d51 itself by
 `tests/wb_native_chrome_fixtures.py` (see its docstring). That golden is
 PERMANENT: re-record it only on a base commit whose page output legitimately
 changed, never from a tree whose chrome handling is under review.
+
+RE-RECORDED ONCE, for the appearance page only, on e3081b1d (bug-fix lane F:
+the page's navigation field survives far poses; chrome handling untouched). The
+recorder was run unchanged on cc0208c5 and on e3081b1d: the two recordings differ
+in exactly the sha256 and length of the 12 appearance pages x 6 `wb-chrome`
+values, and in nothing else (lower rungs, data routes, every header). Those 72
+rows took e3081b1d's values -- the `native` rows as dc35d51 recorded them, the
+plain page's -- and every other row is dc35d51's as it was.
 
 THE ONE DOCUMENTED EXCEPTION: `/openapi.json`. Declaring the `wb-chrome` query
 parameter (spec §2.1) puts it in the OpenAPI document of the two page routes, so
@@ -36,7 +44,7 @@ import pytest
 
 from tests import wb_native_chrome_fixtures as F
 
-GOLDEN = Path(__file__).parent / "golden" / "world_builder_native_chrome_dc35d51.json"
+GOLDEN = Path(__file__).parent / "golden" / "world_builder_native_chrome_e3081b1d.json"
 BROWSER_REQUIRED_ENV = "WB_CHROME_BROWSER_REQUIRED"
 WORLDS_CONTRACT = (Path(__file__).resolve().parents[2] / "docs" / "contracts"
                    / "WORLD-BUILDER-WORLDS.md")
