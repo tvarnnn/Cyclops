@@ -791,6 +791,8 @@ def summary(assessment: dict | None, *, mode_: str, decision: str, seconds: floa
            "params_digest": (assessment or {}).get("params_digest") or GuardParams().digest(),
            "pieces_isolated": len(pieces), "keyframes_isolated": sum(len(p["keyframe_ids"]) for p in pieces),
            "reasons": reasons, "audit": AUDIT_FILENAME, "seconds": round(seconds, 3)}
+    if "place_pieces" in (assessment or {}):
+        out["pieces_placed"] = int((assessment["place_pieces"] or {}).get("placed") or 0)
     if (assessment or {}).get("rule") == "v2":
         out["scale_status"] = assessment["scale_status"]
         out["uncertified_keyframes"] = assessment["uncertified_keyframes"]
@@ -960,6 +962,8 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         assessment = dict(assess_v2(cams, metric_log, params), evidence=inputs["source"])
         if assessment["decision"] != "publish":
             raise _Withhold(assessment["why"])
+        solution, assessment = _place_pieces(store, world_id, session_id, solution, assessment, metric_log,
+                                             keyframes, name_of)
         session = store.read_session(world_id, session_id)
         gate_block = None
         if result is not None and result.components is not None:
@@ -1001,6 +1005,31 @@ def withhold(outcome: "GuardOutcome", why: str) -> "GuardOutcome":
     summ = dict(outcome.summary, decision=DECISION_WITHHELD, why=why)
     audit = dict(outcome.audit, decision=DECISION_WITHHELD, error=why)
     return GuardOutcome(outcome.mode, DECISION_WITHHELD, None, None, summ, audit)
+
+
+def _place_pieces(store, world_id, session_id, solution, assessment: dict, metric_log: dict, keyframes,
+                  name_of: dict):
+    """(solution, assessment) with every isolated piece that certifies placed back into the room by its own
+    metric depth (`place_pieces`), when `TOWER_WORLD_PLACE_PIECES` is on and something was cut; otherwise
+    both unchanged. Never raises: on any failure every piece stays cut and the record says why."""
+    from tower.config import world_place_pieces_setting  # noqa: PLC0415
+
+    if not assessment.get("pieces") or not world_place_pieces_setting():
+        return solution, assessment
+    from tower.world_builder import place_pieces as PP  # noqa: PLC0415
+
+    try:
+        times = {k.keyframe_id: float(k.received_at) for k in keyframes}
+        depth_of = PP.live_depth_source(store, world_id, session_id, solution)
+        record = PP.plan(solution, assessment, metric_log, name_of, times, depth_of)
+        placements = record.pop("placements")
+        placed, placed_assessment = PP.apply_placements(solution, assessment, placements)
+        return placed, dict(placed_assessment, place_pieces=record)
+    except Exception as exc:  # noqa: BLE001 -- the guard's cut stands
+        logger.exception("[Tower][WorldBuilder] placing the cut pieces failed on %s/%s; they stay cut",
+                         world_id, session_id)
+        return solution, dict(assessment, place_pieces={"id": PP.PLACE_ID, "placed": 0,
+                                                        "error": f"{type(exc).__name__}: {exc}"})
 
 
 class _Withhold(RuntimeError):

@@ -1007,6 +1007,19 @@ def world_area_builds_setting() -> bool:
     return _flag(WORLD_AREA_BUILDS_ENV, default=False)
 
 
+# Depth-placed pieces (`world_builder/place_pieces.py`): at every final publication, after the final scale
+# guard cut its pieces, a piece whose scale the guard measured tightly is placed back into the room by its
+# own metric depth -- the guard's scale, the solver's rotations, the translation where its depth agrees
+# with the room's -- when every certification test holds; otherwise it stays cut. Read by the guard at
+# the publish seam. Off: the step does not run and every publication is byte for byte as before.
+WORLD_PLACE_PIECES_ENV = "TOWER_WORLD_PLACE_PIECES"
+
+
+def world_place_pieces_setting() -> bool:
+    """`TOWER_WORLD_PLACE_PIECES`: place certified guard-cut pieces back by depth. Off."""
+    return _flag(WORLD_PLACE_PIECES_ENV, default=False)
+
+
 # WORLD-BUILDER-WORLDS.md §2b; CARTRIDGE-RESULTS.md §10.1 `lifecycle.processing`. Read at call
 # time by the builder (whether to record its finish phase) and by the status producer and the saved-
 # worlds listing (whether to project it). Off: nothing is written, nothing is read, and every payload
