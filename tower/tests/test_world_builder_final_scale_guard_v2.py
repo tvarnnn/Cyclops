@@ -145,6 +145,16 @@ def test_the_rest_is_retested_after_a_removal():
     assert [r["isolated"] for r in out["retest"]] == [2, 0]
 
 
+def test_each_piece_keeps_its_interval_unrounded_against_its_own_rounds_core():
+    # The depth placement's R1 reads these, not an interval recomputed against a later round's core.
+    out = FSG.assess_v2(_cams(W7_N), _w7_levels())
+    assert out["pieces"]
+    for p in out["pieces"]:
+        lo, hi = p["ci_log"]
+        assert lo < hi and [round(math.exp(lo), 4), round(math.exp(hi), 4)] == p["ci"]
+        assert p["core_log_median"] == pytest.approx(out["retest"][p["round"]]["reference_log"], abs=1e-3)
+
+
 # ---------------------------------------------------------------------------
 # the live depth cache, read in place
 # ---------------------------------------------------------------------------

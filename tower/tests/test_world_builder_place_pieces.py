@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import dataclasses
 import math
+import time
+import types
 
 import numpy as np
 import pytest
@@ -93,7 +95,7 @@ class World:
     def __init__(self, *, n_piece=12, piece_jitter_m=0.0, anchor_offset_m=(0.3, 0.0, 0.0), piece_dt=0.3,
                  ci=None, piece_looks=None, piece_forward=None, piece_step=(0.08, 0.0, 0.05), room_solids=None,
                  piece_solids=None, noise=True, tail_room=0, tail_offset_m=(0.1, 0.0, 0.0), piece_log_jitter=0.0,
-                 tail_dt=None):
+                 tail_dt=None, split=None, link_pieces=True, second_log_offset=0.0, second_log_jitter=0.0):
         rng = np.random.default_rng(7)
         self.depth, self.poses, self.times, self.metric = {}, {}, {}, {}
         self.true = {}
@@ -137,6 +139,8 @@ class World:
             self.times[kid] = 0.2 * (N_ROOM - 1) + piece_dt + 0.2 * j
             self.metric[kid] = math.log(UPM * K) + m + (piece_log_jitter * rng.standard_normal()
                                                          if piece_log_jitter else 0.0)
+            if split is not None and j >= split:
+                self.metric[kid] += second_log_offset + second_log_jitter * rng.standard_normal()
         # Room frames AFTER the piece (the walker back in the room): an anchor on the piece's other side.
         tail_kids = []
         last_piece = self.true[self.piece_kids[-1]] if self.piece_kids else last_room
@@ -167,6 +171,26 @@ class World:
                     obs.append((i, len(xy), len(xyz)))
                     xyz.append(c + R.T @ (ray * D[v, u] * UPM))
                     xy.append((u + 0.49, v + 0.49))
+        # The piece's own tracks: a point seen by each pair of consecutive piece frames (in the blown-up solve's
+        # units). With `split` and not `link_pieces`, no track joins the two halves.
+        for j in range(len(self.piece_kids) - 1 if split is not None else 0):
+            if split is not None and not link_pieces and j + 1 == split:
+                continue
+            ka, kb = self.piece_kids[j], self.piece_kids[j + 1]
+            Ra, ca = PP.centre_of(self.poses[ka])
+            obs.append((self.kids.index(ka), len(xy), len(xyz)))
+            xy.append((32.0, 24.0))
+            obs.append((self.kids.index(kb), len(xy), len(xyz)))
+            xy.append((32.0, 24.0))
+            xyz.append(ca + Ra.T @ np.array([0.0, 0.0, 1.0]) * UPM * K)
+        if split is not None and tail_kids:
+            # Each half also shares a point with the same room camera (as a real solve's pieces touch the room):
+            # a path between the halves exists, but only through a room keyframe.
+            for ka in (self.piece_kids[split - 1], self.piece_kids[split]):
+                for kb in (ka, tail_kids[0]):
+                    obs.append((self.kids.index(kb), len(xy), len(xyz)))
+                    xy.append((32.0, 24.0))
+                xyz.append(PP.centre_of(self.poses[ka])[1])
         self.points = (np.asarray(xyz), np.asarray(obs), np.asarray(xy))
         self.solution = types_solution(self.kids, self.poses, xyz=xyz, obs=obs, xy=xy)
         self.assessment = {
@@ -174,6 +198,18 @@ class World:
             "uncertified_keyframes": 0, "scale_status": "certified", "why": None, "evidence": FSG.EVIDENCE_LIVE,
             "pieces": [{"keyframe_ids": list(self.piece_kids), "ci": ci or [K * 0.97, K * 1.03],
                         "reason": FSG.REASON_SCALE_OUTLIER, "first_index": N_ROOM}]}
+        if split is not None:
+            self.assessment["pieces"] = [
+                {"keyframe_ids": list(self.piece_kids[:split]), "ci": [K * 0.97, K * 1.03],
+                 "reason": FSG.REASON_SCALE_OUTLIER, "first_index": N_ROOM},
+                {"keyframe_ids": list(self.piece_kids[split:]), "ci": [K * 0.97, K * 1.03],
+                 "reason": FSG.REASON_SCALE_OUTLIER, "first_index": N_ROOM + split}]
+        # What the guard keeps for each piece: its interval unrounded, against its round's core.
+        core = np.asarray([self.metric[k] for k in self.room_kids])
+        for p in self.assessment["pieces"]:
+            vals = np.asarray([self.metric[k] for k in p["keyframe_ids"]])
+            p["ci_log"] = list(FSG.bootstrap_interval_log(vals, core, FSG.GuardParams(), p["first_index"]))
+            p["core_log_median"] = float(np.median(core))
 
     def depth_of(self, kid):
         return self.depth.get(kid)
@@ -339,10 +375,14 @@ def test_controls_are_spread_held_out_and_searched_under_the_pieces_prior():
     ctrl = prior["controls"]
     assert len(ctrl) == PARAMS.control_segments and all(c["keyframes"] == PARAMS.control_frames for c in ctrl)
     piece = rec["pieces"][0]
+    radius = piece["region"]["radius_m"]
+    # their starting errors span the piece's region, up to all of its radius
+    assert sorted(c["start_error_m"] for c in ctrl) == pytest.approx(
+        [radius * (i + 1) / PARAMS.control_segments for i in range(PARAMS.control_segments)], abs=0.01)
     for c in ctrl:
-        # anchored at least as far back as the piece's centre anchor, searched over the piece's radius
-        assert c["anchor_dt_s"] >= piece["region"]["dt_s"] - 1e-9
-        assert c["region"]["radius_m"] == pytest.approx(piece["region"]["radius_m"], abs=0.01)
+        # searched over the piece's radius, about a start that far from the control's truth
+        assert c["region"]["radius_m"] == pytest.approx(radius, abs=0.01)
+        assert c["anchor_check"][0]["miss_m"] <= radius + 0.01
         assert c.get("miss_m") is not None
         # a control carries its own measured scale, as a piece does
         kids = w.kids[w.kids.index(c["first_keyframe_id"]):w.kids.index(c["last_keyframe_id"]) + 1]
@@ -441,11 +481,18 @@ def test_a_scale_known_no_better_than_the_band_is_refused_and_no_control_is_paid
     assert rec["controls"] == {}                      # nothing standing: the controls are not run
 
 
-def test_r1_reads_the_recomputed_interval_not_the_guards_display():
+def test_r1_reads_the_guards_unrounded_interval_not_its_display():
     w = World(ci=[K / 1.4, K * 1.1], tail_room=6)    # a wide DISPLAY interval; the frames' ratios agree
     rec = w.plan()
     assert PP.REFUSE_CI not in rec["pieces"][0]["refused"]
     w = World(ci=[K * 0.999, K * 1.001], piece_log_jitter=0.6)    # a tight display, scattered ratios
+    assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
+    # The kept interval is what is read -- not one recomputed against another core -- and without it, R1
+    # cannot be decided.
+    w = World(tail_room=6)
+    w.assessment["pieces"][0]["ci_log"] = [0.0, 0.5]
+    assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
+    del w.assessment["pieces"][0]["ci_log"]
     assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
 
 
@@ -454,14 +501,14 @@ def test_the_interval_is_the_guards_bootstrap_unrounded():
     rng = np.random.default_rng(5)
     core = rng.normal(0.0, 0.05, size=300)
     piece = math.log(0.0009) + rng.normal(0.0, 0.15, size=15)
-    lo, hi = PP.scale_interval_log(piece, core, 7, gp)
+    lo, hi = FSG.bootstrap_interval_log(piece, core, gp, 7)
     shown = FSG.bootstrap_interval(piece, core, gp, salt=7)            # the guard's, rounded to 4 decimals
     assert shown[0] == pytest.approx(round(math.exp(lo), 4)) and shown[1] == pytest.approx(round(math.exp(hi), 4))
     # At collapsed ratios the display rounding flips R1 (x1.25) for some pieces; the unrounded one decides.
     flips = 0
     for k in range(40):
         piece = math.log(0.0004 + 0.00005 * k) + rng.normal(0.0, 0.12, size=15)
-        lo, hi = PP.scale_interval_log(piece, core, k, gp)
+        lo, hi = FSG.bootstrap_interval_log(piece, core, gp, k)
         a, b = FSG.bootstrap_interval(piece, core, gp, salt=k)
         flips += (hi - lo <= math.log(1.25)) != (a > 0 and b / a <= 1.25)
     assert flips > 0
@@ -857,3 +904,178 @@ def test_the_step_runs_only_on_live_depth_evidence(monkeypatch):
     sol, out, res = FSG._place_pieces(None, "w", SID, w.solution, ass, w.metric, [], {}, None)
     assert sol is w.solution and out["pieces"] == ass["pieces"] and not called
     assert out["place_pieces"]["placed"] == 0 and "live depth cache" in out["place_pieces"]["skipped"]
+
+
+# ---------------------------------------------------------------------------
+# one blow-up as one rigid body (round 3)
+# ---------------------------------------------------------------------------
+
+
+SPLIT = {"n_piece": 24, "split": 12, "piece_step": (0.04, 0.0, 0.025), "tail_room": 6}
+
+
+def _vouching_envelope(monkeypatch):
+    real = PP.envelope
+    monkeypatch.setattr(PP, "envelope", lambda controls, upm, params: dict(real(controls, upm, params), **ENV_OK))
+
+
+def test_two_pieces_of_one_blow_up_are_placed_only_together(monkeypatch):
+    # Twelve frames each, 2.7 s apart at their far ends: alone, each has only the room camera on its own side,
+    # which is its search's centre -- nothing independent can corroborate it. Together, one similarity, the
+    # room cameras on both sides, and the second checks the first.
+    _vouching_envelope(monkeypatch)
+    w = World(**SPLIT)
+    rec = w.plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    a, b = rec["placements"]
+    assert a.placed and b.placed, (rec["groups"], a.refused, b.refused)
+    assert a.stats["placed_with"] == b.stats["placed_with"] == "group-0"
+    np.testing.assert_allclose(a.t, b.t)
+    assert a.ratio == b.ratio
+    (g,) = rec["groups"]
+    assert g["members"] == ["piece-0", "piece-1"] and g["decision"] == "placed"
+    assert g["corroborated_by"] == "independent-anchor"
+    assert {x["member"] for x in g["anchors"]} == {"piece-0", "piece-1"}
+    for pl in (a, b):
+        err = max(np.linalg.norm((PP.centre_of(w.poses[k])[1] / pl.ratio + pl.t) / UPM - w.true[k]) for k in pl.kids)
+        assert err < 0.2
+
+
+def test_scale_matched_pieces_the_solve_does_not_connect_are_not_grouped(monkeypatch):
+    _vouching_envelope(monkeypatch)
+    rec = World(**SPLIT, link_pieces=False).plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    assert rec["groups"] == [] and rec["placed"] == 0
+    assert all(PP.REFUSE_CORROBORATION in p["refused"] for p in rec["pieces"])
+
+
+def test_a_member_whose_own_scale_is_uncertain_is_not_grouped(monkeypatch):
+    _vouching_envelope(monkeypatch)
+    rec = World(**SPLIT, second_log_jitter=1.0).plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    assert PP.REFUSE_CI in rec["pieces"][1]["refused"]
+    assert rec["groups"] == [] and rec["placed"] == 0
+
+
+def test_a_group_with_only_its_centre_anchor_is_not_placed(monkeypatch):
+    # No room camera after the second half: the camera before the first is the search's centre and nothing
+    # independent checks it.
+    _vouching_envelope(monkeypatch)
+    rec = World(**dict(SPLIT, tail_room=0)).plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    (g,) = rec["groups"]
+    assert PP.REFUSE_CORROBORATION in g["refused"] and g["decision"] == "refused: members decided alone"
+    assert rec["placed"] == 0
+
+
+def test_the_keyframe_cap_counts_the_whole_group(monkeypatch):
+    _vouching_envelope(monkeypatch)
+    rec = World(**SPLIT).plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25, max_piece_keyframes=20))
+    (g,) = rec["groups"]
+    assert g["refused"] == [PP.REFUSE_TOO_LARGE] and rec["placed"] == 0
+
+
+def test_connected_pieces_at_different_scales_are_not_grouped(monkeypatch):
+    _vouching_envelope(monkeypatch)
+    w = World(**SPLIT, second_log_offset=0.5)       # the second half x1.65 off the first
+    rec = w.plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    assert rec["groups"] == [] and rec["placed"] == 0
+
+
+def test_a_group_whose_member_anchors_disagree_is_refused_with_its_members(monkeypatch):
+    # The room camera after the second half stood 1.5 m from it, 0.4 s later (a bound near 1.2 m): placed by
+    # the camera before the first half (0.3 s, the tighter bound and so the search's centre), the group puts
+    # the second half where that camera could not have reached it. One similarity cannot satisfy both sides,
+    # so the cluster's evidence contradicts itself.
+    _vouching_envelope(monkeypatch)
+    w = World(**dict(SPLIT, tail_offset_m=(-1.4, 0.0, -0.6), tail_dt=0.4))
+    rec = w.plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    (g,) = rec["groups"]
+    assert "anchors disagree" in g["decision"]
+    assert any(not x["ok"] for x in g["anchor_check"])
+    assert all(PP.REFUSE_GROUP_ANCHORS in p["refused"] for p in rec["pieces"]) and rec["placed"] == 0
+
+
+def test_a_group_that_is_not_one_rigid_body_leaves_the_members_alone():
+    # Even with its anchors disagreeing: one similarity cannot fit what is not one body, so the disagreement
+    # says nothing against the members.
+    pl = PP.Placement(label="group-0", kids=["a"], ratio=1.0, ci=None)
+    pl.refused.append(PP.REFUSE_RIGID)
+    pl.stats.update(anchor_check=[{"ok": False}], anchors_disagree=True)
+    m0 = PP.Placement(label="piece-0", kids=["a"], ratio=1.0, ci=None)
+    m0.refused.append(PP.REFUSE_FRAMES)
+    placements = [m0]
+    g = {"members": [0], "placement": pl}
+    PP._group_decision(g, placements, {0: {"kids": ["a"], "ci_log": (0.0, 0.0)}})
+    assert placements[0] is m0 and placements[0].refused == [PP.REFUSE_FRAMES]
+    assert "not one rigid body" in g["decision"]
+
+
+# ---------------------------------------------------------------------------
+# coverage of the region, matched starts, bounded work (round 3, R2b review)
+# ---------------------------------------------------------------------------
+
+
+def test_basins_are_the_landscapes_local_maxima_and_a_flat_stretch_is_none():
+    step = 1.0
+    offs = np.array([[x, 0.0, 0.0] for x in range(7)])
+    assert PP.basins(offs, step, [0.1, 0.5, 0.2, 0.1, 0.3, 0.9, 0.4]) == [1, 5]
+    assert PP.basins(offs, step, [0.2] * 7) == []
+    assert PP.basins(offs, step, [-math.inf, 0.5, 0.5, 0.1, -math.inf, -math.inf, -math.inf]) == [1, 2]
+
+
+def test_every_basin_is_refined_and_compared_on_the_fine_evidence():
+    # The parallel-wall alias: the truth and the partition 1.3 m in front of the far wall are two basins of
+    # one region; both are refined, and uniqueness compares them on the fine scorer.
+    partition = (np.array([2.6, 0.0, 0.0]), np.array([2.7, 2.5, 1.4]))
+    solids = FURNITURE + [partition]
+    w = World(anchor_offset_m=(1.3, 0.0, 0.2), piece_dt=0.6, piece_forward=(1.0, 0.0, 0.0),
+              piece_step=(0.0, 0.0, 0.05), room_solids=solids, piece_solids=solids, noise=False)
+    rec = w.plan()
+    piece = rec["pieces"][0]
+    assert piece["basins"] >= 2
+    # and a region with more basins than the step can refine is refused, not searched in part
+    rec = w.plan(dataclasses.replace(PARAMS, max_basins=1))
+    assert rec["pieces"][0]["refused"] == [PP.REFUSE_COVERAGE] and rec["pieces"][0]["translation"] is None
+
+
+def test_a_region_past_the_cap_is_refused_before_its_lattice_is_built(monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("allocated")
+
+    monkeypatch.setattr(PP.np, "meshgrid", boom)
+    assert PP.lattice_size(500.0, 0.3, 2000) == 2001
+    monkeypatch.undo()
+    assert PP.lattice_size(1.0, 0.3, 2000) == len(PP.region_lattice(1.0, 0.3))
+
+
+def test_searches_and_the_room_stop_at_the_deadline():
+    w = World(tail_room=6)
+    room, frames = _room(w)
+    with pytest.raises(PP._OutOfTime):
+        PP.search(_piece(w), room, np.zeros(3), 0.5 * UPM, PARAMS, deadline=0.0)
+    with pytest.raises(PP._OutOfTime):
+        PP.build_room(frames, w.depth_of, PP.Pinhole.of(CAM), UPM, PARAMS, deadline=0.0)
+
+
+def test_nothing_is_certified_past_the_time_bound(monkeypatch):
+    # The clock passes the bound while the controls run: the piece is not certified on them.
+    clock = {"shift": 0.0}
+    monkeypatch.setattr(PP, "time", types.SimpleNamespace(perf_counter=lambda: time.perf_counter() + clock["shift"]))
+    real = PP.envelope
+
+    def late(*a, **k):
+        clock["shift"] = 1e6
+        return dict(real(*a, **k), **ENV_OK)
+
+    monkeypatch.setattr(PP, "envelope", late)
+    rec = World(tail_room=6).plan()
+    assert rec["pieces"][0]["refused"] == [PP.REFUSE_TIME] and rec["placed"] == 0
+
+
+def test_a_groups_interval_is_the_union_of_its_members(monkeypatch):
+    _vouching_envelope(monkeypatch)
+    w = World(**SPLIT)
+    rec = w.plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    (g,) = rec["groups"]
+    a, b = (w.assessment["pieces"][n] for n in (0, 1))
+    lo = min(p["ci_log"][0] + p["core_log_median"] for p in (a, b))
+    hi = max(p["ci_log"][1] + p["core_log_median"] for p in (a, b))
+    level = float(np.median([w.metric[k] for k in w.piece_kids]))
+    assert g["ci_log"] == pytest.approx([lo - level, hi - level], abs=1e-6)

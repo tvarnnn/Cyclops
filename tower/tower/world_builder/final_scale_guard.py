@@ -255,8 +255,9 @@ def ratio_reason(d: float, params: GuardParams) -> str | None:
     return REASON_SCALE_UNCERTIFIED
 
 
-def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams, salt: int) -> list[float]:
-    """The deterministic percentile interval of median(piece) - median(core) in log, as RATIOS."""
+def bootstrap_interval_log(piece: np.ndarray, core: np.ndarray, params: GuardParams, salt: int
+                           ) -> tuple[float, float]:
+    """The deterministic percentile interval of median(piece) - median(core), in log and unrounded."""
     rng = np.random.default_rng([params.bootstrap_seed, int(salt), len(piece), len(core)])
     b = params.bootstrap_draws
     ps = rng.choice(piece, size=(b, len(piece)), replace=True)
@@ -264,7 +265,13 @@ def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams,
     d = np.median(ps, axis=1) - np.median(cs, axis=1)
     a = (1.0 - params.ci_level) / 2.0
     lo, hi = np.quantile(d, [a, 1.0 - a])
-    return [round(math.exp(float(lo)), 4), round(math.exp(float(hi)), 4)]
+    return float(lo), float(hi)
+
+
+def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams, salt: int) -> list[float]:
+    """The deterministic percentile interval of median(piece) - median(core) in log, as RATIOS."""
+    lo, hi = bootstrap_interval_log(piece, core, params, salt)
+    return [round(math.exp(lo), 4), round(math.exp(hi), 4)]
 
 
 def _excursions(cams: list, values: dict, ref: float, params: GuardParams) -> list[tuple[int, int]]:
@@ -562,7 +569,12 @@ def _v2_segment(groups: dict, values: dict, params: GuardParams):
         if len(core) < params.min_ratios:
             r.update(decision="attached", uncertified=UNCERTIFIED_NO_CORE)
             continue
-        r["ci"] = bootstrap_interval(r["values"], core, params, salt=r["cameras"][0].index)
+        lo, hi = bootstrap_interval_log(r["values"], core, params, salt=r["cameras"][0].index)
+        r["ci"] = [round(math.exp(lo), 4), round(math.exp(hi), 4)]
+        # Kept unrounded, with this round's core median, for the depth placement's R1 and lever: a piece
+        # isolated in an earlier retest round was measured against that round's core, not the final one.
+        r["ci_log"] = [lo, hi]
+        r["core_log_median"] = float(np.median(core))
         r["ci_excludes_one"] = bool(r["ci"][0] > 1.0 or r["ci"][1] < 1.0)
         if r["ci_excludes_one"]:
             r.update(decision="isolated", reason=REASON_SCALE_OUTLIER)
@@ -623,7 +635,8 @@ def assess_v2(cameras: list[RoomCamera], metric_log: dict, params: GuardParams |
             break
         for r in isolated:
             pieces.append(dict(_v2_row_record(r), basis="scale", round=rnd,
-                               keyframe_ids=[c.kid for c in r["cameras"]]))
+                               keyframe_ids=[c.kid for c in r["cameras"]], ci_log=r["ci_log"],
+                               core_log_median=r["core_log_median"]))
         gone = {c.kid for r in isolated for c in r["cameras"]}
         groups = {g: [c for c in cams if c.kid not in gone] for g, cams in groups.items()}
         groups = {g: cams for g, cams in groups.items() if cams}
