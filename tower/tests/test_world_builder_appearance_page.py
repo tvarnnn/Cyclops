@@ -2488,26 +2488,54 @@ const nan = cams.concat([[NaN, 0, 0, 0, 0, 1], [0, Infinity, 0, 0, 0, 1]]);
 const N = NAV.fieldJob(onPath(nan));
 assert.ok(!N.failed && N.count === F.count && N.lo.every(isFinite), "the walk's own field: " + N.count);
 // past 2^53 cells the keys are strings, and still distinct
-const huge = cams.concat([[3e15, 3e15, 3e15, 0, 0, 1]]);
-const Hg = NAV.fieldJob(onPath(huge), NAV.SPACING * 2);
-assert.ok(!Hg.failed && Hg.lookup && typeof Hg.lookup.keys().next().value === "string");
-assert.strictEqual(new Set(Hg.lookup.keys()).size, Hg.count);
+const huge = cams.concat([[1e11, 1e11, 1e11, 0, 0, 1]]);
+for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
+  const Hg = NAV.fieldJob(onPath(huge), sp);
+  assert.ok(!Hg.failed && Hg.lookup && typeof Hg.lookup.keys().next().value === "string");
+  assert.strictEqual(new Set(Hg.lookup.keys()).size, Hg.count);
+}
+// a pose the lattice cannot hold beside the room (review R1: 1e16 out, `x++` at 2^53 never
+// advanced and the cube walk never ended) is skipped like a non-finite one, at both spacings
+for (const v of [7e15, 1e16, 1e300, -1e300]){
+  const far = cams.concat([[v, 0, 0, 0, 0, 1], [0, v, -v, 0, 0, 1]]);
+  for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
+    const t0 = Date.now(), Z = NAV.fieldJob(onPath(far), sp), R = NAV.fieldJob(F.input, sp);
+    assert.ok(Date.now() - t0 < 10000, "it returns: " + v);
+    assert.ok(!Z.failed && Z.count === R.count && Z.lo.every((x, k) => x === R.lo[k]), "the walk's own field: " + v);
+  }
+}
+assert.strictEqual(NAV.LATTICE_STEPS, Math.pow(2, 40));
 """)
 
     def test_what_the_walk_looked_at_leaves_out_only_the_far_poses(self):
         _run_far(r"""
-const ref = 3, plain = [0, 0, 0];
-for (const c of cams) for (let k = 0; k < 3; k++) plain[k] += (c[k] + c[k + 3] * ref) / cams.length;
-assert.deepStrictEqual(NAV.lookFocus(cams, ref), plain, "no far pose: the plain mean, bit for bit");
-assert.deepStrictEqual(NAV.lookFocus(withFar, ref), plain, "the three far poses out, and nothing else");
-assert.strictEqual(NAV.FAR_RADIUS, 10); assert.strictEqual(NAV.MIN_ROBUST, 8);
-// a pose just inside 10 x the median radius stays in
-const med = 1.5, edge = cams.concat([[2.5 + 9.9 * med, 0, 0, 0, 0, 1]]);
-const fe = NAV.lookFocus(edge, ref);
-assert.ok(Math.abs(fe[0] - plain[0]) > 0.5, "a legitimate tail still counts: " + fe[0]);
+const ref = 3;
+const mean = (list) => { const m = [0, 0, 0];
+  for (const c of list) for (let k = 0; k < 3; k++) m[k] += (c[k] + c[k + 3] * ref) / list.length; return m; };
+assert.deepStrictEqual([NAV.FAR_RADIUS, NAV.FAR_DETACH, NAV.FAR_SHARE, NAV.MIN_ROBUST], [10, 2.5, 0.05, 8],
+                       "the surface gate's own defaults (surface.py)");
+// a walk round a room, 80 poses, looking in every direction
+const walk = [];
+for (let i = 0; i < 80; i++){ const a = i * 0.21;
+  walk.push([2 * Math.cos(a), 0.1 * Math.sin(3 * a), 1.5 * Math.sin(a), Math.sin(a), 0, Math.cos(a)]); }
+assert.deepStrictEqual(NAV.lookFocus(walk, ref), mean(walk), "no far pose: the plain mean, bit for bit");
+// walk 10.2's three far poses spliced in (3 of 83, under the 5 % share): out, and nothing else
+const spliced = walk.slice(0, 20).concat([far[0]], walk.slice(20, 50), [far[1], far[2]], walk.slice(50));
+assert.deepStrictEqual(NAV.lookFocus(spliced, ref), mean(walk), "the three far poses out, and only they");
+assert.ok(Math.abs(mean(spliced)[0]) > 1000, "where the plain mean had gone: " + mean(spliced)[0]);
+// a walk that DWELLS (review R1): 80 poses on one spot and a crossing of 20 -- every pose counts,
+// because none is beyond 2.5 x the 95th-percentile distance as well as beyond 10 medians
+const dwell = [];
+for (let i = 0; i < 80; i++) dwell.push([0.05 * Math.cos(i), 0, 0.05 * Math.sin(i), 0, 0, 1]);
+for (let i = 0; i < 20; i++) dwell.push([0.15 * (i + 1), 0, 0, 0, 0, 1]);
+assert.deepStrictEqual(NAV.lookFocus(dwell, ref), mean(dwell), "a dwelling walk keeps its crossing");
+// a far GROUP over 5 % of the walk is not this rule's to judge: its 95th percentile is in the group,
+// so nothing is detached from it -- exactly what the surface's gate does with it (the plain mean)
+const group = [0, 1, 2, 3, 4, 5].map(j => [5000 + j, 0, 5000 - j, 0, 0, 1]), many = walk.concat(group);
+assert.deepStrictEqual(NAV.lookFocus(many, ref), mean(many), "six of 86 placed together far away");
 // under eight poses nothing is robust, so nobody is left out
-const few = cams.slice(0, 5).concat([far[0]]);
-assert.ok(NAV.lookFocus(few, ref)[0] > 1e4, "five poses and a far one: the plain mean");
+const few = walk.slice(0, 5).concat([far[0]]);
+assert.deepStrictEqual(NAV.lookFocus(few, ref), mean(few), "five poses and a far one: the plain mean");
 """)
 
     def test_a_field_that_cannot_be_built_never_leaves_the_page_preparing(self):
@@ -2559,6 +2587,9 @@ buildNav(); flush(); NAV.fieldJob = realJob;
 assert.strictEqual(S.nav.phase, "coarse"); assert.ok(navField && navField.done && !navFine);
 assert.ok(!els.bBack.disabled && els.bOverview.disabled, "Face the room works, Best view waits");
 assert.strictEqual(els.status.textContent, "");
+// (3b) a rebuild after that (new layers) lands both fields and drops the old error
+buildNav(); flush();
+assert.strictEqual(S.nav.phase, "ready"); assert.ok(!("error" in S.nav), JSON.stringify(S.nav));
 // (4) the walk 10.2 shape, which threw before: both fields land
 fresh(); inputFor = () => pageInput(withFar);
 buildNav(); flush();

@@ -800,10 +800,22 @@ const NAV = (() => {
      a list the Tower sends. Past it the field is `failed` rather than built,
      and the page carries on as it does before any field exists. */
   const MAX_FIELD_CELLS = 1 << 22;
+  /* How far from the origin, in lattice steps, a pose can still be put on the
+     lattice: cell positions are lo + i x spacing in float64, whose error at
+     2^40 steps is 2^-13 of a step -- the lattice stays exact near the room
+     with a pose that far out on the other side. 2^40 steps is 7.7e11 units
+     at the fine spacing; the worst blow-up seen is 9.4e6 (walk 4).
+     Past it a pose is skipped like a non-finite one: before this rule a pose
+     1e16 out walked the per-pose cube with `x++` at 2^53, which never ends. */
+  const LATTICE_STEPS = Math.pow(2, 40);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
     const {path} = input, pad = R_MAX + sp, margin = 1 + sp / UNIT * 1.2;   // a margin for interpolation
-    const finite = i => isFinite(path.P[i*3]) && isFinite(path.P[i*3+1]) && isFinite(path.P[i*3+2]);
+    // A pose the lattice can hold: finite, and within LATTICE_STEPS steps of the origin. Past that,
+    // float64 cannot keep the cells near the room on the lattice (and past 2^53 steps `x++` stops
+    // advancing), so such a pose is skipped exactly like a non-finite one; it stays in the path,
+    // where `pathDist` never picks it.
+    const finite = i => [0, 1, 2].every(k => Math.abs(path.P[i*3+k]) <= LATTICE_STEPS * sp);
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     let nf = 0;
     for (let i = 0; i < path.n; i++){
@@ -874,26 +886,33 @@ const NAV = (() => {
      where the walk was. One 158 km pose of 207 (walk 10.2) moved the plain
      mean ~800 units off the room, and "toward" then pointed every candidate
      the same way across the world. A pose is left out of the mean only by the
-     Tower's own rule for a pose placed nowhere near the rest
-     (`surface.robust_pose_outliers`' scale test, which
-     `surface_render.viewable_poses` applies to this very list): beyond
-     FAR_RADIUS (10, `surface.OUTLIER_RADIUS_MULTIPLE`) x the median distance
-     from the element-wise median centre; with fewer than MIN_ROBUST (8,
-     `surface.MIN_ROBUST_POSES`) poses, or all of them in one place, nobody is
-     left out. On a walk with no such pose this is the plain mean, unchanged. */
-  const FAR_RADIUS = 10, MIN_ROBUST = 8;
+     SURFACE's own gate for a pose the solver placed nowhere near the rest
+     (`surface.robust_pose_outliers`, its defaults, which decide what the
+     surface fuses): beyond both FAR_RADIUS (10) x the median distance from
+     the element-wise median centre AND FAR_DETACH (2.5) x the 95th-percentile
+     distance; nobody when that would leave out more than FAR_SHARE (5 %), or
+     with fewer than MIN_ROBUST (8) poses, or all of them in one place. Both
+     tests, because a walk that DWELLS has a tiny median and a legitimate tail
+     (80 poses on one spot and a crossing put 16 real poses past 10 medians,
+     none past 2.5 x p95), and this is a preference the page applies to every
+     world, not the camera list's filter (`viewable_poses`, which drops the
+     detachment on purpose). Where the gate drops nothing, the plain mean,
+     bit for bit. */
+  const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
   function lookFocus(cams, ref){
     const ok = cams.filter(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
     let use = ok;
     if (ok.length >= MIN_ROBUST){
-      const mid = [0, 1, 2].map(k => {
-        const v = ok.map(c => c[k]).sort((a, b) => a - b), m = v.length >> 1;
-        return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]);
-      });
+      const median = (v) => { const m = v.length >> 1; return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]); };
+      const mid = [0, 1, 2].map(k => median(ok.map(c => c[k]).sort((a, b) => a - b)));
       const rad = ok.map(c => Math.hypot(c[0] - mid[0], c[1] - mid[1], c[2] - mid[2]));
-      const sorted = rad.slice().sort((a, b) => a - b), m = sorted.length >> 1;
-      const med = sorted.length % 2 ? sorted[m] : 0.5 * (sorted[m - 1] + sorted[m]);
-      if (med > 0) use = ok.filter((c, i) => rad[i] <= FAR_RADIUS * med);
+      const sorted = rad.slice().sort((a, b) => a - b), med = median(sorted);
+      // numpy's default (linear) percentile, as the Tower computes it
+      const q = 0.95 * (sorted.length - 1), lo = Math.floor(q);
+      const p95 = sorted[lo] + (q - lo) * ((sorted[Math.min(lo + 1, sorted.length - 1)]) - sorted[lo]);
+      const cut = Math.max(FAR_RADIUS * med, FAR_DETACH * p95);
+      const kept = ok.filter((c, i) => !(rad[i] > cut));
+      if (med > 0 && ok.length - kept.length <= FAR_SHARE * ok.length) use = kept;
     }
     const focus = [0, 0, 0];
     for (const c of use) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / use.length;
@@ -1382,7 +1401,7 @@ const NAV = (() => {
           UNIT, R_SOFT, R_MAX, V_MAX, T_LO, T_HI, SPACING, CELLS, JUMP, PITCH_MAX, PITCH_SOFT, D_MIN, D_SOFT, B_FREE,
           C_LO, C_HI, C_DRIFT_MAX, C_DRIFT_RATE, C_SETTLE, C_GRAD_EPS, C_GRAD_WIDE,
           DARK_LO, DARK_HI,
-          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, FAR_RADIUS, MIN_ROBUST};
+          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, LATTICE_STEPS, FAR_RADIUS, FAR_DETACH, FAR_SHARE, MIN_ROBUST};
 })();
 /* ---------- end navigation */
 
@@ -3376,6 +3395,7 @@ async function main(){
       job = NAV.fieldJob(input, spacing);
       const key = coarse ? "coarse" : "fine";
       S.nav = S.nav || {};
+      delete S.nav.error;                // a rebuild's record is its own
       Object.assign(S.nav, {phase: "building " + key, samples: NAV_SAMPLES,
                             sources: input.centres.length / 3, seen: input.seenIdx.length,
                             inputMs: Math.round(inputMs)});
