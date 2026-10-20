@@ -209,7 +209,7 @@ def _measured(**over):
     pl.stats.update({"rigidity": {"through_share": 0.01}, "agree_share": 0.7, "through_share": 0.03,
                      "free_share": 0.05, "profile_drop": {"x-": 0.5, "x+": 0.5, "y-": 0.5, "y+": 0.5, "z-": 0.5,
                                                           "z+": 0.5}, "uniqueness": 0.4,
-                     "anchor_check": [{"ok": True}]})
+                     "anchor_check": [{"ok": True, "informative": True}]})
     pl.stats.update(over)
     return pl
 
@@ -330,10 +330,12 @@ def test_the_envelope_is_the_good_controls_and_refuses_a_room_it_cannot_trust():
     # A control the search misplaced, which the rule refuses (it agrees less than the good ones): usable.
     bad = control(0.9, agree_share=0.2)
     assert PP.envelope(good + [bad], UPM, PARAMS)["usable"]
-    # A misplaced control the rule would ACCEPT: the room's evidence cannot be trusted to place anything.
-    sneaky = control(0.9)
-    env = PP.envelope(good + [sneaky], UPM, PARAMS)
-    assert not env["usable"] and env["misplaced_accepted"] == [sneaky.label]
+    # A misplaced control the depth tests (R3-R5) would ACCEPT: the room's evidence cannot be trusted to place
+    # anything -- whatever its anchor says, since a piece can pass R6 by the cross-piece route instead.
+    for anchor in ([{"ok": True, "informative": True}], [{"ok": False, "informative": True}], []):
+        sneaky = control(0.9, anchor_check=anchor)
+        env = PP.envelope(good + [sneaky], UPM, PARAMS)
+        assert not env["usable"] and env["misplaced_accepted"] == [sneaky.label]
     # Fewer than half the controls put back where they are: unusable.
     assert not PP.envelope(good[:1] + [bad, control(1.2, agree_share=0.1)], UPM, PARAMS)["usable"]
 
@@ -447,6 +449,35 @@ def test_a_placement_no_anchor_vouches_for_is_not_corroborated():
     assert pl.refused == [PP.REFUSE_CORROBORATION] and not pl.placed
 
 
+def test_the_search_reach_is_read_from_its_own_steps():
+    # The coarse cube's half-side, then +-2 x 10 cm, +-1 x 5 cm, +-1 x 2.5 cm of fine drift past each best.
+    assert PP.search_reach_m(PP.PlaceParams()) == pytest.approx(0.6 + 0.2 + 0.05 + 0.025)
+    assert PP.search_reach_m(dataclasses.replace(PP.PlaceParams(), search_m=1.0)) == pytest.approx(1.275)
+
+
+def test_an_anchor_whose_check_could_have_failed_corroborates():
+    w = World(noise=False)                           # the room camera 0.3 s before: allowance 0.9 m
+    room, frames = _room(w)
+    pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
+    (a,) = pl.stats["anchor_check"]
+    assert a["ok"] and a["informative"] and a["bound_m"] < a["reach_m"]
+    assert a["reach_m"] == pytest.approx(math.sqrt(3) * PP.search_reach_m(PARAMS), abs=1e-3)  # it centred the box
+    PP.corroborate([pl], PARAMS, UPM)
+    assert pl.placed and pl.stats["corroborated_by"] == "anchor"
+
+
+def test_an_anchor_whose_check_cannot_fail_is_no_evidence():
+    # The room camera next in time is 1.5 s away: 3.3 m of walking allowance, more than the search can ever
+    # move the placement from that camera's own estimate. Its "ok" is true by construction: no evidence.
+    w = World(noise=False, piece_dt=1.5)
+    room, frames = _room(w)
+    pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
+    (a,) = pl.stats["anchor_check"]
+    assert a["ok"] and not a["informative"] and a["bound_m"] >= a["reach_m"]
+    PP.corroborate([pl], PARAMS, UPM)
+    assert pl.refused == [PP.REFUSE_CORROBORATION] and not pl.placed
+
+
 def test_two_pieces_that_build_the_same_new_geometry_corroborate_each_other():
     a = PP.Placement(label="piece-0", kids=["a"], ratio=1.0, ci=[1, 1])
     b = PP.Placement(label="piece-1", kids=["b"], ratio=1.0, ci=[1, 1])
@@ -454,7 +485,7 @@ def test_two_pieces_that_build_the_same_new_geometry_corroborate_each_other():
     pts = rng.uniform(0, 1, size=(400, 3)) * UPM
     a.new_points, b.new_points = pts, pts + 0.02 * UPM      # 2 cm apart
     for p in (a, b):
-        p.stats["anchor_check"] = [{"ok": False}]
+        p.stats["anchor_check"] = [{"ok": True, "informative": False}]     # an anchor that could not fail
     PP.corroborate([a, b], PARAMS, UPM)
     assert a.placed and b.placed and a.stats["corroborated_by"] == "piece"
     c = PP.Placement(label="piece-2", kids=["c"], ratio=1.0, ci=[1, 1])

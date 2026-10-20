@@ -33,9 +33,10 @@ rest, and how far the search lands from where it is.
 
 CERTIFICATION (`certify`), every test a refusal; a refused piece stays cut (today's outcome):
   R0 the room's evidence holds: at least half the controls land within `max_control_miss_m` of their own
-     poses (GOOD controls), and no control the search put farther than that would pass R3-R6 (the rule
-     refuses every stretch of the room's own frames it would put in the wrong place); otherwise nothing is
-     placed. The envelope below is the GOOD controls'.
+     poses (GOOD controls), and no control the search put farther than that passes R3-R5 (the depth tests
+     alone refuse every stretch of the room's own frames the search would put in the wrong place; R6 is not
+     credited, since a piece can pass it by the cross-piece route); otherwise nothing is placed. The
+     envelope below is the GOOD controls'.
   R1 scale: the guard's 95 % interval of the piece's ratio is narrower than the guard's own screen band
      (hi / lo <= `max_ci_width`, x1.25): a scale known no better than the band cannot be placed rigidly.
   R2 evidence: >= `min_frames` piece frames with depth (the guard's own floor for a measurement).
@@ -48,8 +49,10 @@ CERTIFICATION (`certify`), every test a refusal; a refused piece stays cut (toda
      scores within `min_peak_drop` of it (an aliased placement is not one the search can choose).
   R6 corroborated, independently of the depth fit: a time-adjacent room camera (<= `anchor_dt_s`) stood
      within walking distance of the placed piece camera (2.0 m/s x dt + 0.3 m, the guard's pose screen,
-     plus the scale interval's lever arm), OR another piece placed by R0-R5 puts new geometry where this
-     one does (median nearest neighbour <= `cross_median_m` over their overlap).
+     plus the scale interval's lever arm) AND that check could have failed (its bound is below the largest
+     miss the search's reach allows from that anchor's estimate, `search_reach_m`), OR another piece placed
+     by R0-R5 puts new geometry where this one does (median nearest neighbour <= `cross_median_m` over
+     their overlap).
 Then the piece's cameras and its points (those whose observers are mostly the piece's) take the
 similarity and join the room, recorded `uncertified` (`depth-placed`): the guard's scale rule did not
 certify them. The record says what was placed and why each refusal happened.
@@ -512,6 +515,17 @@ def _grid_search(scorer: Scorer, centre: np.ndarray, half: int, step_units: floa
     return best_t, best_s, n
 
 
+def _fine_halves(params: PlaceParams) -> list[int]:
+    """Steps either side of the previous best at each fine pass: +-2 for the first, +-1 after."""
+    return [2] + [1] * (len(params.fine_steps_m) - 1)
+
+
+def search_reach_m(params: PlaceParams) -> float:
+    """How far (metres, per axis) `search` can put a placement from its centre: the coarse cube's half-side
+    plus every fine pass's drift past the previous best. A placement is always inside this box."""
+    return params.search_m + sum(h * st for h, st in zip(_fine_halves(params), params.fine_steps_m))
+
+
 def search(piece: Piece, room: Room, centre: np.ndarray, params: PlaceParams
            ) -> tuple[np.ndarray, Scorer, int, float | None, float]:
     """(best translation, the fine scorer around it, evaluations, uniqueness): the +-search_m cube around
@@ -535,7 +549,7 @@ def search(piece: Piece, room: Room, centre: np.ndarray, params: PlaceParams
     rival = max((sc for p, sc in land if np.linalg.norm(p - t) > far), default=-math.inf)
     span = s_best - typical
     unique = None if not span > 0 else (1.0 if rival == -math.inf else (s_best - max(rival, typical)) / span)
-    halves = [2] + [1] * (len(params.fine_steps_m) - 1)
+    halves = _fine_halves(params)
     extent = sum(h * st for h, st in zip(halves, params.fine_steps_m)) * math.sqrt(3)
     fine = Scorer(piece, room, room.points, t, (extent + params.profile_m * math.sqrt(3) + 0.2) * upm,
                   params.fine_stride_px, params, max_frames=params.fine_frames)
@@ -754,14 +768,22 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames
     if ci and ci[0] > 0 and math.isfinite(piece.ratio):
         lever = max(abs(math.log(ci[1] / piece.ratio)), abs(math.log(piece.ratio / ci[0])))
     centroid = P.mean(0) if len(P) else t
+    # An anchor is EVIDENCE only when its check could have failed: the search can put the placement anywhere
+    # in the box of +-search_reach_m (per axis) about its centre, so the largest miss this anchor could see is
+    # the distance from its own estimate to the far corner of that box. A bound at or past that passes by
+    # construction (the centring anchor's own estimate is the box's centre).
+    h = search_reach_m(params)
     checks = []
     for a in anc:
         placed_cam = a["piece_centre"] + t
         room_cam = a["t"] + a["piece_centre"]
         miss = float(np.linalg.norm(placed_cam - room_cam) / upm)
         bound = a["allowance_m"] + float(np.linalg.norm(placed_cam - centroid) / upm) * lever
+        reach = float(np.linalg.norm(np.abs(np.asarray(centre) - a["t"]) / upm + h))
         checks.append({"side": a["side"], "dt_s": round(a["dt_s"], 3), "miss_m": round(miss, 3),
-                       "bound_m": round(bound, 3), "ok": bool(miss <= bound)})
+                       "bound_m": round(bound, 3), "reach_m": round(reach, 3), "margin_m": round(reach - bound, 3),
+                       "informative": bool(bound < reach), "near_threshold": bool(abs(reach - bound) < 0.1 * reach),
+                       "ok": bool(miss <= bound)})
     st["anchor_check"] = checks
     st["seconds"] = round(time.perf_counter() - t0, 3)
     return pl
@@ -773,8 +795,9 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     well this room's frames agree with each other where the rule can tell where they are. The envelope is
     the good controls' least agreement, most seeing-through, most free space and least rigidity; `usable`
     needs at least half the controls good (the room's evidence can place its own frames) and NO misplaced
-    control (farther than max_control_miss_m) that the rule would accept: it must refuse every stretch of
-    the room's own frames it would put in the wrong place."""
+    control (farther than max_control_miss_m) that passes R3-R5: the depth tests alone must refuse every
+    stretch of the room's own frames the search would put in the wrong place (R6 is not credited: a piece
+    can pass it by the cross-piece route, which no control can be tested on)."""
     for c in controls:
         if c.t is not None:
             truth = np.asarray(c.stats.get("true_translation") or np.zeros(3), np.float64)
@@ -799,7 +822,9 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     for c in bad:
         probe = Placement(label=c.label, kids=c.kids, ratio=1.0, ci=[1.0, 1.0], t=c.t, stats=c.stats)
         certify(probe, dict(out, usable=True), params)
-        if not probe.refused and any(a["ok"] for a in c.stats.get("anchor_check") or []):
+        # R3-R5 alone: R6 is not credited as a defence here, because a piece can pass R6 by the cross-piece
+        # route, which a control cannot be tested on.
+        if not probe.refused:
             accepted.append(c.label)
     out["misplaced_accepted"] = accepted
     out["usable"] = not accepted
@@ -839,7 +864,7 @@ def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: f
 
     ok = [p for p in placements if not p.refused]
     for p in ok:
-        by_anchor = any(a["ok"] for a in p.stats.get("anchor_check") or [])
+        by_anchor = any(a["ok"] and a.get("informative") for a in p.stats.get("anchor_check") or [])
         cross = []
         for q in ok:
             if q is p or p.new_points is None or q.new_points is None:
