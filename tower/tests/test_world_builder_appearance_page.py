@@ -2548,10 +2548,34 @@ for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
 // the real walks measured stay far inside: the synthetic room's fine field, with 6,000 samples
 const R = NAV.fieldJob(Object.assign({}, F.input, {samples: new Float32Array(6000 * 3)}));
 assert.ok(!R.failed && R.count * NAV.CELLS * 3 < NAV.MAX_FIELD_BYTES / 10);
+// at the coarse spacing it is still over: the final field can coarsen no further, and fails
+assert.ok(NAV.fieldJobWithin(six, NAV.SPACING, NAV.SPACING * 2).costly);
 // the comparisons bound on its own: few cells, a very large proxy sample set
 const many = Object.assign({}, F.input, {samples: new Float32Array(Math.ceil(NAV.MAX_FIELD_WORK / F.count + 1) * 3)});
 const W = NAV.fieldJob(many);
 assert.ok(W.failed && /comparisons/.test(W.failed) && W.count === 0, String(W.failed));
+""")
+
+    def test_a_long_valid_walk_keeps_a_budgeted_final_field(self):
+        """R2b: a corridor of 200 poses 1.8 apart (every segment walkable, under the
+        240-pose cap) is over the budget at SPACING. The final field's spacing grows by
+        2^(1/3) a step until it fits, never past the coarse field's; a walk under the
+        budget keeps SPACING and its exact cells."""
+        _run_far(r"""
+const corridor = Array.from({length: 200}, (_, i) => [i * 1.8, 0, 0, 1, 0, 0]);
+const cin = Object.assign({}, F.input, {path: NAV.makePath(corridor, up), samples: new Float32Array(6000 * 3)});
+assert.ok(Array.from(cin.path.ok).every(Boolean), "a continuous walk");
+assert.ok(NAV.fieldJob(cin, NAV.SPACING).costly, "over the budget at SPACING");
+const J = NAV.fieldJobWithin(cin, NAV.SPACING, NAV.SPACING * 2);
+assert.ok(!J.failed && J.count > 0, String(J.failed));
+assert.ok(Math.abs(J.spacing - NAV.SPACING * Math.cbrt(2)) < 1e-12, "one step, a doubled cell volume: " + J.spacing);
+assert.ok(J.count * NAV.CELLS * 3 <= NAV.MAX_FIELD_BYTES && J.count * 6000 <= NAV.MAX_FIELD_WORK);
+assert.deepStrictEqual(Array.from(J.where), boxField(J), "a real field on its lattice");
+// under the budget nothing changes: the synthetic room, with 6,000 samples, keeps SPACING and its cells
+const six = Object.assign({}, F.input, {samples: new Float32Array(6000 * 3)});
+const R = NAV.fieldJobWithin(six, NAV.SPACING, NAV.SPACING * 2), R0 = NAV.fieldJob(six, NAV.SPACING);
+assert.strictEqual(R.spacing, NAV.SPACING);
+assert.deepStrictEqual(Array.from(R.where), Array.from(R0.where));
 """)
 
     def test_what_the_walk_looked_at_leaves_out_only_the_far_poses(self):
@@ -2629,8 +2653,9 @@ assert.strictEqual(els.status.textContent, ""); assert.strictEqual(S.nav.phase, 
 assert.ok(/cells/.test(S.nav.error), S.nav.error); assert.strictEqual(navField, null);
 // (3) the fine field faults after the coarse one landed: the coarse one stays in use
 fresh(); inputFor = () => pageInput(withFar); let calls = 0;
-NAV.fieldJob = (...a) => { if (++calls === 2) throw new Error("fine fault"); return realJob(...a); };
-buildNav(); flush(); NAV.fieldJob = realJob;
+const realWithin = NAV.fieldJobWithin;   // the final pass goes through fieldJobWithin
+NAV.fieldJobWithin = (...a) => { calls++; throw new Error("fine fault"); };
+buildNav(); flush(); NAV.fieldJobWithin = realWithin; assert.strictEqual(calls, 1);
 assert.strictEqual(S.nav.phase, "coarse"); assert.ok(navField && navField.done && !navFine);
 assert.ok(!els.bBack.disabled && els.bOverview.disabled, "Face the room works, Best view waits");
 assert.strictEqual(els.status.textContent, "");
@@ -2643,13 +2668,17 @@ buildNav(); flush();
 assert.strictEqual(S.nav.phase, "ready", JSON.stringify(S.nav)); assert.ok(navFine && navField.count > 0);
 assert.ok(!els.bOverview.disabled && !els.bBack.disabled && scored === 1);
 assert.strictEqual(els.status.textContent, ""); assert.ok(!("error" in S.nav));
-// (6) R2: a fine field over the cost budget leaves the coarse one (an eighth of the cells) in use
-fresh(); const spread = Array.from({length: 100}, (_, i) => [i * 1000, (i % 3) * 1000, (i % 5) * 1000, 0, 0, 1]);
-inputFor = () => Object.assign(pageInput(spread), {samples: Float32Array.from([0, 0, 3]), seenOff: Int32Array.from([0, 1]),
-  seenIdx: Int32Array.from([0]), centres: Float32Array.from([0, 0, 0]), sampleQ: Uint8Array.from([255]), sampleC: Uint8Array.from([64])});
+// (6) R2b: a valid 200-pose corridor, 1.8 apart (every segment walkable), is over the cost budget at
+// SPACING; the final field coarsens step-wise until it fits and the Best view is still offered
+fresh(); const corridor = Array.from({length: 200}, (_, i) => [i * 1.8, 0, 0, 1, 0, 0]);
+const tiny = {samples: Float32Array.from([0, 0, 3]), seenOff: Int32Array.from([0, 1]), seenIdx: Int32Array.from([0]),
+  centres: Float32Array.from([0, 0, 0]), sampleQ: Uint8Array.from([255]), sampleC: Uint8Array.from([64])};
+inputFor = () => Object.assign(pageInput(corridor), tiny);
 buildNav(); flush();
-assert.strictEqual(S.nav.phase, "coarse", JSON.stringify(S.nav)); assert.ok(/bytes/.test(S.nav.error), S.nav.error);
-assert.ok(!els.bBack.disabled && els.bOverview.disabled && navField.count > 0 && !navFine);
+assert.strictEqual(S.nav.phase, "ready", JSON.stringify(S.nav)); assert.ok(!("error" in S.nav));
+assert.ok(navFine && !els.bOverview.disabled && !els.bBack.disabled && scored === 1, "Best view is offered");
+assert.ok(navField.spacing > NAV.SPACING && navField.spacing < NAV.SPACING * NAV_COARSE, String(navField.spacing));
+assert.ok(navField.count * NAV.CELLS * 3 <= NAV.MAX_FIELD_BYTES, "within budget: " + navField.count);
 assert.strictEqual(els.status.textContent, "");
 // (5) nothing to build from (no layers yet): not "preparing" either
 fresh(); inputFor = () => null;

@@ -773,23 +773,16 @@ const NAV = (() => {
      and swaps in the fine one when it lands. */
   /* THE LATTICE IS WALKED WHERE THE WALK IS. Walk 10.2's list held a pose
      158 km out; the box of every pose was 4.7e14 cells and `new Int32Array`
-     threw, so no field ever landed (LANE-F.md). A kept cell is within the
-     widened envelope of a pose or a walkable segment, so it lies in a cube
-     round a pose (half-side: margin x the envelope's larger axis, + JUMP/2 at
-     a segment end). The cubes, on the box's own lattice and put back in its
-     z, y, x order, are the box's field cell for cell; the cheaper of the two
-     is walked, so a compact walk is enumerated exactly as before. Which poses
-     are real is the Tower's call (`viewable_poses`), not the page's.
-     MAX_FIELD_CELLS bounds one synchronous enumeration (2^22: a 16 MB index,
-     ~1.7e9 path terms); the cubes of a 240-pose list total ~2.2M. */
+     threw (LANE-F.md). A kept cell lies in a cube round a pose (half-side:
+     margin x the envelope's larger axis, + JUMP/2 at a segment end); the
+     cubes, on the box's lattice and in its z, y, x order, are the box's field
+     cell for cell, and the cheaper of the two is walked. MAX_FIELD_CELLS
+     bounds one enumeration (2^22, ~1.7e9 path terms). */
   const MAX_FIELD_CELLS = 1 << 22;
-  /* A pose more than LATTICE_STEPS steps (any axis) from the walk's REFERENCE
-     pose -- the finite pose nearest the element-wise median, so always one of
-     the walk's own -- is skipped like a non-finite one: indices stay under
-     ~2^41, far from 2^53 where `x++` stops advancing (R1: a pose 1e16 out never
-     finished). From the walk, not the origin (R2): a compact walk 1e12 out is
-     the box's own field. 2^40 fine steps is 7.7e11 units; the worst seen is
-     9.4e6. */
+  /* A pose more than LATTICE_STEPS steps (any axis) from the REFERENCE pose
+     -- the finite pose nearest the element-wise median -- is skipped like a
+     non-finite one, keeping indices far below 2^53, where `x++` stops (R1);
+     from the walk, not the origin, so a compact walk 1e12 out is unchanged (R2). */
   const LATTICE_STEPS = Math.pow(2, 40);
   /* What the field may COST, checked as cells are kept, before allocation (R2):
      a cell holds three cube maps (1,152 bytes) and `fieldWork` compares it with
@@ -846,9 +839,9 @@ const NAV = (() => {
                                                  + MAX_FIELD_CELLS);
     const where = [], nS = input.samples ? input.samples.length / 3 : 0;
     const most = Math.min(MAX_FIELD_BYTES / (CELLS * 3), nS > 0 ? MAX_FIELD_WORK / nS : Infinity);
-    const costly = (n) => empty("the walk's field would hold over " + Math.floor(most) + " cells ("
+    const costly = (n) => Object.assign(empty("the walk's field would hold over " + Math.floor(most) + " cells ("
       + n * CELLS * 3 + " bytes, " + n * nS + " sample comparisons), over " + MAX_FIELD_BYTES + " bytes or "
-      + MAX_FIELD_WORK);
+      + MAX_FIELD_WORK), {costly: true});
     let index = null, lookup = null;
     const keep = (x, y, z) => {
       const p = [lo[0] + x * sp, lo[1] + y * sp, lo[2] + z * sp];
@@ -892,17 +885,14 @@ const NAV = (() => {
             next: 0, done: count === 0, failed: null};
   }
   /* WHAT THE WALK LOOKED AT, for the Best view's "toward": the mean look
-     target (centre + forward x `ref`) over the poses the SURFACE's gate rule
-     (`surface.robust_pose_outliers`, defaults) would keep: out only beyond
-     both 10 x the median distance from the element-wise median AND 2.5 x the
-     p95, nobody when that is over 5 % of them, under 8 poses, or all in one
-     place (a dwelling walk keeps its crossing). Walk 10.2's 158 km pose moved
-     the plain mean ~800 units off the room. Where nothing is dropped it is the
-     plain mean, bit for bit. It can differ from the surface's own decision
-     (R2): same rule and constants (production builds with SurfaceParams()
-     defaults), different input -- the surface judges the poses it is offered,
-     unrounded; this, the published list, decimated and rounded to 5 decimals.
-     It only moves the "toward" factor (0.5-1) and never drops over 5 %. */
+     target (centre + forward x `ref`) over the poses the surface's gate rule
+     (`robust_pose_outliers`, defaults) keeps: out only beyond 10 x the median
+     distance AND 2.5 x the p95, nobody if that is over 5 %, under 8 poses, or
+     all in one place. Walk 10.2's 158 km pose moved the plain mean ~800 units
+     off the room; with nothing dropped it IS the plain mean. LIMIT (R2,
+     accepted): it judges the published list (decimated, rounded), not the
+     poses the surface judged, so on a decimated list it can drop poses the
+     surface kept; it only moves "toward" (0.5-1), never drops over 5 %. */
   const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
   function lookKept(cams){
     const keep = cams.map(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
@@ -929,6 +919,18 @@ const NAV = (() => {
     const focus = [0, 0, 0];
     for (const c of use) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / use.length;
     return focus;
+  }
+  /* The final field within the cost budget (R2b: a valid 200-pose corridor is
+     over it at SPACING and would never get a Best view). Over budget, the
+     spacing grows by 2^(1/3) -- each step doubles a cell's volume -- up to
+     `coarsest`, the coarse field's own spacing, which already fitted: the
+     finest lattice that fits, to within one doubling, in at most three more
+     (early-stopping) enumerations. A field under budget keeps SPACING. */
+  function fieldJobWithin(input, spacing, coarsest){
+    const n = Math.max(0, Math.round(3 * Math.log2(coarsest / spacing)));
+    let job = fieldJob(input, spacing);
+    for (let k = 1; k <= n && job.costly; k++) job = fieldJob(input, k === n ? coarsest : spacing * Math.pow(2, k / 3));
+    return job;
   }
   /* A lattice cell's key in a per-pose field: its index in the box while that
      is an exact integer, and a string past 2^53 (a pose so far out that the
@@ -1407,7 +1409,7 @@ const NAV = (() => {
     return {index: from, skipped: 0, capped: false};
   }
 
-  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, lookKept, lookFocus, support, positionBound,
+  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, fieldJobWithin, lookKept, lookFocus, support, positionBound,
           lookBound, darkness, step, sampleReachable, glide, glideMs, nearest, closeBound, nextPose,
           richness, sampleGrid, ringProfile, bestHeading,
           UNIT, R_SOFT, R_MAX, V_MAX, T_LO, T_HI, SPACING, CELLS, JUMP, PITCH_MAX, PITCH_SOFT, D_MIN, D_SOFT, B_FREE,
@@ -3385,10 +3387,8 @@ async function main(){
     status(PREPARING);
     const steps = navInputSteps();
     let input = null, job = null, spent = 0, inputMs = 0, coarse = true;
-    // A field that cannot be built must not leave "Preparing the view…" up
-    // for good, as a RangeError here did on walk 10.2: say nothing more, record
-    // why (`S.nav.phase` "failed", `S.nav.error`), keep a coarse field that
-    // already landed, and carry on as before any field exists.
+    // A field that cannot be built must not leave "Preparing the view…" up for
+    // good (walk 10.2): stop, say why in `S.nav`, keep a coarse field if any.
     const stop = (why) => {
       if (gen !== navGeneration) return;
       navJob = null;
@@ -3400,14 +3400,14 @@ async function main(){
     };
     const startJob = (spacing) => {
       const tJob = performance.now();
-      job = NAV.fieldJob(input, spacing);
+      job = coarse ? NAV.fieldJob(input, spacing) : NAV.fieldJobWithin(input, spacing, NAV.SPACING * NAV_COARSE);
       const key = coarse ? "coarse" : "fine";
       S.nav = S.nav || {};
       delete S.nav.error;                // a rebuild's record is its own
       Object.assign(S.nav, {phase: "building " + key, samples: NAV_SAMPLES,
                             sources: input.centres.length / 3, seen: input.seenIdx.length,
                             inputMs: Math.round(inputMs)});
-      S.nav[key] = {voxels: job.count, spacing, bytes: job.cov.byteLength * 3,
+      S.nav[key] = {voxels: job.count, spacing: job.spacing, bytes: job.cov.byteLength * 3,
                     jobMs: Math.round(performance.now() - tJob)};
       spent += performance.now() - tJob;
       if (job.failed) stop(job.failed); else navJob = job;
