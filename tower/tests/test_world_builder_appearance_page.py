@@ -2576,6 +2576,8 @@ const six = Object.assign({}, F.input, {samples: new Float32Array(6000 * 3)});
 const R = NAV.fieldJobWithin(six, NAV.SPACING, NAV.SPACING * 2), R0 = NAV.fieldJob(six, NAV.SPACING);
 assert.strictEqual(R.spacing, NAV.SPACING);
 assert.deepStrictEqual(Array.from(R.where), Array.from(R0.where));
+// R1: a non-positive spacing takes no steps (it used to loop forever), and returns
+assert.ok(NAV.fieldJobWithin(cin, 0, NAV.SPACING * 2).costly);
 """)
 
     def test_what_the_walk_looked_at_leaves_out_only_the_far_poses(self):
@@ -2680,6 +2682,17 @@ assert.ok(navFine && !els.bOverview.disabled && !els.bBack.disabled && scored ==
 assert.ok(navField.spacing > NAV.SPACING && navField.spacing < NAV.SPACING * NAV_COARSE, String(navField.spacing));
 assert.ok(navField.count * NAV.CELLS * 3 <= NAV.MAX_FIELD_BYTES, "within budget: " + navField.count);
 assert.strictEqual(els.status.textContent, "");
+// (7) R1: when only the coarse lattice fits, the coarse field already landed IS the final one (no second
+// fieldWork over the same cells): 200 poses 4.2 apart on a diagonal
+fresh(); const diag = Array.from({length: 200}, (_, i) => [i * 3, 0, i * 3, 1, 0, 0]);
+inputFor = () => Object.assign(pageInput(diag), tiny);
+const realWork = NAV.fieldWork, worked = new Set();
+NAV.fieldWork = (F, b) => { worked.add(F); return realWork(F, b); };
+buildNav(); flush(); NAV.fieldWork = realWork;
+assert.strictEqual(S.nav.phase, "ready", JSON.stringify(S.nav));
+assert.strictEqual(navField.spacing, NAV.SPACING * NAV_COARSE, "only the coarse lattice fits: " + navField.spacing);
+assert.ok(navFine && !els.bOverview.disabled && scored === 1, "and it is offered as the final field");
+assert.strictEqual(worked.size, 1, "one field was worked, not the same cells twice");
 // (5) nothing to build from (no layers yet): not "preparing" either
 fresh(); inputFor = () => null;
 buildNav(); flush();

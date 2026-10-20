@@ -788,7 +788,7 @@ const NAV = (() => {
      a cell holds three cube maps (1,152 bytes) and `fieldWork` compares it with
      every proxy sample. Real fine fields are 5,230-8,840 cells, 6-10 MB, 31-53M
      comparisons (LANE-F.md §6); the caps are 3x and 5x the largest. Over either
-     the job is `failed`: a fine field leaves the coarse one in use. */
+     the job is `failed`; the final pass then coarsens (`fieldJobWithin`). */
   const MAX_FIELD_BYTES = Math.pow(2, 25), MAX_FIELD_WORK = Math.pow(2, 28);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
@@ -927,7 +927,7 @@ const NAV = (() => {
      finest lattice that fits, to within one doubling, in at most three more
      (early-stopping) enumerations. A field under budget keeps SPACING. */
   function fieldJobWithin(input, spacing, coarsest){
-    const n = Math.max(0, Math.round(3 * Math.log2(coarsest / spacing)));
+    const n = spacing > 0 && coarsest > spacing ? Math.round(3 * Math.log2(coarsest / spacing)) : 0;
     let job = fieldJob(input, spacing);
     for (let k = 1; k <= n && job.costly; k++) job = fieldJob(input, k === n ? coarsest : spacing * Math.pow(2, k / 3));
     return job;
@@ -3466,6 +3466,7 @@ async function main(){
         coarse = false;
         startJob(NAV.SPACING);
         if (job.failed) return;
+        if (job.spacing === navField.spacing) job = navField;   // only the coarse lattice fits: it is final
         setTimeout(slice, 0);
         return;
       }
