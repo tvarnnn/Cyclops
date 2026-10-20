@@ -95,6 +95,8 @@ REFUSE_FREE = "in-room-free-space"
 REFUSE_PEAK = "not-pinned"
 REFUSE_AMBIGUOUS = "ambiguous"
 REFUSE_CORROBORATION = "not-corroborated"
+REFUSE_REGION = "anchor-region-too-large"
+REFUSE_TOO_LARGE = "too-large"
 
 
 @dataclass(frozen=True)
@@ -129,19 +131,28 @@ class PlaceParams:
     min_free_frames: int = 2
     # Piece samples for the rigidity and cross-piece tests.
     piece_stride_px: int = 16
-    # Search: a cube of +-search_m around the anchor estimate (lane B's prototype's) at coarse_step_m (coarse
-    # voxels, coarse cells, at most coarse_frames frames), then each fine step around the best (fine voxels,
-    # fine cells, at most fine_frames frames). A placement outside the cube is not found.
+    # Search: the whole REGION the walk allows -- the ball about the tightest anchor's estimate whose radius is
+    # that anchor's bound (walking allowance + the scale interval's lever arm) -- on a lattice of coarse_step_m
+    # (coarse voxels, coarse cells, at most coarse_frames frames; each pass's bands widen by the lattice's
+    # reach, step sqrt(3) / 2, so no basin falls between lattice points), then each fine step around the best
+    # (fine voxels, fine cells, at most fine_frames frames). At most max_region_evaluations lattice points:
+    # a region larger than that is refused, not sampled more coarsely. (`search_m` is kept for the record.)
     search_m: float = 0.6
-    coarse_step_m: float = 0.20
+    coarse_step_m: float = 0.30
     fine_steps_m: tuple = (0.10, 0.05, 0.025)
     coarse_voxel_m: float = 0.10
     coarse_stride_px: int = 16
     coarse_frames: int = 12
     fine_stride_px: int = 8
     fine_frames: int = 16
-    # The room's own controls: this many stretches of control_frames consecutive certified room frames with
-    # depth, evenly spread over the walk, left out of the evidence and placed like pieces.
+    max_region_evaluations: int = 2000
+    # Bounded work: a piece of more than max_piece_keyframes keyframes is refused; at most max_measure_frames
+    # of its frames (evenly spread) are measured.
+    max_piece_keyframes: int = 400
+    max_measure_frames: int = 40
+    # The room's own controls: exactly this many stretches of control_frames consecutive certified room frames
+    # with depth, evenly spread over the walk, left out of the evidence (and of the anchor pool) and placed
+    # like pieces; a room too short to spare them all places nothing.
     control_segments: int = 6
     control_frames: int = 20
     # A control the search puts within this of its own pose is placed (GOOD, with R5); farther, misplaced.
@@ -520,29 +531,36 @@ def _fine_halves(params: PlaceParams) -> list[int]:
     return [2] + [1] * (len(params.fine_steps_m) - 1)
 
 
-def search_reach_m(params: PlaceParams) -> float:
-    """How far (metres, per axis) `search` can put a placement from its centre: the coarse cube's half-side
-    plus every fine pass's drift past the previous best. A placement is always inside this box."""
-    return params.search_m + sum(h * st for h, st in zip(_fine_halves(params), params.fine_steps_m))
+def region_lattice(radius_units: float, step_units: float) -> np.ndarray:
+    """Offsets of the coarse lattice that cover a ball of `radius_units`: every lattice point within the
+    radius plus the lattice's own reach (step sqrt(3) / 2), so every point of the ball is within that reach
+    of one of them."""
+    n = int(math.ceil(radius_units / step_units)) + 1
+    ax = np.arange(-n, n + 1) * step_units
+    g = np.stack(np.meshgrid(ax, ax, ax, indexing="ij"), -1).reshape(-1, 3)
+    return g[np.linalg.norm(g, axis=1) <= radius_units + step_units * math.sqrt(3.0) / 2.0]
 
 
-def search(piece: Piece, room: Room, centre: np.ndarray, params: PlaceParams
+def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, params: PlaceParams
            ) -> tuple[np.ndarray, Scorer, int, float | None, float]:
-    """(best translation, the fine scorer around it, evaluations, uniqueness): the +-search_m cube around
-    `centre` at coarse_step_m on coarse voxels, cells and frames; then, on a fine scorer built around that
-    best, each finer step (+-2 steps for the first, +-1 after) -- each pass's bands widened by its own grid's
-    reach (`Scorer.counts`). UNIQUENESS = (winner - best rival) / (winner - typical) on the coarse landscape,
-    the rival the best coarse score farther than profile_m + coarse_step_m from the winner, `typical` the
-    median coarse score (a placement anywhere in the cube): 1 when nothing else stands out, 0 when a second
-    basin is as good -- an ambiguity the search would resolve by chance (None when the winner is not above
-    typical). Returns also `typical` for the profile's scale."""
+    """(best translation, the fine scorer around it, evaluations, uniqueness, typical): every point of the
+    coarse lattice covering the ball of `radius_units` about `centre` (the region the walk allows), on coarse
+    voxels, cells and frames; then, on a fine scorer built around that best, each finer step (+-2 steps for
+    the first, +-1 after) -- each pass's bands widened by its own lattice's reach (`Scorer.counts`).
+    UNIQUENESS = (winner - best rival) / (winner - typical) over the whole region, the rival the best coarse
+    score farther than profile_m + coarse_step_m from the winner, `typical` the median coarse score (a
+    placement anywhere in the region): 1 when nothing else stands out, 0 when a second basin is as good -- the
+    depth does not give one answer inside the region (None when the winner is not above typical)."""
     upm = room.units_per_m
     centre = np.asarray(centre, np.float64)
-    n = int(round(params.search_m / params.coarse_step_m))
-    coarse = Scorer(piece, room, room.coarse, centre, (params.search_m * math.sqrt(3) + 0.3) * upm,
-                    params.coarse_stride_px, params, max_frames=params.coarse_frames)
-    land: list = []
-    t, s_best, evals = _grid_search(coarse, centre, n, params.coarse_step_m * upm, params, land)
+    step = params.coarse_step_m * upm
+    offs = region_lattice(radius_units, step)
+    coarse = Scorer(piece, room, room.coarse, centre, radius_units + 2 * step, params.coarse_stride_px, params,
+                    max_frames=params.coarse_frames)
+    slack = step * math.sqrt(3.0) / 2.0
+    land = [(centre + o, _score(coarse.counts(centre + o, slack), params)) for o in offs]
+    evals = len(land)
+    t, s_best = max(land, key=lambda x: x[1])
     finite = [sc for _p, sc in land if sc > -math.inf]
     typical = float(np.median(finite)) if finite else -math.inf
     far = (params.profile_m + params.coarse_step_m) * upm
@@ -553,8 +571,8 @@ def search(piece: Piece, room: Room, centre: np.ndarray, params: PlaceParams
     extent = sum(h * st for h, st in zip(halves, params.fine_steps_m)) * math.sqrt(3)
     fine = Scorer(piece, room, room.points, t, (extent + params.profile_m * math.sqrt(3) + 0.2) * upm,
                   params.fine_stride_px, params, max_frames=params.fine_frames)
-    for half, step in zip(halves, params.fine_steps_m):
-        t, _s, k = _grid_search(fine, t, half, step * upm, params)
+    for half, step_m in zip(halves, params.fine_steps_m):
+        t, _s, k = _grid_search(fine, t, half, step_m * upm, params)
         evals += k
     return t, fine, evals, unique, typical
 
@@ -731,8 +749,26 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames
     if not anc:
         pl.refused.append(REFUSE_NO_ANCHOR)
         return pl
-    centre = min(anc, key=lambda a: a["allowance_m"])["t"]
-    t, fine, evals, unique, typical = search(piece, room, centre, params)
+    # R6's region. Each anchor bounds where the piece can be: its walking allowance plus the scale interval's
+    # lever arm (the distance from the anchor's piece camera to where the piece meets the room -- its samples'
+    # centroid -- times the interval's half-width in log; translation-free). The tightest is the region.
+    lever = 0.0
+    if ci and ci[0] > 0 and math.isfinite(piece.ratio):
+        lever = max(abs(math.log(ci[1] / piece.ratio)), abs(math.log(piece.ratio / ci[0])))
+    P0, _fi0 = piece_points(piece, params, np.zeros(3), params.piece_stride_px)
+    centroid0 = P0.mean(0) if len(P0) else np.zeros(3)
+    for a in anc:
+        a["bound_m"] = a["allowance_m"] + float(np.linalg.norm(a["piece_centre"] - centroid0) / upm) * lever
+    region = min(anc, key=lambda a: a["bound_m"])
+    centre = region["t"]
+    lattice = len(region_lattice(region["bound_m"] * upm, params.coarse_step_m * upm))
+    st["region"] = {"side": region["side"], "dt_s": round(region["dt_s"], 3), "radius_m": round(region["bound_m"], 3),
+                    "lattice_points": lattice}
+    if lattice > params.max_region_evaluations:
+        pl.refused.append(REFUSE_REGION)
+        st["seconds"] = round(time.perf_counter() - t0, 3)
+        return pl
+    t, fine, evals, unique, typical = search(piece, room, centre, region["bound_m"] * upm, params)
     pl.t = t
     st["evaluations"] = evals
     st["uniqueness"] = None if unique is None else round(unique, 4)
@@ -762,28 +798,13 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames
     except Exception:  # noqa: BLE001 -- the cross-piece check then has nothing from this piece
         pl.new_points = np.zeros((0, 3))
     st["new_points"] = int(len(pl.new_points))
-    # R6, anchor half: an anchor room camera within its walking allowance of the placed piece camera, plus
-    # the lever arm of the scale interval about where the piece meets the room (its samples' centroid).
-    lever = 0.0
-    if ci and ci[0] > 0 and math.isfinite(piece.ratio):
-        lever = max(abs(math.log(ci[1] / piece.ratio)), abs(math.log(piece.ratio / ci[0])))
-    centroid = P.mean(0) if len(P) else t
-    # An anchor is EVIDENCE only when its check could have failed: the search can put the placement anywhere
-    # in the box of +-search_reach_m (per axis) about its centre, so the largest miss this anchor could see is
-    # the distance from its own estimate to the far corner of that box. A bound at or past that passes by
-    # construction (the centring anchor's own estimate is the box's centre).
-    h = search_reach_m(params)
+    # R6: every anchor's room camera within its bound of the placed piece camera. The region anchor's check
+    # can fail (the fine passes drift past the region's lattice); another anchor's checks it independently.
     checks = []
     for a in anc:
-        placed_cam = a["piece_centre"] + t
-        room_cam = a["t"] + a["piece_centre"]
-        miss = float(np.linalg.norm(placed_cam - room_cam) / upm)
-        bound = a["allowance_m"] + float(np.linalg.norm(placed_cam - centroid) / upm) * lever
-        reach = float(np.linalg.norm(np.abs(np.asarray(centre) - a["t"]) / upm + h))
+        miss = float(np.linalg.norm(t - a["t"]) / upm)
         checks.append({"side": a["side"], "dt_s": round(a["dt_s"], 3), "miss_m": round(miss, 3),
-                       "bound_m": round(bound, 3), "reach_m": round(reach, 3), "margin_m": round(reach - bound, 3),
-                       "informative": bool(bound < reach), "near_threshold": bool(abs(reach - bound) < 0.1 * reach),
-                       "ok": bool(miss <= bound)})
+                       "bound_m": round(a["bound_m"], 3), "region": a is region, "ok": bool(miss <= a["bound_m"])})
     st["anchor_check"] = checks
     st["seconds"] = round(time.perf_counter() - t0, 3)
     return pl
@@ -821,7 +842,7 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     accepted = []
     for c in bad:
         probe = Placement(label=c.label, kids=c.kids, ratio=1.0, ci=[1.0, 1.0], t=c.t, stats=c.stats)
-        certify(probe, dict(out, usable=True), params)
+        certify(probe, dict(out, usable=True), params, r6=False)
         # R3-R5 alone: R6 is not credited as a defence here, because a piece can pass R6 by the cross-piece
         # route, which a control cannot be tested on.
         if not probe.refused:
@@ -833,9 +854,9 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     return out
 
 
-def certify(pl: Placement, env: dict, params: PlaceParams) -> None:
-    """R0 and R3-R5 on a measured piece (R1 and R2 are read before measuring; R6 needs every piece:
-    `corroborate`)."""
+def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> None:
+    """R0 and R3-R6 on a measured piece (R1 and R2 are read before measuring). `r6=False` for the controls'
+    false-accept probe in R0, which must not credit R6."""
     st = pl.stats
     if not env.get("usable"):
         pl.refused.append(REFUSE_ROOM)
@@ -855,16 +876,18 @@ def certify(pl: Placement, env: dict, params: PlaceParams) -> None:
         pl.refused.append(REFUSE_PEAK)
     if st.get("uniqueness") is None or st["uniqueness"] < params.min_peak_drop:
         pl.refused.append(REFUSE_AMBIGUOUS)
+    if r6 and not all(a["ok"] for a in st.get("anchor_check") or [{"ok": False}]):
+        pl.refused.append(REFUSE_CORROBORATION)
 
 
 def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: float) -> None:
-    """R6: a piece passing R0-R5 is placed when an anchor agrees, or another such piece's new geometry
-    coincides with its own over their overlap."""
+    """Records, for every piece that passed R0-R6, whether another such piece puts new geometry where it does
+    (median nearest neighbour <= `cross_median_m` over >= `cross_min_points` points within `cross_overlap_m`).
+    A record only, not a gate: two pieces can fit the same wrong depth basin and agree with each other."""
     from scipy.spatial import cKDTree  # noqa: PLC0415
 
     ok = [p for p in placements if not p.refused]
     for p in ok:
-        by_anchor = any(a["ok"] and a.get("informative") for a in p.stats.get("anchor_check") or [])
         cross = []
         for q in ok:
             if q is p or p.new_points is None or q.new_points is None:
@@ -878,10 +901,7 @@ def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: f
             entry["ok"] = bool(len(near) >= params.cross_min_points and np.median(near) <= params.cross_median_m)
             cross.append(entry)
         p.stats["cross_check"] = cross
-        p.stats["corroborated_by"] = ("anchor" if by_anchor else None) or (
-            "piece" if any(c["ok"] for c in cross) else None)
-        if p.stats["corroborated_by"] is None:
-            p.refused.append(REFUSE_CORROBORATION)
+        p.stats["corroborated_by"] = "anchor-region"
     for p in placements:
         p.placed = not p.refused
 
@@ -906,13 +926,11 @@ def _frame_scale(v: float | None, level: float, band: tuple[float, float]) -> fl
 def control_kids(room_frames: list[Frame], has_depth: Callable[[str], bool], params: PlaceParams
                  ) -> list[list[str]]:
     """`control_segments` runs of `control_frames` consecutive (capture order) room frames with depth,
-    evenly spread over the walk (fewer when the room is too short to spare them)."""
+    evenly spread over the walk; none when the room is too short to spare them all."""
     seq = [f.kid for f in sorted(room_frames, key=lambda f: (f.index, f.kid)) if has_depth(f.kid)]
     n, k = params.control_frames, params.control_segments
     if len(seq) < (k + 2) * n:
-        k = max(0, len(seq) // n - 2)
-    if k <= 0:
-        return []
+        return []      # too short to spare them all: the room places nothing (R0)
     starts = np.linspace(n, len(seq) - 2 * n, k).astype(int)
     return [seq[s:s + n] for s in starts]
 
@@ -957,7 +975,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
 
     def piece_of(kids, level, ratio) -> Piece:
         frames, depths, scales = [], [], []
-        for k in kids:
+        for k in [kids[i] for i in _spread(len(kids), params.max_measure_frames)]:
             f = frame(k, level)
             D = depth_of(k) if f is not None else None
             if f is None or D is None:
@@ -980,6 +998,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
                      and band[0] <= v - ref <= band[1]]
     ctrl = control_kids(room_frames, lambda k: depth_of(k) is not None, params)
     left_out = {k for seg in ctrl for k in seg}
+    # One anchor pool for the controls and the pieces: no held-out frame anchors anything (a control must
+    # not be anchored by its neighbour stretch, which the evidence does not hold either).
+    anchor_frames = [f for f in anchor_frames if f.kid not in left_out]
     t_room = time.perf_counter()
     room = build_room([f for f in room_frames if f.kid not in left_out], depth_of, cam, upm, params)
     rec["room"] = {"seconds": round(time.perf_counter() - t_room, 3), "frames": 0 if room is None else room.frames,
@@ -1002,6 +1023,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             c.stats["ratio"] = ratio
             controls.append(c)
     env = envelope(controls, upm, params)
+    if len(ctrl) < params.control_segments:
+        env = dict(env, usable=False, why=f"the room spares {len(ctrl)} of the {params.control_segments} control "
+                                          f"stretches of {params.control_frames} frames")
     rec["controls"] = [_jsonable({k: v for k, v in c.record().items() if k not in ("ci", "placed", "ratio")})
                        for c in controls]
     rec["envelope"] = env
@@ -1022,6 +1046,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         if ci is None or ci[0] <= 0 or ci[1] / ci[0] > params.max_ci_width:
             pl = Placement(label=label, kids=kids, ratio=ratio, ci=ci)   # R1 first: nothing to measure
             pl.refused.append(REFUSE_CI)
+        elif len(kids) > params.max_piece_keyframes:
+            pl = Placement(label=label, kids=kids, ratio=ratio, ci=ci)   # bounded work: refused, not sampled
+            pl.refused.append(REFUSE_TOO_LARGE)
         else:
             pl = measure(label, piece_of(kids, level, ratio), ci, room, anchor_frames, params)
             certify(pl, env, params)
@@ -1087,6 +1114,44 @@ def apply_placements(solution, assessment: dict, placements: list[Placement]):
                           room_keyframes=room, scale_status="uncertified",
                           why=f"{n_unc} attached keyframes are not certified")
     return new_solution, new_assessment
+
+
+def rescale_depth_handoff(depth: dict | None, placements: list[Placement]) -> dict | None:
+    """The gate's depth hand-off (`GateResult.depth`) with every PLACED frame's fit carried through its
+    piece's similarity, or `depth` unchanged when nothing was placed or no depth ran.
+
+    The gate fitted each frame's prediction to the candidate's sparse points, so a placed frame's fit is in
+    its piece's old units. `coherence_publish.hand_depth_to_surface` stamps the records with the published
+    solve's identity and the surface REUSES them, so they must describe the published geometry. A placed
+    frame's depths all scale by s = 1 / ratio (cameras and points take X' = s X + t; rotations are kept), so
+    with z' = s z: a "depth" fit pred = a z + b becomes a' = a / s, b' = b; a "disparity" fit
+    pred = a / z + b becomes a' = a s, b' = b; the frame's sparse depth range z_sparse_min / max scales by s;
+    the held-out residual is relative and unchanged. Dropping the records instead would drop the frames from
+    the fusion (`_Frames` fuses only the records it is given). An unknown fit kind raises: the caller then
+    leaves every piece cut."""
+    placed = [pl for pl in placements if pl.placed]
+    if not placed or not depth or not (depth.get("align") or {}).get("records"):
+        return depth
+    align = depth["align"]
+    kind = align.get("kind")
+    if kind not in ("depth", "disparity"):
+        raise ValueError(f"the depth hand-off's fit kind is {kind!r}: a placed frame's fit cannot be carried")
+    s_of = {k: 1.0 / pl.ratio for pl in placed for k in pl.kids}
+    records = []
+    for r in align["records"]:
+        s = s_of.get(r.get("kid"))
+        if s is None:
+            records.append(r)
+            continue
+        r = dict(r)
+        if r.get("a") is not None:
+            r["a"] = float(r["a"]) / s if kind == "depth" else float(r["a"]) * s
+        for key in ("z_sparse_min", "z_sparse_max"):
+            if r.get(key) is not None:
+                r[key] = float(r[key]) * s
+        r["placed_by_depth"] = PLACE_ID
+        records.append(r)
+    return dict(depth, align=dict(align, records=records))
 
 
 def _jsonable(v):

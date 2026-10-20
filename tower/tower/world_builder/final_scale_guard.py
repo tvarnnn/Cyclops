@@ -962,8 +962,8 @@ def guard_publication(store, world_id: str, session_id: str, solution, result, *
         assessment = dict(assess_v2(cams, metric_log, params), evidence=inputs["source"])
         if assessment["decision"] != "publish":
             raise _Withhold(assessment["why"])
-        solution, assessment = _place_pieces(store, world_id, session_id, solution, assessment, metric_log,
-                                             keyframes, name_of)
+        solution, assessment, result = _place_pieces(store, world_id, session_id, solution, assessment,
+                                                     metric_log, keyframes, name_of, result)
         session = store.read_session(world_id, session_id)
         gate_block = None
         if result is not None and result.components is not None:
@@ -1008,28 +1008,32 @@ def withhold(outcome: "GuardOutcome", why: str) -> "GuardOutcome":
 
 
 def _place_pieces(store, world_id, session_id, solution, assessment: dict, metric_log: dict, keyframes,
-                  name_of: dict):
-    """(solution, assessment) with every isolated piece that certifies placed back into the room by its own
-    metric depth (`place_pieces`), when `TOWER_WORLD_PLACE_PIECES` is on and something was cut; otherwise
-    both unchanged. Never raises: on any failure every piece stays cut and the record says why."""
+                  name_of: dict, result=None):
+    """(solution, assessment, result) with every isolated piece that certifies placed back into the room by its
+    own metric depth (`place_pieces`), when `TOWER_WORLD_PLACE_PIECES` is on and something was cut; the gate's
+    depth hand-off (`result.depth`) then carries the placed frames' fits through their similarity. Otherwise
+    all three unchanged. Never raises: on any failure, the import included, every piece stays cut and the
+    record says why."""
     from tower.config import world_place_pieces_setting  # noqa: PLC0415
 
     if not assessment.get("pieces") or not world_place_pieces_setting():
-        return solution, assessment
-    from tower.world_builder import place_pieces as PP  # noqa: PLC0415
-
+        return solution, assessment, result
     try:
+        from tower.world_builder import place_pieces as PP  # noqa: PLC0415
+
         times = {k.keyframe_id: float(k.received_at) for k in keyframes}
         depth_of = PP.live_depth_source(store, world_id, session_id, solution)
         record = PP.plan(solution, assessment, metric_log, name_of, times, depth_of)
         placements = record.pop("placements")
         placed, placed_assessment = PP.apply_placements(solution, assessment, placements)
-        return placed, dict(placed_assessment, place_pieces=record)
+        if result is not None and getattr(result, "depth", None) is not None:
+            result = dataclasses.replace(result, depth=PP.rescale_depth_handoff(result.depth, placements))
+        return placed, dict(placed_assessment, place_pieces=record), result
     except Exception as exc:  # noqa: BLE001 -- the guard's cut stands
         logger.exception("[Tower][WorldBuilder] placing the cut pieces failed on %s/%s; they stay cut",
                          world_id, session_id)
-        return solution, dict(assessment, place_pieces={"id": PP.PLACE_ID, "placed": 0,
-                                                        "error": f"{type(exc).__name__}: {exc}"})
+        return solution, dict(assessment, place_pieces={"id": "place-pieces/1", "placed": 0,
+                                                        "error": f"{type(exc).__name__}: {exc}"}), result
 
 
 class _Withhold(RuntimeError):

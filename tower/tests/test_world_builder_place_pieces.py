@@ -107,7 +107,7 @@ class World:
             self.poses[kid] = _pose(R, c * UPM)
             m, self.depth[kid] = _noisy(_render(R, c, solids=room_solids if room_solids is not None else FURNITURE),
                                         rng, noise)
-            self.times[kid] = float(i)
+            self.times[kid] = 0.2 * i                 # keyframes ~5 a second, as a walk's
             self.metric[kid] = math.log(UPM) + m      # log(z_sfm / z_metric), as the guard measures it
         last_room = self.true[room_kids[-1]]
         # Piece: cameras in the far half, looking at the far corner, the floor and the furniture there.
@@ -131,7 +131,7 @@ class World:
             self.poses[kid] = _pose(R, blown)
             m, self.depth[kid] = _noisy(_render(R, c, solids=piece_solids if piece_solids is not None else FURNITURE),
                                         rng, noise)
-            self.times[kid] = N_ROOM - 1.0 + piece_dt + 0.2 * j
+            self.times[kid] = 0.2 * (N_ROOM - 1) + piece_dt + 0.2 * j
             self.metric[kid] = math.log(UPM * K) + m
         self.kids = room_kids + self.piece_kids
         # The room's sparse points: what each room camera sees on a pixel grid, observed by that camera (the
@@ -313,7 +313,7 @@ def test_controls_are_spread_over_the_walk_and_left_out_of_the_evidence():
     assert firsts == sorted(firsts) and firsts[0] >= PARAMS.control_frames
     assert rec["room"]["frames"] == N_ROOM - PARAMS.control_segments * PARAMS.control_frames
     # Each control was put through the piece's own procedure and scored against where it truly is.
-    assert all(c["miss_m"] is not None and c["miss_m"] < 0.5 for c in ctrl)
+    assert all(c.get("miss_m") is not None and c["miss_m"] < 0.5 for c in ctrl)
     assert rec["envelope"]["controls"] == len(ctrl)
 
 
@@ -436,64 +436,81 @@ def test_a_piece_that_sees_one_plane_is_not_pinned():
     assert rec["placed"] == 0 and PP.REFUSE_ROOM in rec["pieces"][0]["refused"]
 
 
-def test_a_placement_no_anchor_vouches_for_is_not_corroborated():
+def test_a_piece_its_anchor_puts_elsewhere_is_not_corroborated():
     # The room camera next in time stood 1.24 m from the piece's first camera, 0.3 s earlier: no walk does
-    # that. The depth fit finds where the piece stood, but nothing independent vouches for it.
+    # that. The depth fit still finds where the piece stood (past the region's edge, by the lattice's reach
+    # and the fine passes), and the anchor's check then FAILS: R6 can fail.
     w = World(anchor_offset_m=(0.3, 0.0, -1.2), noise=False)
     room, frames = _room(w)
-    pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames,
-                    dataclasses.replace(PARAMS, search_m=1.6))
-    assert max(np.linalg.norm(c - w.true[k]) for k, c in _placed_centres(w, pl).items()) < 0.1
-    assert pl.stats["anchor_check"] and not any(a["ok"] for a in pl.stats["anchor_check"])
-    PP.corroborate([pl], PARAMS, UPM)
-    assert pl.refused == [PP.REFUSE_CORROBORATION] and not pl.placed
+    pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
+    (a,) = pl.stats["anchor_check"]
+    assert a["region"] and not a["ok"] and a["miss_m"] > a["bound_m"]
+    PP.certify(pl, ENV_OK, PARAMS)
+    assert PP.REFUSE_CORROBORATION in pl.refused
 
 
-def test_the_search_reach_is_read_from_its_own_steps():
-    # The coarse cube's half-side, then +-2 x 10 cm, +-1 x 5 cm, +-1 x 2.5 cm of fine drift past each best.
-    assert PP.search_reach_m(PP.PlaceParams()) == pytest.approx(0.6 + 0.2 + 0.05 + 0.025)
-    assert PP.search_reach_m(dataclasses.replace(PP.PlaceParams(), search_m=1.0)) == pytest.approx(1.275)
-
-
-def test_an_anchor_whose_check_could_have_failed_corroborates():
+def test_the_region_is_the_tightest_anchors_ball_and_its_lattice_covers_it():
+    step = 0.3
+    for r in (0.5, 1.0, 2.0):
+        g = PP.region_lattice(r, step)
+        # every point of the ball is within the lattice's reach of a lattice point
+        rng = np.random.default_rng(1)
+        v = rng.normal(size=(2000, 3))
+        v = v / np.linalg.norm(v, axis=1)[:, None] * r * rng.uniform(0, 1, size=(2000, 1)) ** (1 / 3)
+        from scipy.spatial import cKDTree
+        assert cKDTree(g).query(v)[0].max() <= step * math.sqrt(3) / 2 + 1e-9
     w = World(noise=False)                           # the room camera 0.3 s before: allowance 0.9 m
     room, frames = _room(w)
     pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
+    reg = pl.stats["region"]
+    assert reg["dt_s"] == pytest.approx(0.3) and 0.9 <= reg["radius_m"] < 1.0      # allowance + the lever arm
+    assert pl.stats["evaluations"] >= reg["lattice_points"]
+
+
+def test_a_piece_with_one_answer_inside_its_region_is_corroborated():
+    w = World(noise=False)
+    room, frames = _room(w)
+    pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
+    assert pl.stats["uniqueness"] >= PARAMS.min_peak_drop
     (a,) = pl.stats["anchor_check"]
-    assert a["ok"] and a["informative"] and a["bound_m"] < a["reach_m"]
-    assert a["reach_m"] == pytest.approx(math.sqrt(3) * PP.search_reach_m(PARAMS), abs=1e-3)  # it centred the box
+    assert a["region"] and a["ok"]
+    PP.certify(pl, ENV_OK, PARAMS)
     PP.corroborate([pl], PARAMS, UPM)
-    assert pl.placed and pl.stats["corroborated_by"] == "anchor"
+    assert pl.refused == [] and pl.placed and pl.stats["corroborated_by"] == "anchor-region"
 
 
-def test_an_anchor_whose_check_cannot_fail_is_no_evidence():
-    # The room camera next in time is 1.5 s away: 3.3 m of walking allowance, more than the search can ever
-    # move the placement from that camera's own estimate. Its "ok" is true by construction: no evidence.
+def test_a_region_larger_than_the_search_may_cover_is_refused_not_sampled_coarser():
+    # The room camera next in time is 1.5 s away: a 3.3 m walking ball, more lattice points than the cap.
     w = World(noise=False, piece_dt=1.5)
     room, frames = _room(w)
     pl = PP.measure("piece-0", _piece(w), [K * 0.97, K * 1.03], room, frames, PARAMS)
-    (a,) = pl.stats["anchor_check"]
-    assert a["ok"] and not a["informative"] and a["bound_m"] >= a["reach_m"]
-    PP.corroborate([pl], PARAMS, UPM)
-    assert pl.refused == [PP.REFUSE_CORROBORATION] and not pl.placed
+    assert pl.refused == [PP.REFUSE_REGION] and pl.t is None
+    assert pl.stats["region"]["lattice_points"] > PARAMS.max_region_evaluations
 
 
-def test_two_pieces_that_build_the_same_new_geometry_corroborate_each_other():
+def test_an_anchor_the_placement_disagrees_with_is_not_corroboration():
+    pl = _measured(anchor_check=[{"ok": True, "region": True}, {"ok": False, "region": False}])
+    PP.certify(pl, ENV_OK, PARAMS)
+    assert pl.refused == [PP.REFUSE_CORROBORATION]
+    pl = _measured(anchor_check=[{"ok": False, "region": True}])
+    PP.certify(pl, ENV_OK, PARAMS)
+    assert pl.refused == [PP.REFUSE_CORROBORATION]
+
+
+def test_two_pieces_that_agree_with_each_other_do_not_corroborate_each_other():
+    # Cross-piece coincidence is recorded, never a gate: two pieces can fit the same wrong basin.
     a = PP.Placement(label="piece-0", kids=["a"], ratio=1.0, ci=[1, 1])
     b = PP.Placement(label="piece-1", kids=["b"], ratio=1.0, ci=[1, 1])
     rng = np.random.default_rng(3)
     pts = rng.uniform(0, 1, size=(400, 3)) * UPM
     a.new_points, b.new_points = pts, pts + 0.02 * UPM      # 2 cm apart
-    for p in (a, b):
-        p.stats["anchor_check"] = [{"ok": True, "informative": False}]     # an anchor that could not fail
     PP.corroborate([a, b], PARAMS, UPM)
-    assert a.placed and b.placed and a.stats["corroborated_by"] == "piece"
+    assert a.stats["cross_check"][0]["ok"] and a.placed and b.placed       # both passed R0-R6 on their own
     c = PP.Placement(label="piece-2", kids=["c"], ratio=1.0, ci=[1, 1])
-    c.new_points = pts + 0.25 * UPM                          # 25 cm apart: not the same geometry
-    c.stats["anchor_check"] = [{"ok": False}]
-    a.refused, b.refused = [], []
+    c.new_points = pts
+    c.refused.append(PP.REFUSE_CORROBORATION)                             # failed R6 on its own
     PP.corroborate([a, c], PARAMS, UPM)
-    assert not a.placed and not c.placed
+    assert not c.placed and c.refused == [PP.REFUSE_CORROBORATION]
 
 
 # ---------------------------------------------------------------------------
@@ -554,8 +571,11 @@ def test_with_the_switch_off_the_guard_seam_is_untouched(monkeypatch):
     w = World(noise=False)
     called = []
     monkeypatch.setattr(PP, "plan", lambda *a, **k: called.append(1))
-    out = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {})
-    assert out[0] is w.solution and out[1] is w.assessment and not called
+    out = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {}, "result")
+    assert out[0] is w.solution and out[1] is w.assessment and out[2] == "result" and not called
+    # Off, the guard's summary carries nothing of this step (the output is today's but for elapsed time).
+    assert "pieces_placed" not in FSG.summary(w.assessment, mode_=FSG.MODE_ON, decision=FSG.DECISION_PUBLISHED,
+                                              seconds=0.0)
 
 
 def test_with_the_switch_on_a_failure_leaves_every_piece_cut(monkeypatch):
@@ -567,12 +587,43 @@ def test_with_the_switch_on_a_failure_leaves_every_piece_cut(monkeypatch):
         raise RuntimeError("no")
 
     monkeypatch.setattr(PP, "plan", boom)
-    sol, ass = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {})
-    assert sol is w.solution and ass["pieces"] == w.assessment["pieces"]
+    sol, ass, res = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {}, "result")
+    assert sol is w.solution and ass["pieces"] == w.assessment["pieces"] and res == "result"
     assert ass["place_pieces"]["placed"] == 0 and "RuntimeError" in ass["place_pieces"]["error"]
 
 
-def test_with_the_switch_on_the_guard_seam_places_and_records(monkeypatch):
+def test_with_the_switch_on_an_import_failure_leaves_every_piece_cut(monkeypatch):
+    import sys
+
+    import tower.world_builder as WB
+
+    monkeypatch.setenv("TOWER_WORLD_PLACE_PIECES", "true")
+    monkeypatch.delattr(WB, "place_pieces", raising=False)
+    monkeypatch.setitem(sys.modules, "tower.world_builder.place_pieces", None)
+    w = World(noise=False)
+    sol, ass, res = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {}, None)
+    assert sol is w.solution and ass["pieces"] == w.assessment["pieces"]
+    assert ass["place_pieces"]["placed"] == 0 and "Error" in ass["place_pieces"]["error"]
+
+
+def _gate_result(w, kind):
+    """A gate result whose depth hand-off holds a fit for every keyframe, in the CANDIDATE's units."""
+    from tower.world_builder.coherence_publish import GateResult
+
+    records = []
+    for i, k in enumerate(w.kids):
+        R, c = PP.centre_of(w.poses[k])
+        records.append({"ki": i, "kid": k, "ok": True, "a": 0.8 if kind == "depth" else 2.0, "b": 0.1,
+                        "held_out_rel": 0.03, "z_sparse_min": 1.0 * K if k in w.piece_kids else 1.0,
+                        "z_sparse_max": 4.0 * K if k in w.piece_kids else 4.0})
+    return GateResult(solution=w.solution, record={}, components=None,
+                      depth={"align": {"kind": kind, "records": records}, "work": None, "dparams": None})
+
+
+@pytest.mark.parametrize("kind", ["depth", "disparity"])
+def test_with_the_switch_on_the_guard_seam_places_records_and_carries_the_depth_fits(monkeypatch, kind):
+    from tower.world_builder.dense import depth_from_prediction
+
     monkeypatch.setenv("TOWER_WORLD_PLACE_PIECES", "true")
     w = World(noise=False)
     monkeypatch.setattr(PP, "live_depth_source", lambda *a, **k: w.depth_of)
@@ -585,8 +636,66 @@ def test_with_the_switch_on_the_guard_seam_places_and_records(monkeypatch):
 
     monkeypatch.setattr(PP, "plan", plan)
     kfs = [type("K", (), {"keyframe_id": k, "received_at": w.times[k]})() for k in w.kids]
-    sol, ass = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, kfs, {k: k for k in w.kids})
+    gate = _gate_result(w, kind)
+    sol, ass, res = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, kfs,
+                                      {k: k for k in w.kids}, gate)
     assert seen["times"] == w.times and seen["depth"] == w.depth_of
     assert ass["place_pieces"]["placed"] == 1 and "placements" not in ass["place_pieces"]
     assert ass["pieces"] == [] and sol is not w.solution
     assert FSG.summary(ass, mode_=FSG.MODE_ON, decision=FSG.DECISION_PUBLISHED, seconds=0.0)["pieces_placed"] == 1
+    # The surface REUSES the gate's fits after the hand-off: a placed frame's fit must give its depth in the
+    # PUBLISHED units -- the candidate's depth times 1 / ratio -- and nobody else's fit may change.
+    pred = np.array([0.5, 1.0, 2.0])
+    old = {r["kid"]: r for r in gate.depth["align"]["records"]}
+    for r in res.depth["align"]["records"]:
+        o = old[r["kid"]]
+        z_old = depth_from_prediction(pred, o["a"], o["b"], kind)
+        z_new = depth_from_prediction(pred, r["a"], r["b"], kind)
+        if r["kid"] in w.piece_kids:
+            np.testing.assert_allclose(z_new, z_old / K, rtol=1e-12)
+            assert r["z_sparse_min"] == pytest.approx(o["z_sparse_min"] / K)
+            assert r["z_sparse_max"] == pytest.approx(o["z_sparse_max"] / K)
+        else:
+            assert r == o
+    assert gate.depth["align"]["records"][N_ROOM]["a"] == old[w.piece_kids[0]]["a"]      # input untouched
+
+
+def test_a_depth_hand_off_of_an_unknown_fit_kind_leaves_every_piece_cut(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_PLACE_PIECES", "true")
+    w = World(noise=False)
+    monkeypatch.setattr(PP, "live_depth_source", lambda *a, **k: w.depth_of)
+    monkeypatch.setattr(PP, "plan", lambda *a, **k: {"id": PP.PLACE_ID, "placed": 1, "pieces": [],
+                                                     "placements": [_placed_record(w)]})
+    gate = _gate_result(w, "depth")
+    gate.depth["align"]["kind"] = "mystery"
+    sol, ass, res = FSG._place_pieces(None, "w", SID, w.solution, w.assessment, w.metric, [], {}, gate)
+    assert sol is w.solution and res is gate and ass["place_pieces"]["placed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# bounds and the room's controls (round 2)
+# ---------------------------------------------------------------------------
+
+
+def test_a_room_too_short_for_every_control_places_nothing():
+    w = World()
+    rec = w.plan(dataclasses.replace(PARAMS, control_segments=6, control_frames=10))     # needs 80 of 60 frames
+    assert rec["controls"] == [] and not rec["envelope"]["usable"]
+    assert PP.REFUSE_ROOM in rec["pieces"][0]["refused"] and rec["placed"] == 0
+
+
+def test_no_held_out_frame_anchors_anything():
+    w = World()
+    rec = w.plan()
+    held = {k for c in rec["controls"] for k in w.kids[w.kids.index(c["first_keyframe_id"]):
+                                                      w.kids.index(c["last_keyframe_id"]) + 1]}
+    used = {a["room_kid"] for r in rec["controls"] + rec["pieces"] for a in r.get("anchors") or []}
+    assert used and not used & held
+
+
+def test_work_is_bounded_and_a_piece_past_the_bound_is_refused():
+    w = World()
+    rec = w.plan(dataclasses.replace(PARAMS, max_measure_frames=10))
+    assert rec["pieces"][0]["frames_with_depth"] == 10
+    rec = w.plan(dataclasses.replace(PARAMS, max_piece_keyframes=11))
+    assert rec["pieces"][0]["refused"] == [PP.REFUSE_TOO_LARGE]
