@@ -154,9 +154,9 @@ class SceneLive(LiveSession):
         # Whether an operator started this by hand. Cleared by `stop()` and
         # by a demand stop (`_stop_then_reconcile`).
         self._operator_hold = False
-        # Bumped by every operator `start()`. A demand stop records it
-        # when it decides, so a start that lands after the decision is
-        # seen as newer and is neither cleared nor left stopped.
+        # Bumped by every operator `start()`. A stop, demand or operator,
+        # records it when it decides, so a start that lands after the
+        # decision is seen as newer and is neither cleared nor left stopped.
         self._hold_epoch = 0
 
     def latest(self):
@@ -189,19 +189,35 @@ class SceneLive(LiveSession):
     # worst one session churns.
 
     def start(self, *, resume_paused: bool = True) -> dict:
-        """The operator's Start. Runs at once, stream or no stream."""
+        """The operator's Start. Runs at once, stream or no stream.
+
+        The hold and the base start are one step under `_demand`, so no
+        stop can decide between them and leave a session running that
+        nobody holds. The base start returns at once, as in `_reconcile`.
+        """
         with self._demand:
             self._operator_hold = True
             self._hold_epoch += 1
-        return super().start(resume_paused=resume_paused)
+            return super().start(resume_paused=resume_paused)
 
     def stop(self) -> dict:
         """The operator's Stop, and any stop but a demand stop. Releases the
         hold. A demand stop goes through `_stop_then_reconcile`, which
-        releases the hold itself and calls the base `stop()`."""
+        releases the hold itself and calls the base `stop()`.
+
+        The base stop runs outside `_demand` (see above), so a Start can
+        land between the release and the stop. That Start is the newer
+        decision: if the base stop ended its session, it is restarted,
+        the way `_stop_then_reconcile` restarts one.
+        """
         with self._demand:
             self._operator_hold = False
-        return super().stop()
+            epoch = self._hold_epoch
+        status = super().stop()
+        with self._demand:
+            if self._operator_hold and self._hold_epoch != epoch:
+                super().start(resume_paused=False)
+        return status
 
     def stream_opened(self, owner=None) -> None:
         """A connection began streaming frames. Run if somebody is watching."""
