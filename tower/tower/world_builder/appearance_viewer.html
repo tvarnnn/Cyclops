@@ -813,8 +813,9 @@ const NAV = (() => {
     const {path} = input, pad = R_MAX + sp, margin = 1 + sp / UNIT * 1.2;   // a margin for interpolation
     // A pose the lattice can hold: finite, and within LATTICE_STEPS steps of the origin. Past that,
     // float64 cannot keep the cells near the room on the lattice (and past 2^53 steps `x++` stops
-    // advancing), so such a pose is skipped exactly like a non-finite one; it stays in the path,
-    // where `pathDist` never picks it.
+    // advancing), so such a pose is skipped exactly like a non-finite one: it gets no cells of its
+    // own, and it stays in the path, where `pathDist` picks it only for a point nearer to it than to
+    // the walk.
     const finite = i => [0, 1, 2].every(k => Math.abs(path.P[i*3+k]) <= LATTICE_STEPS * sp);
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     let nf = 0;
@@ -897,7 +898,9 @@ const NAV = (() => {
      none past 2.5 x p95), and this is a preference the page applies to every
      world, not the camera list's filter (`viewable_poses`, which drops the
      detachment on purpose). Where the gate drops nothing, the plain mean,
-     bit for bit. */
+     bit for bit. It is the same RULE as the Tower's, not a bit-exact copy:
+     the page sees centres rounded to 5 decimals, so a pose sitting exactly on
+     a threshold may fall the other way. */
   const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
   function lookFocus(cams, ref){
     const ok = cams.filter(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
@@ -905,11 +908,14 @@ const NAV = (() => {
     if (ok.length >= MIN_ROBUST){
       const median = (v) => { const m = v.length >> 1; return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]); };
       const mid = [0, 1, 2].map(k => median(ok.map(c => c[k]).sort((a, b) => a - b)));
-      const rad = ok.map(c => Math.hypot(c[0] - mid[0], c[1] - mid[1], c[2] - mid[2]));
+      // numpy's norm order, ((x^2 + y^2) + z^2), not Math.hypot's
+      const rad = ok.map(c => { const dx = c[0] - mid[0], dy = c[1] - mid[1], dz = c[2] - mid[2];
+                                return Math.sqrt(dx * dx + dy * dy + dz * dz); });
       const sorted = rad.slice().sort((a, b) => a - b), med = median(sorted);
-      // numpy's default (linear) percentile, as the Tower computes it
-      const q = 0.95 * (sorted.length - 1), lo = Math.floor(q);
-      const p95 = sorted[lo] + (q - lo) * ((sorted[Math.min(lo + 1, sorted.length - 1)]) - sorted[lo]);
+      // numpy's default (linear) percentile, in numpy's own two-sided lerp
+      const q = 0.95 * (sorted.length - 1), lo = Math.floor(q), g = q - lo;
+      const a = sorted[lo], b = sorted[Math.min(lo + 1, sorted.length - 1)];
+      const p95 = g >= 0.5 ? b - (b - a) * (1 - g) : a + (b - a) * g;
       const cut = Math.max(FAR_RADIUS * med, FAR_DETACH * p95);
       const kept = ok.filter((c, i) => !(rad[i] > cut));
       if (med > 0 && ok.length - kept.length <= FAR_SHARE * ok.length) use = kept;
