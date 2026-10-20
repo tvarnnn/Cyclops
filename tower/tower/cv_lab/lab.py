@@ -1538,7 +1538,7 @@ class CVLab:
         refused:
 
         - it landed on BOTH sides in one change, with
-          `docs/contracts/EXPERIMENTAL-CV-PREVIEW.md` written down,
+          `tower/docs/contracts/EXPERIMENTAL-CV-LAB.md` §5 written down,
           rather than one side guessing what the other would accept;
         - the treatment is STATED, in iOS's own vocabulary, and it is
           the strict value: `raw_ephemeral`, live view only, never
