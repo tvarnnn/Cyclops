@@ -2,7 +2,8 @@
 
 `tests/test_world_builder_native_chrome.py` holds every request that is not
 exactly `wb-chrome=native` on an appearance page to "the page before native
-chrome, byte for byte" against `golden/world_builder_native_chrome_dc35d51.json`.
+chrome, byte for byte" against `golden/world_builder_native_chrome_1515efa4.json` (dc35d51's, its appearance
+pages re-recorded on 1515efa4: see the test module's docstring).
 That golden was recorded by THIS FILE, copied unchanged into a detached worktree of dc35d51 -- the deployed
 `world-builder/ux-tower-v1` before native chrome existed -- and run there:
 
