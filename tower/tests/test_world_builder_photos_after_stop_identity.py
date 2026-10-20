@@ -9,7 +9,8 @@ on the condition that every OTHER payload is byte for byte as it was at
 provably unchanged. This file is that proof.
 
 WHAT IS COMPARED, per scenario, against
-`golden/world_builder_photos_after_stop_dc35d51.json`:
+`golden/world_builder_photos_after_stop_dd070336.json` (dc35d51's recording,
+with only the render page's body digest re-recorded: see RE-RECORDED below):
 
 - the build itself, i.e. the redaction path: the bytes each keyframe handed the
   redactor and the bytes it got back (SHA-256), the manifest the build wrote,
@@ -36,6 +37,14 @@ appearance; nothing else is normalised.
 TO RECORD: `WB_PHOTOS_AFTER_STOP_RECORD=<path>` writes the observed payloads to
 <path> instead of comparing. Record only from `dc35d51`, twice, and keep the
 golden only if the two recordings are identical.
+
+RE-RECORDED ONCE, on dd070336 (bug-fix lane F: the appearance page's navigation
+field survives far poses; the page template is the only file changed). Recorded
+twice on cc0208c5 -- both byte-identical to dc35d51's golden (sha256 8a631275...)
+-- and twice on dd070336 -- identical to each other; the two differ in exactly
+the 10 `page.body_sha256` values (8 scenarios, 2 of them also the area page) and
+in nothing else: the redaction path, every chunk, manifest, route, header and
+the truth table are dc35d51's.
 """
 
 from __future__ import annotations
@@ -63,7 +72,7 @@ from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import raw_imagery as RAWIMG
 
-GOLDEN = Path(__file__).parent / "golden" / "world_builder_photos_after_stop_dc35d51.json"
+GOLDEN = Path(__file__).parent / "golden" / "world_builder_photos_after_stop_dd070336.json"
 RECORD_ENV = "WB_PHOTOS_AFTER_STOP_RECORD"
 VIEWER = "appearance-1"
 HEADERS = ("cache-control", "pragma", "x-content-type-options", "content-type",
@@ -595,4 +604,4 @@ def test_the_golden_file_itself_is_the_recorded_bytes():
     assert _sha(data) == GOLDEN_SHA256, _sha(data)
 
 
-GOLDEN_SHA256 = "8a6312756520dad72099e53749b4bc7241cfb045c6206ffaaec5b426c71cb6ae"
+GOLDEN_SHA256 = "66851ce406f3535935978163c9c39791d9fdee98a2808db1b74d9d7da257ffcb"
