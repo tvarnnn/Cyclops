@@ -793,6 +793,8 @@ def summary(assessment: dict | None, *, mode_: str, decision: str, seconds: floa
            "reasons": reasons, "audit": AUDIT_FILENAME, "seconds": round(seconds, 3)}
     if "place_pieces" in (assessment or {}):
         out["pieces_placed"] = int((assessment["place_pieces"] or {}).get("placed") or 0)
+        if (assessment["place_pieces"] or {}).get("error"):
+            out["place_pieces_error"] = str(assessment["place_pieces"]["error"])[:200]
     if (assessment or {}).get("rule") == "v2":
         out["scale_status"] = assessment["scale_status"]
         out["uncertified_keyframes"] = assessment["uncertified_keyframes"]
@@ -1018,6 +1020,12 @@ def _place_pieces(store, world_id, session_id, solution, assessment: dict, metri
 
     if not assessment.get("pieces") or not world_place_pieces_setting():
         return solution, assessment, result
+    if assessment.get("evidence") != EVIDENCE_LIVE:
+        # The step measures with the live depth cache; the gate's own depth stage is another source, and a
+        # scale read from one must not place with the other. Nothing runs.
+        return solution, dict(assessment, place_pieces={
+            "id": "place-pieces/1", "placed": 0,
+            "skipped": f"the scale evidence is {assessment.get('evidence')!r}, not the live depth cache"}), result
     try:
         from tower.world_builder import place_pieces as PP  # noqa: PLC0415
 

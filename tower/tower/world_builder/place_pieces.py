@@ -26,33 +26,36 @@ depth hallucination is outvoted), and a voxel FREE when more frames looked throu
 
 THE ROOM'S OWN CONTROLS. That evidence is noisy: MoGe-2 depth disagrees with itself across a room by more
 than any fixed tolerance. So the rule is not "few contradictions" but "no more contradictions than the
-room's own frames have": `control_segments` stretches of certified room frames, spread over the walk, are
-left out of the evidence and put through EXACTLY the piece's procedure (anchors, search, measures) from
-their own poses. They give, per room, how well a stretch that IS where the solve put it agrees with the
-rest, and how far the search lands from where it is.
+room's own frames have, found the way the piece is found": `control_segments` stretches of certified room
+frames, spread over the walk, are left out of the evidence (and out of the anchor pool) and put through
+EXACTLY the piece's procedure under the piece's prior -- anchored at least as far back in time as the
+piece's centre anchor, searched over a region of the piece's radius. They give, per room and per prior,
+how well a stretch that IS where the solve put it agrees with the rest, and whether the rule would accept a
+stretch the search put in the wrong place.
 
-CERTIFICATION (`certify`), every test a refusal; a refused piece stays cut (today's outcome):
-  R0 the room's evidence holds: at least half the controls land within `max_control_miss_m` of their own
-     poses (GOOD controls), and no control the search put farther than that passes R3-R5 (the depth tests
-     alone refuse every stretch of the room's own frames the search would put in the wrong place; R6 is not
-     credited, since a piece can pass it by the cross-piece route); otherwise nothing is placed. The
-     envelope below is the GOOD controls'.
-  R1 scale: the guard's 95 % interval of the piece's ratio is narrower than the guard's own screen band
-     (hi / lo <= `max_ci_width`, x1.25): a scale known no better than the band cannot be placed rigidly.
+THE SEARCH REGION. A piece is searched over the whole region the walk allows: the ball about its tightest
+anchor's estimate whose radius is that anchor's bound (2.0 m/s x dt + 0.3 m, the guard's pose screen, plus
+the scale interval's lever arm), on a capped lattice; a larger region is refused.
+
+CERTIFICATION, every test a refusal; a refused piece stays cut (today's outcome):
+  R0 the room's evidence holds under the piece's prior: all control_segments controls measured, at least
+     min_good_controls (and half) GOOD (within max_control_miss_m of their own poses, pinned and unique), a
+     rigidity bound, and no control the search put farther than that passing R3-R5 (R6 not credited).
+  R1 scale: the guard's bootstrap interval of the piece's ratio, recomputed UNROUNDED in log, narrower than
+     the guard's own screen band (hi / lo <= `max_ci_width`, x1.25).
   R2 evidence: >= `min_frames` piece frames with depth (the guard's own floor for a measurement).
-  R3 rigid: the piece's own frames agree with each other at least as well as the least rigid control's.
-  R4 consistent with the room, both ways, at its placement, no worse than the worst control: its
+  R3 rigid: the piece's own frames agree with each other at least as well as the least rigid good control's.
+  R4 consistent with the room, both ways, at its placement, no worse than the worst good control: its
      agreement with the room's surface at least the lowest control's, its share seeing through the room's
      surface and its share inside the room's observed free space at most the highest control's.
   R5 pinned and unique: moving the placement `profile_m` along any axis loses at least `min_peak_drop` of
-     the score (the surfaces it agrees with fix all three directions), and no other basin of the search
-     scores within `min_peak_drop` of it (an aliased placement is not one the search can choose).
-  R6 corroborated, independently of the depth fit: a time-adjacent room camera (<= `anchor_dt_s`) stood
-     within walking distance of the placed piece camera (2.0 m/s x dt + 0.3 m, the guard's pose screen,
-     plus the scale interval's lever arm) AND that check could have failed (its bound is below the largest
-     miss the search's reach allows from that anchor's estimate, `search_reach_m`), OR another piece placed
-     by R0-R5 puts new geometry where this one does (median nearest neighbour <= `cross_median_m` over
-     their overlap).
+     its height above a typical placement in the region (both by the fine scorer), and no other basin in the
+     whole region scores within `min_peak_drop` of it: the depth gives one answer inside the region.
+  R6 every anchor's bound holds, and the placement is CORROBORATED independently of the depth fit: an anchor
+     that is not the region's centre and whose check could have failed (its bound is below the largest
+     miss the search's reach allows from its own estimate) agrees; or, chaining only from such a piece,
+     another placed piece's new geometry coincides with this one's. Two pieces never vouch for each other
+     alone.
 Then the piece's cameras and its points (those whose observers are mostly the piece's) take the
 similarity and join the room, recorded `uncertified` (`depth-placed`): the guard's scale rule did not
 certify them. The record says what was placed and why each refusal happened.
@@ -97,6 +100,8 @@ REFUSE_AMBIGUOUS = "ambiguous"
 REFUSE_CORROBORATION = "not-corroborated"
 REFUSE_REGION = "anchor-region-too-large"
 REFUSE_TOO_LARGE = "too-large"
+REFUSE_TIME = "time-bound"
+REFUSE_NO_CONTROLS = "no-matched-controls"
 
 
 @dataclass(frozen=True)
@@ -109,11 +114,17 @@ class PlaceParams:
     agree_log: float = 0.10
     through_ratio: float = 1.25
     # The search score: (closeness - through_weight x (through + in free space)) / the piece's valid samples.
+    # 2: a contradiction is a measured fact against the placement, an agreement only consistent with it; at
+    # weight 2 a placement that sees through as much as it agrees scores below one that meets nothing (lane
+    # B's prototype's weight, kept).
     through_weight: float = 2.0
-    # A placement where fewer than this share of the piece's samples meet the room is not evidence.
+    # A placement where fewer than this share of the piece's samples meet the room is not evidence: below a
+    # tenth, a handful of frames' edges decide the score.
     min_hit_share: float = 0.10
-    # Depth samples used: inside (min, max) metres, not masked, not filled, not at an edge (a neighbour
-    # edge_px away differs by more than the agree band).
+    # Depth samples used: inside (min, max) metres, not masked, not filled, not at an edge. 8 m: MoGe-2's
+    # metric depth beyond a room's far wall is extrapolation (and the guard's own valid range is wider only
+    # for the RATIO, a median); edge_px 2: a neighbour two pixels away, past the network's blending at a
+    # discontinuity, differing by more than the agree band.
     depth_min_m: float = 0.10
     depth_max_m: float = 8.0
     edge_px: int = 2
@@ -136,8 +147,10 @@ class PlaceParams:
     # (coarse voxels, coarse cells, at most coarse_frames frames; each pass's bands widen by the lattice's
     # reach, step sqrt(3) / 2, so no basin falls between lattice points), then each fine step around the best
     # (fine voxels, fine cells, at most fine_frames frames). At most max_region_evaluations lattice points:
-    # a region larger than that is refused, not sampled more coarsely. (`search_m` is kept for the record.)
-    search_m: float = 0.6
+    # a region larger than that is refused, not sampled more coarsely. The region's size follows from the
+    # anchor's walking allowance; no other search size exists. 0.3 m: R5's profile scale (a basin is judged
+    # at +-0.3 m), and the widened bands cover any point within the lattice's reach (0.26 m). 2,000 points:
+    # a region up to ~2.3 m in radius, the allowance of an anchor ~1 s away.
     coarse_step_m: float = 0.30
     fine_steps_m: tuple = (0.10, 0.05, 0.025)
     coarse_voxel_m: float = 0.10
@@ -146,15 +159,24 @@ class PlaceParams:
     fine_stride_px: int = 8
     fine_frames: int = 16
     max_region_evaluations: int = 2000
+    # R5's profile is scaled by a typical placement scored by the fine scorer at this many lattice points.
+    typical_points: int = 64
+    # Bounded wall time for the whole step: past it, the pieces not yet decided stay cut (`time-bound`).
+    max_seconds: float = 900.0
     # Bounded work: a piece of more than max_piece_keyframes keyframes is refused; at most max_measure_frames
     # of its frames (evenly spread) are measured.
     max_piece_keyframes: int = 400
     max_measure_frames: int = 40
     # The room's own controls: exactly this many stretches of control_frames consecutive certified room frames
     # with depth, evenly spread over the walk, left out of the evidence (and of the anchor pool) and placed
-    # like pieces; a room too short to spare them all places nothing.
+    # like pieces under each piece's matched prior; a room too short to spare them all places nothing. 6 x 20:
+    # twenty frames is a piece's typical size (the guard needs ten ratios), six stretches sample the walk's
+    # beginning, middle and end twice, and 120 frames held out of a ~1,000-frame room cost it ~12 %.
     control_segments: int = 6
     control_frames: int = 20
+    # R0 needs at least this many GOOD controls (and all control_segments formed): an envelope is the
+    # extreme of the good ones, and fewer than three is hardly an extreme of anything.
+    min_good_controls: int = 3
     # A control the search puts within this of its own pose is placed (GOOD, with R5); farther, misplaced.
     # The agree band (10 %) at the 1.5 m of a doorway or a small room. Second setting, reported: 0.30.
     max_control_miss_m: float = 0.15
@@ -168,6 +190,7 @@ class PlaceParams:
     speed_margin_m: float = 0.3
     cross_new_m: float = 0.10
     cross_overlap_m: float = 0.30
+    # A cross-piece coincidence needs >= 50 overlapping new points: fewer is a few frames' edges.
     cross_min_points: int = 50
     cross_median_m: float = 0.10
     # The guard's room radius: a camera farther than this from the room's median centre is not room evidence.
@@ -550,7 +573,8 @@ def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, pa
     UNIQUENESS = (winner - best rival) / (winner - typical) over the whole region, the rival the best coarse
     score farther than profile_m + coarse_step_m from the winner, `typical` the median coarse score (a
     placement anywhere in the region): 1 when nothing else stands out, 0 when a second basin is as good -- the
-    depth does not give one answer inside the region (None when the winner is not above typical)."""
+    depth does not give one answer inside the region (None when the winner is not above typical). The
+    returned `typical` is the FINE scorer's (`typical_points` lattice points), the profile's scale."""
     upm = room.units_per_m
     centre = np.asarray(centre, np.float64)
     step = params.coarse_step_m * upm
@@ -567,6 +591,14 @@ def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, pa
     rival = max((sc for p, sc in land if np.linalg.norm(p - t) > far), default=-math.inf)
     span = s_best - typical
     unique = None if not span > 0 else (1.0 if rival == -math.inf else (s_best - max(rival, typical)) / span)
+    # The profile's scale (R5) must be the fine scorer's, as its s0 is: a typical placement scored by the fine
+    # scorer, at up to typical_points lattice points spread over the region.
+    wide = Scorer(piece, room, room.points, centre, radius_units + 2 * step, params.fine_stride_px, params,
+                  max_frames=params.fine_frames)
+    pick = _spread(len(offs), params.typical_points)
+    fine_typ = [sc for sc in (_score(wide.counts(centre + offs[i]), params) for i in pick) if sc > -math.inf]
+    typical_fine = float(np.median(fine_typ)) if fine_typ else -math.inf
+    evals += len(pick)
     halves = _fine_halves(params)
     extent = sum(h * st for h, st in zip(halves, params.fine_steps_m)) * math.sqrt(3)
     fine = Scorer(piece, room, room.points, t, (extent + params.profile_m * math.sqrt(3) + 0.2) * upm,
@@ -574,7 +606,7 @@ def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, pa
     for half, step_m in zip(halves, params.fine_steps_m):
         t, _s, k = _grid_search(fine, t, half, step_m * upm, params)
         evals += k
-    return t, fine, evals, unique, typical
+    return t, fine, evals, unique, typical_fine
 
 
 def profile(scorer: Scorer, t: np.ndarray, units_per_m: float, params: PlaceParams, typical: float) -> dict:
@@ -729,11 +761,34 @@ class Placement:
         return out
 
 
-def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames: list[Frame],
-            params: PlaceParams) -> Placement:
-    """Everything the certification reads, for a piece or a control: rigidity, anchors, the search, the
-    full (unpruned, every frame) counts at the placement, the profile, uniqueness, the new geometry and the
-    anchor check. Refuses only what cannot be measured (too few frames, no anchor, no overlap)."""
+def _reach_m(radius_m: float, params: PlaceParams) -> float:
+    """How far (metres) the search can put a placement from its region's centre: the region, the coarse
+    lattice's reach past it, and the fine passes' drift."""
+    drift = sum(h * st for h, st in zip(_fine_halves(params), params.fine_steps_m)) * math.sqrt(3)
+    return radius_m + params.coarse_step_m * math.sqrt(3) / 2 + drift
+
+
+def regions(piece: Piece, ci_log: tuple | None, anc: list[dict], params: PlaceParams, upm: float) -> dict | None:
+    """Each anchor's bound -- its walking allowance plus the scale interval's lever arm (the distance from the
+    anchor's piece camera to where the piece meets the room, its samples' centroid, times the interval's
+    largest log half-width; translation-free) -- written into the anchor, and the REGION: the tightest
+    anchor's ball (the centre anchor). None without an anchor."""
+    if not anc:
+        return None
+    lever = 0.0 if ci_log is None else max(abs(ci_log[0]), abs(ci_log[1]))
+    P0, _fi0 = piece_points(piece, params, np.zeros(3), params.piece_stride_px)
+    centroid0 = P0.mean(0) if len(P0) else np.zeros(3)
+    for a in anc:
+        a["bound_m"] = a["allowance_m"] + float(np.linalg.norm(a["piece_centre"] - centroid0) / upm) * lever
+    return min(anc, key=lambda a: a["bound_m"])
+
+
+def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dict], region: dict,
+            params: PlaceParams, radius_m: float | None = None) -> Placement:
+    """Everything the certification reads, for a piece or a control, searched over `region`'s ball (radius
+    `radius_m`, default its bound): rigidity, the search, the full counts at the placement (every measured
+    frame, unpruned), the profile, uniqueness, the new geometry and every anchor's check. Refuses only what
+    cannot be measured (too few frames, a region past the lattice cap, no overlap)."""
     upm = room.units_per_m
     pl = Placement(label=label, kids=[f.kid for f in piece.frames], ratio=piece.ratio, ci=ci)
     st = pl.stats
@@ -742,33 +797,16 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames
         pl.refused.append(REFUSE_FRAMES)
         return pl
     t0 = time.perf_counter()
-    st["rigidity"] = rigidity(piece, params, upm)
-    anc = anchors(piece, anchor_frames, params)
-    st["anchors"] = [{k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in a.items()
-                      if k != "piece_centre"} for a in anc]
-    if not anc:
-        pl.refused.append(REFUSE_NO_ANCHOR)
-        return pl
-    # R6's region. Each anchor bounds where the piece can be: its walking allowance plus the scale interval's
-    # lever arm (the distance from the anchor's piece camera to where the piece meets the room -- its samples'
-    # centroid -- times the interval's half-width in log; translation-free). The tightest is the region.
-    lever = 0.0
-    if ci and ci[0] > 0 and math.isfinite(piece.ratio):
-        lever = max(abs(math.log(ci[1] / piece.ratio)), abs(math.log(piece.ratio / ci[0])))
-    P0, _fi0 = piece_points(piece, params, np.zeros(3), params.piece_stride_px)
-    centroid0 = P0.mean(0) if len(P0) else np.zeros(3)
-    for a in anc:
-        a["bound_m"] = a["allowance_m"] + float(np.linalg.norm(a["piece_centre"] - centroid0) / upm) * lever
-    region = min(anc, key=lambda a: a["bound_m"])
+    radius_m = region["bound_m"] if radius_m is None else radius_m
     centre = region["t"]
-    lattice = len(region_lattice(region["bound_m"] * upm, params.coarse_step_m * upm))
-    st["region"] = {"side": region["side"], "dt_s": round(region["dt_s"], 3), "radius_m": round(region["bound_m"], 3),
+    lattice = len(region_lattice(radius_m * upm, params.coarse_step_m * upm))
+    st["region"] = {"side": region["side"], "dt_s": round(region["dt_s"], 3), "radius_m": round(radius_m, 3),
                     "lattice_points": lattice}
     if lattice > params.max_region_evaluations:
         pl.refused.append(REFUSE_REGION)
-        st["seconds"] = round(time.perf_counter() - t0, 3)
         return pl
-    t, fine, evals, unique, typical = search(piece, room, centre, region["bound_m"] * upm, params)
+    st["rigidity"] = rigidity(piece, params, upm)
+    t, fine, evals, unique, typical = search(piece, room, centre, radius_m * upm, params)
     pl.t = t
     st["evaluations"] = evals
     st["uniqueness"] = None if unique is None else round(unique, 4)
@@ -795,56 +833,67 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anchor_frames
         dist = (cKDTree(room.points).query(rest, k=1)[0] / upm if len(room.points) and len(rest)
                 else np.full(len(rest), np.inf))
         pl.new_points = rest[dist > params.cross_new_m]
-    except Exception:  # noqa: BLE001 -- the cross-piece check then has nothing from this piece
+    except Exception:  # noqa: BLE001 -- the cross-piece record then has nothing from this piece
         pl.new_points = np.zeros((0, 3))
     st["new_points"] = int(len(pl.new_points))
-    # R6: every anchor's room camera within its bound of the placed piece camera. The region anchor's check
-    # can fail (the fine passes drift past the region's lattice); another anchor's checks it independently.
+    # R6's evidence: every anchor's room camera within its bound of the placed piece camera. An anchor is
+    # INDEPENDENT evidence only when it is not the region's centre AND its check could have failed: its bound
+    # is below the largest miss the search's reach allows from its own estimate.
+    reach = _reach_m(radius_m, params)
     checks = []
     for a in anc:
         miss = float(np.linalg.norm(t - a["t"]) / upm)
+        worst = float(np.linalg.norm(centre - a["t"]) / upm) + reach
+        independent = a is not region and a["bound_m"] < worst
         checks.append({"side": a["side"], "dt_s": round(a["dt_s"], 3), "miss_m": round(miss, 3),
-                       "bound_m": round(a["bound_m"], 3), "region": a is region, "ok": bool(miss <= a["bound_m"])})
+                       "bound_m": round(a["bound_m"], 3), "worst_m": round(worst, 3), "centre": a is region,
+                       "independent": bool(independent), "ok": bool(miss <= a["bound_m"])})
     st["anchor_check"] = checks
     st["seconds"] = round(time.perf_counter() - t0, 3)
     return pl
 
 
 def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams) -> dict:
-    """What the room's own controls show. A control is GOOD when the search put it back within
-    max_control_miss_m of its own pose and the placement is pinned and unique (R5): a measurement of how
-    well this room's frames agree with each other where the rule can tell where they are. The envelope is
-    the good controls' least agreement, most seeing-through, most free space and least rigidity; `usable`
-    needs at least half the controls good (the room's evidence can place its own frames) and NO misplaced
-    control (farther than max_control_miss_m) that passes R3-R5: the depth tests alone must refuse every
-    stretch of the room's own frames the search would put in the wrong place (R6 is not credited: a piece
-    can pass it by the cross-piece route, which no control can be tested on)."""
+    """What the room's own controls show, under a prior matched to the piece's. A control is GOOD when the
+    search put it back within max_control_miss_m of its own pose and the placement is pinned and unique
+    (R5). The envelope is the good controls' least agreement, most seeing-through, most free space and least
+    rigidity. `usable` needs every one of control_segments controls measured, at least min_good_controls
+    (and half) of them good, a rigidity bound, and NO misplaced control (farther than max_control_miss_m)
+    that passes R3-R5: the depth tests alone must refuse every stretch of the room's own frames the search
+    would put in the wrong place (R6 is not credited: a piece can be corroborated by another piece, which no
+    control can be tested on)."""
     for c in controls:
         if c.t is not None:
             truth = np.asarray(c.stats.get("true_translation") or np.zeros(3), np.float64)
             c.stats["miss_m"] = round(float(np.linalg.norm(c.t - truth)) / units_per_m, 4)
+
     def pinned(c):
         return (min((c.stats.get("profile_drop") or {"-": 0.0}).values()) >= params.min_peak_drop
                 and (c.stats.get("uniqueness") or 0.0) >= params.min_peak_drop)
 
     good = [c for c in controls if c.t is not None and c.stats.get("agree_share") is not None
-            and c.stats["miss_m"] <= params.max_control_miss_m and pinned(c)]
+            and not c.refused and c.stats["miss_m"] <= params.max_control_miss_m and pinned(c)]
     out = {"controls": len(controls), "good": len(good), "usable": False}
-    if not controls or 2 * len(good) < len(controls):
-        out["why"] = "fewer than half the room's own stretches are placed back where they are"
+    if len(controls) < params.control_segments:
+        out["why"] = f"{len(controls)} of the {params.control_segments} controls could be formed"
+        return out
+    if len(good) < max(params.min_good_controls, (len(controls) + 1) // 2):
+        out["why"] = "too few of the room's own stretches are placed back where they are"
         return out
     rig = [c.stats["rigidity"]["through_share"] for c in good if c.stats["rigidity"]["through_share"] is not None]
+    if not rig:
+        out["why"] = "no good control's rigidity could be measured"
+        return out
     out.update(min_agree_share=min(c.stats["agree_share"] for c in good),
                max_through_share=max(c.stats["through_share"] for c in good),
                max_free_share=max(c.stats["free_share"] for c in good),
-               max_rigidity_through=max(rig) if rig else None)
-    bad = [c for c in controls if c.t is not None and c.stats["miss_m"] > params.max_control_miss_m]
+               max_rigidity_through=max(rig))
+    bad = [c for c in controls if c.t is not None and c.stats.get("miss_m", 0.0) > params.max_control_miss_m]
     accepted = []
     for c in bad:
-        probe = Placement(label=c.label, kids=c.kids, ratio=1.0, ci=[1.0, 1.0], t=c.t, stats=c.stats)
+        probe = Placement(label=c.label, kids=c.kids, ratio=1.0, ci=None, t=c.t, stats=c.stats,
+                          refused=list(c.refused))
         certify(probe, dict(out, usable=True), params, r6=False)
-        # R3-R5 alone: R6 is not credited as a defence here, because a piece can pass R6 by the cross-piece
-        # route, which a control cannot be tested on.
         if not probe.refused:
             accepted.append(c.label)
     out["misplaced_accepted"] = accepted
@@ -854,17 +903,32 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     return out
 
 
+def piece_tests(pl: Placement, params: PlaceParams) -> None:
+    """R5 and R6's contradiction half on a measured piece -- the tests that need no controls."""
+    st = pl.stats
+    if pl.t is None or pl.refused:
+        return
+    if min((st.get("profile_drop") or {"-": 0.0}).values()) < params.min_peak_drop:
+        pl.refused.append(REFUSE_PEAK)
+    if st.get("uniqueness") is None or st["uniqueness"] < params.min_peak_drop:
+        pl.refused.append(REFUSE_AMBIGUOUS)
+    if not all(a["ok"] for a in st.get("anchor_check") or [{"ok": False}]):
+        pl.refused.append(REFUSE_CORROBORATION)      # an anchor contradicts the placement
+
+
 def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> None:
-    """R0 and R3-R6 on a measured piece (R1 and R2 are read before measuring). `r6=False` for the controls'
-    false-accept probe in R0, which must not credit R6."""
+    """R0 and R3-R5 (and R6's contradiction half with `r6`) on a measured piece. `r6=False` for the
+    controls' false-accept probe in R0, which must not credit R6."""
     st = pl.stats
     if not env.get("usable"):
         pl.refused.append(REFUSE_ROOM)
         return
-    if pl.t is None or REFUSE_OVERLAP in pl.refused or REFUSE_NO_ANCHOR in pl.refused:
+    if pl.t is None or REFUSE_OVERLAP in pl.refused or st.get("agree_share") is None:
+        if REFUSE_OVERLAP not in pl.refused:
+            pl.refused.append(REFUSE_OVERLAP)
         return
     rig = st["rigidity"]["through_share"]
-    if rig is None or (env["max_rigidity_through"] is not None and rig > env["max_rigidity_through"]):
+    if rig is None or rig > env["max_rigidity_through"]:
         pl.refused.append(REFUSE_RIGID)
     if st["agree_share"] < env["min_agree_share"]:
         pl.refused.append(REFUSE_AGREE)
@@ -878,30 +942,47 @@ def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> N
         pl.refused.append(REFUSE_AMBIGUOUS)
     if r6 and not all(a["ok"] for a in st.get("anchor_check") or [{"ok": False}]):
         pl.refused.append(REFUSE_CORROBORATION)
+    pl.refused = list(dict.fromkeys(pl.refused))
 
 
 def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: float) -> None:
-    """Records, for every piece that passed R0-R6, whether another such piece puts new geometry where it does
-    (median nearest neighbour <= `cross_median_m` over >= `cross_min_points` points within `cross_overlap_m`).
-    A record only, not a gate: two pieces can fit the same wrong depth basin and agree with each other."""
+    """R6, corroboration: a piece that passed R0-R5 is placed when an INDEPENDENT anchor (not its region's
+    centre, a check that could have failed) agrees with it, or -- chaining only from such a piece -- when its
+    new geometry coincides with an already corroborated piece's (median nearest neighbour <= cross_median_m
+    over >= cross_min_points points within cross_overlap_m). Two pieces never vouch for each other alone."""
     from scipy.spatial import cKDTree  # noqa: PLC0415
 
     ok = [p for p in placements if not p.refused]
+    done = []
     for p in ok:
-        cross = []
-        for q in ok:
-            if q is p or p.new_points is None or q.new_points is None:
+        if any(a["ok"] and a.get("independent") for a in p.stats.get("anchor_check") or []):
+            p.stats["corroborated_by"] = "independent-anchor"
+            done.append(p)
+
+    def coincides(p, q) -> dict:
+        if p.new_points is None or q.new_points is None or not len(p.new_points) or not len(q.new_points):
+            return {"with": q.label, "overlap_points": 0, "median_m": None, "ok": False}
+        d = cKDTree(q.new_points).query(p.new_points, k=1)[0] / units_per_m
+        near = d[d <= params.cross_overlap_m]
+        return {"with": q.label, "overlap_points": int(len(near)),
+                "median_m": round(float(np.median(near)), 4) if len(near) else None,
+                "ok": bool(len(near) >= params.cross_min_points and np.median(near) <= params.cross_median_m)}
+
+    grew = True
+    while grew:
+        grew = False
+        for p in ok:
+            if p in done:
                 continue
-            if len(p.new_points) == 0 or len(q.new_points) == 0:
-                continue
-            d = cKDTree(q.new_points).query(p.new_points, k=1)[0] / units_per_m
-            near = d[d <= params.cross_overlap_m]
-            entry = {"with": q.label, "overlap_points": int(len(near)),
-                     "median_m": round(float(np.median(near)), 4) if len(near) else None}
-            entry["ok"] = bool(len(near) >= params.cross_min_points and np.median(near) <= params.cross_median_m)
-            cross.append(entry)
-        p.stats["cross_check"] = cross
-        p.stats["corroborated_by"] = "anchor-region"
+            cross = [coincides(p, q) for q in done]
+            p.stats["cross_check"] = cross
+            if any(c["ok"] for c in cross):
+                p.stats["corroborated_by"] = "chained:" + next(c["with"] for c in cross if c["ok"])
+                done.append(p)
+                grew = True
+    for p in ok:
+        if p not in done:
+            p.refused.append(REFUSE_CORROBORATION)
     for p in placements:
         p.placed = not p.refused
 
@@ -923,6 +1004,21 @@ def _frame_scale(v: float | None, level: float, band: tuple[float, float]) -> fl
     return math.exp(min(max(v, level + band[0]), level + band[1]))
 
 
+def scale_interval_log(piece_values: np.ndarray, core_values: np.ndarray, salt: int, gp) -> tuple[float, float]:
+    """The piece's 95 % interval of median(piece) - median(core), in log and UNROUNDED: the guard's own
+    deterministic bootstrap (`final_scale_guard.bootstrap_interval`: its seed, draws and salt), without the
+    display rounding to 4 decimals of a ratio, which for a collapsed piece (ratio ~1e-3) is a large share of
+    the interval and flips R1."""
+    rng = np.random.default_rng([gp.bootstrap_seed, int(salt), len(piece_values), len(core_values)])
+    b = gp.bootstrap_draws
+    ps = rng.choice(piece_values, size=(b, len(piece_values)), replace=True)
+    cs = rng.choice(core_values, size=(b, len(core_values)), replace=True)
+    d = np.median(ps, axis=1) - np.median(cs, axis=1)
+    a = (1.0 - gp.ci_level) / 2.0
+    lo, hi = np.quantile(d, [a, 1.0 - a])
+    return float(lo), float(hi)
+
+
 def control_kids(room_frames: list[Frame], has_depth: Callable[[str], bool], params: PlaceParams
                  ) -> list[list[str]]:
     """`control_segments` runs of `control_frames` consecutive (capture order) room frames with depth,
@@ -939,7 +1035,13 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
          depth_of: Callable[[str], np.ndarray | None], params: PlaceParams | None = None,
          guard_params=None) -> dict:
     """Decide every isolated piece. Pure apart from `depth_of`. Returns the record, with `placements`
-    (Placement objects) for `apply_placements`."""
+    (Placement objects) for `apply_placements`.
+
+    Order (bounded work): the room's evidence; every piece's R1 (unrounded interval), size bound, R2 and
+    anchors; the measurable pieces searched over their regions and tested on R5 and R6's contradictions; only
+    then, for the pieces still standing, the room's controls under each piece's matched prior (its centre
+    anchor's dt, its region's radius) and R0, R3, R4; last, R6's corroboration. Past max_seconds the pieces
+    not yet decided stay cut."""
     from tower.world_builder.final_scale_guard import GuardParams  # noqa: PLC0415
 
     params = params or PlaceParams()
@@ -960,6 +1062,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     poses = solution.poses or {}
     index = {k: i for i, k in enumerate(solution.keyframe_ids)}
 
+    def over_time() -> bool:
+        return time.perf_counter() - started > params.max_seconds
+
     def frame(kid: str, level: float) -> Frame | None:
         p = poses.get(kid)
         if not p or p.get("rotation") is None or p.get("translation") is None:
@@ -969,9 +1074,6 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             return None
         return Frame(kid=kid, R=R, c=c, s=_frame_scale(metric_log.get(name_of.get(kid, kid)), level, band),
                      t=times.get(kid), index=index.get(kid, -1))
-
-    def c_frames(kids) -> list[Frame]:
-        return [f for f in (frame(k, ref) for k in kids) if f is not None]
 
     def piece_of(kids, level, ratio) -> Piece:
         frames, depths, scales = [], [], []
@@ -985,75 +1087,107 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             scales.append(f.s / ratio)   # metres -> this frame's own solve units -> room units
         return Piece(frames=frames, depths=depths, scales=scales, ratio=ratio, cam=cam)
 
+    def log_values(kids) -> np.ndarray:
+        v = [metric_log.get(name_of.get(k, k)) for k in kids]
+        return np.asarray([x for x in v if x is not None and math.isfinite(x)], np.float64)
+
     # The room's evidence: certified room cameras (in a kept plateau), inside the guard's room radius; the
-    # controls are left out of it. Anchors must carry their own in-band ratio (measured, not inherited).
+    # controls are left out of it, and out of the one anchor pool everything uses. Anchors carry their own
+    # in-band ratio (measured, not inherited).
     uncert = {k for u in assessment.get("uncertified") or [] for k in u.get("keyframe_ids") or []}
     certified = [k for k in assessment.get("room_keyframes") or [] if k not in uncert]
+    core = log_values(certified)
     room_frames = [f for f in (frame(k, ref) for k in certified) if f is not None]
     if room_frames:
         mid = np.median(np.stack([f.c for f in room_frames]), axis=0)
         room_frames = [f for f in room_frames if np.linalg.norm(f.c - mid) * mpu <= params.room_radius_m]
-    anchor_frames = [f for f in room_frames
-                     if (v := metric_log.get(name_of.get(f.kid, f.kid))) is not None and math.isfinite(v)
-                     and band[0] <= v - ref <= band[1]]
     ctrl = control_kids(room_frames, lambda k: depth_of(k) is not None, params)
     left_out = {k for seg in ctrl for k in seg}
-    # One anchor pool for the controls and the pieces: no held-out frame anchors anything (a control must
-    # not be anchored by its neighbour stretch, which the evidence does not hold either).
-    anchor_frames = [f for f in anchor_frames if f.kid not in left_out]
+    anchor_pool = [f for f in room_frames if f.kid not in left_out
+                   and (v := metric_log.get(name_of.get(f.kid, f.kid))) is not None and math.isfinite(v)
+                   and band[0] <= v - ref <= band[1]]
     t_room = time.perf_counter()
     room = build_room([f for f in room_frames if f.kid not in left_out], depth_of, cam, upm, params)
     rec["room"] = {"seconds": round(time.perf_counter() - t_room, 3), "frames": 0 if room is None else room.frames,
                    "voxels": 0 if room is None else len(room.points),
                    "free_voxels": 0 if room is None else len(room.free_keys),
-                   "anchor_cameras": len(anchor_frames), "metres_per_unit": mpu}
-    controls = []
-    if room is not None:
-        for n, seg in enumerate(ctrl):
-            # A control carries every error a piece carries, its scale too: its level is its own frames'
-            # median ratio, as a piece's is, so it is scaled by exp(level - ref) about the solve's origin and
-            # its true translation is what undoes that at its own cameras.
-            vals = [metric_log.get(name_of.get(k, k)) for k in seg]
-            vals = [v for v in vals if v is not None and math.isfinite(v)]
-            level = float(np.median(vals)) if vals else ref
-            ratio = math.exp(level - ref)
-            c = measure(f"control-{n}", piece_of(seg, level, ratio), None, room, anchor_frames, params)
-            cc = [f.c for f in c_frames(seg)]
-            c.stats["true_translation"] = (np.mean(cc, axis=0) * (1.0 - 1.0 / ratio)).tolist() if cc else None
-            c.stats["ratio"] = ratio
-            controls.append(c)
-    env = envelope(controls, upm, params)
-    if len(ctrl) < params.control_segments:
-        env = dict(env, usable=False, why=f"the room spares {len(ctrl)} of the {params.control_segments} control "
-                                          f"stretches of {params.control_frames} frames")
-    rec["controls"] = [_jsonable({k: v for k, v in c.record().items() if k not in ("ci", "placed", "ratio")})
-                       for c in controls]
-    rec["envelope"] = env
+                   "anchor_cameras": len(anchor_pool), "metres_per_unit": mpu, "control_segments": len(ctrl)}
+
+    # 1. Every piece: R1 on the unrounded interval, the size bound, R2, anchors; then the search and R5/R6.
     placements = []
+    measured = []
     for n, p in enumerate(pieces):
         kids = list(p.get("keyframe_ids") or [])
-        vals = [metric_log.get(name_of.get(k, k)) for k in kids]
-        vals = [v for v in vals if v is not None and math.isfinite(v)]
+        vals = log_values(kids)
         label = f"piece-{n}"
-        ci = p.get("ci")
-        if not vals or room is None:
-            pl = Placement(label=label, kids=kids, ratio=float("nan"), ci=ci)
-            pl.refused.append(REFUSE_FRAMES if not vals else REFUSE_ROOM)
+        if not len(vals) or not len(core) or room is None:
+            pl = Placement(label=label, kids=kids, ratio=float("nan"), ci=p.get("ci"))
+            pl.refused.append(REFUSE_FRAMES if not len(vals) else REFUSE_ROOM)
             placements.append(pl)
             continue
         level = float(np.median(vals))
         ratio = math.exp(level - ref)
-        if ci is None or ci[0] <= 0 or ci[1] / ci[0] > params.max_ci_width:
-            pl = Placement(label=label, kids=kids, ratio=ratio, ci=ci)   # R1 first: nothing to measure
-            pl.refused.append(REFUSE_CI)
-        elif len(kids) > params.max_piece_keyframes:
-            pl = Placement(label=label, kids=kids, ratio=ratio, ci=ci)   # bounded work: refused, not sampled
-            pl.refused.append(REFUSE_TOO_LARGE)
-        else:
-            pl = measure(label, piece_of(kids, level, ratio), ci, room, anchor_frames, params)
-            certify(pl, env, params)
-        pl.kids = kids
+        ci_log = scale_interval_log(vals, core, int(p.get("first_index", 0)), gp)
+        d_hat = float(np.median(vals) - np.median(core))
+        ci_rel = (ci_log[0] - d_hat, ci_log[1] - d_hat)
+        pl = Placement(label=label, kids=kids, ratio=ratio, ci=p.get("ci"))
+        pl.stats["ci_log"] = [round(ci_log[0], 6), round(ci_log[1], 6)]
         placements.append(pl)
+        if ci_log[1] - ci_log[0] > math.log(params.max_ci_width):
+            pl.refused.append(REFUSE_CI)
+            continue
+        if len(kids) > params.max_piece_keyframes:
+            pl.refused.append(REFUSE_TOO_LARGE)
+            continue
+        piece = piece_of(kids, level, ratio)
+        if len(piece.frames) < params.min_frames:
+            pl.refused.append(REFUSE_FRAMES)
+            pl.stats["frames_with_depth"] = len(piece.frames)
+            continue
+        anc = anchors(piece, anchor_pool, params)
+        region = regions(piece, ci_rel, anc, params, upm)
+        pl.stats["anchors"] = [{k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in a.items()
+                                if k not in ("piece_centre", "t")} for a in anc]
+        if region is None:
+            pl.refused.append(REFUSE_NO_ANCHOR)
+            continue
+        if over_time():
+            pl.refused.append(REFUSE_TIME)
+            continue
+        m = measure(label, piece, p.get("ci"), room, anc, region, params)
+        m.stats.update(ci_log=pl.stats["ci_log"], anchors=pl.stats["anchors"])
+        m.kids = kids
+        piece_tests(m, params)
+        placements[-1] = m
+        measured.append((m, region))
+
+    # 2. The room's controls, under each standing piece's matched prior, and R0, R3, R4.
+    cache: dict = {}
+    rec["controls"] = {}
+    for m, region in measured:
+        if m.refused:
+            continue
+        key = (round(region["dt_s"], 2), round(m.stats["region"]["radius_m"], 2))
+        if key not in cache:
+            controls = []
+            for i, seg in enumerate(ctrl):
+                if over_time():
+                    break
+                c = _matched_control(f"control-{i}", seg, key, anchor_pool, room, params, upm, ref,
+                                     log_values, piece_of, frame)
+                if c is not None:
+                    controls.append(c)
+            cache[key] = (controls, envelope(controls, upm, params))
+            rec["controls"][f"dt{key[0]}-r{key[1]}"] = {
+                "controls": [_jsonable({k: v for k, v in c.record().items() if k not in ("ci", "placed")})
+                             for c in controls], "envelope": cache[key][1]}
+        if over_time() and len(cache[key][0]) < params.control_segments:
+            m.refused.append(REFUSE_TIME)
+            continue
+        m.stats["envelope"] = f"dt{key[0]}-r{key[1]}"
+        certify(m, cache[key][1], params)
+
+    # 3. R6's corroboration.
     if room is not None:
         corroborate(placements, params, upm)
     for pl in placements:
@@ -1063,6 +1197,38 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     rec["placements"] = placements
     rec["seconds"] = round(time.perf_counter() - started, 3)
     return rec
+
+
+def _matched_control(label, seg, key, anchor_pool, room, params, upm, ref, log_values, piece_of, frame):
+    """One control under a piece's prior: its anchor is the latest pool frame at least the piece's centre
+    dt before the stretch's first frame (within anchor_dt_s), and it is searched over a ball of the piece's
+    radius about that anchor's estimate. A control carries every error a piece carries, its scale too: its
+    level is its own frames' median ratio, so it is scaled by exp(level - ref) about the solve's origin and
+    its true translation is what undoes that at its own cameras. None when no such anchor exists."""
+    dt, radius = key
+    vals = log_values(seg)
+    level = float(np.median(vals)) if len(vals) else ref
+    ratio = math.exp(level - ref)
+    piece = piece_of(seg, level, ratio)
+    if not piece.frames:
+        return None
+    first = min((f for f in piece.frames if f.t is not None), key=lambda f: f.t, default=None)
+    if first is None:
+        return None
+    cands = [f for f in anchor_pool if f.t is not None and dt <= first.t - f.t <= params.anchor_dt_s]
+    if not cands:
+        return None
+    rc = max(cands, key=lambda f: f.t)
+    gap = first.t - rc.t
+    a = {"side": "before", "piece_kid": first.kid, "room_kid": rc.kid, "dt_s": gap,
+         "t": rc.c - first.c / ratio, "allowance_m": params.speed_mps * gap + params.speed_margin_m,
+         "piece_centre": first.c / ratio, "bound_m": radius}
+    c = measure(label, piece, None, room, [a], a, params, radius_m=radius)
+    cc = [f.c for f in (frame(k, ref) for k in seg) if f is not None]
+    c.stats["true_translation"] = (np.mean(cc, axis=0) * (1.0 - 1.0 / ratio)).tolist() if cc else None
+    c.stats["ratio"] = ratio
+    c.stats["anchor_dt_s"] = round(gap, 3)
+    return c
 
 
 def apply_placements(solution, assessment: dict, placements: list[Placement]):
@@ -1096,6 +1262,10 @@ def apply_placements(solution, assessment: dict, placements: list[Placement]):
             if kid not in poses:
                 continue
             R, c = centre_of(poses[kid])
+            # Provenance on the pose: a re-gate must not read a placed camera as solved (the solver's own
+            # translation is kept, so the placement can be undone).
+            poses[kid]["placed_by_depth"] = {"id": PLACE_ID, "solver_translation": list(poses[kid]["translation"]),
+                                             "ratio": float(pl.ratio), "t": [float(x) for x in t]}
             poses[kid]["translation"] = [float(x) for x in (-R @ (c * s + t))]
         sel = point_label == label_of_piece[pl.label]
         xyz[sel] = xyz[sel] * s + t
@@ -1103,14 +1273,22 @@ def apply_placements(solution, assessment: dict, placements: list[Placement]):
     placed_kids = {k for pl in placed for k in pl.kids}
     keep = [p for p in assessment.get("pieces") or [] if not set(p.get("keyframe_ids") or []) & placed_kids]
     unc = list(assessment.get("uncertified") or [])
+    by_first = {(p.get("keyframe_ids") or [None])[0]: p for p in assessment.get("pieces") or []}
     for pl in placed:
-        unc.append({"group": "room", "first_keyframe_id": pl.kids[0], "last_keyframe_id": pl.kids[-1],
-                    "keyframes": len(pl.kids), "kind": "depth-placed", "decision": "attached",
-                    "uncertified": UNCERTIFIED_DEPTH_PLACED, "keyframe_ids": list(pl.kids)})
+        src = by_first.get(pl.kids[0], {})
+        row = {k: src.get(k) for k in ("group", "first_index", "last_index", "measured", "class", "ratio", "reason")
+               if k in src}
+        row.update({"first_keyframe_id": pl.kids[0], "last_keyframe_id": pl.kids[-1], "keyframes": len(pl.kids),
+                    "kind": "depth-placed", "decision": "depth-placed", "uncertified": UNCERTIFIED_DEPTH_PLACED,
+                    "keyframe_ids": list(pl.kids)})
+        unc.append(row)
+    placed_firsts = {pl.kids[0] for pl in placed}
+    plateaus = [dict(r, decision="depth-placed") if r.get("first_keyframe_id") in placed_firsts
+                and r.get("decision") == "isolated" else r for r in assessment.get("plateaus") or []]
     order = {k: i for i, k in enumerate(solution.keyframe_ids)}
     room = sorted(set(assessment.get("room_keyframes") or []) | placed_kids, key=lambda k: order.get(k, len(order)))
     n_unc = sum(len(u.get("keyframe_ids") or []) for u in unc)
-    new_assessment = dict(assessment, pieces=keep, uncertified=unc, uncertified_keyframes=n_unc,
+    new_assessment = dict(assessment, pieces=keep, uncertified=unc, uncertified_keyframes=n_unc, plateaus=plateaus,
                           room_keyframes=room, scale_status="uncertified",
                           why=f"{n_unc} attached keyframes are not certified")
     return new_solution, new_assessment
