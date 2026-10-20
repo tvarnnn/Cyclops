@@ -712,6 +712,54 @@ class TestOperatorDecisionsArriveTogether:
         assert held is False
         assert state in (STATE_STARTING, STATE_RUNNING)
 
+    def test_a_pause_between_two_watchers_inside_an_operator_stop_is_kept(
+        self, monkeypatch
+    ):
+        # Stop A, watcher W1, Pause P, watcher W2, then A's base stop. In
+        # that order W1 restarted the session, P paused it and W2 could
+        # not resume it: the newest arrival does not make this the J3 case.
+        session = self._demand_session()
+
+        def watcher_pause_watcher():
+            session.watcher_joined("phone:sub-2", owner="phone")
+            session.pause()
+            session.watcher_joined("phone:sub-3", owner="phone")
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(watcher_pause_watcher,),
+        )
+        assert self._held_and_state(session) == (False, STATE_PAUSED)
+
+    def test_a_stream_alone_before_a_pause_inside_a_stop_does_not_pause_it(
+        self, monkeypatch
+    ):
+        # Stop A (the watcher is gone), a stream with no watcher, Pause P,
+        # then a watcher. Only the watcher could start the session, and it
+        # is newer than P, so in order the session runs.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+
+        def stream_pause_watcher():
+            session.stream_opened(owner="phone")
+            session.pause()
+            session.watcher_joined("phone:sub-1", owner="phone")
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(stream_pause_watcher,),
+        )
+        held, state = self._held_and_state(session)
+        assert held is False
+        assert state in (STATE_STARTING, STATE_RUNNING)
+
     def test_a_pause_after_a_watcher_inside_a_demand_stop_is_kept(
         self, monkeypatch
     ):

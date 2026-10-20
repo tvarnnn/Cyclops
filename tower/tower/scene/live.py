@@ -175,6 +175,12 @@ class SceneLive(LiveSession):
         self._order = 0
         self._decision_order = 0
         self._demand_order = 0
+        # The order of the newest demand arrival that left a stream AND a
+        # watcher, so could start the session; and that value as the newest
+        # Pause saw it, so a stop can tell whether the Pause came after a
+        # demand start.
+        self._demand_start_order = 0
+        self._pause_saw_start = 0
         # Set once, by `refuse_starts()`, before the shutdown stop. Nothing
         # starts a worker after it.
         self._closed = False
@@ -285,12 +291,16 @@ class SceneLive(LiveSession):
         self._decision_seq += 1
         self._order += 1
         self._decision_order = self._order
+        if decision == _PAUSE:
+            self._pause_saw_start = self._demand_start_order
         return self._decision_seq
 
     def _demand_arrived(self) -> None:
-        """A stream or watcher arrived. Under `_demand`."""
+        """A stream or watcher arrived, and is recorded. Under `_demand`."""
         self._order += 1
         self._demand_order = self._order
+        if self._open_streams and self._watchers:
+            self._demand_start_order = self._order
 
     def _reconcile_after_stop(self, since: int, *, always: bool) -> None:
         """After a stop decided at order `since` has landed and settled, let
@@ -298,10 +308,12 @@ class SceneLive(LiveSession):
 
         A stream or watcher that arrived after the stop decided found the
         session still running, so its own `_reconcile` did nothing; it is
-        asked again here. Unless an operator Pause is newer than it: in
-        that order the session was started by the demand and then paused,
-        so it is started and paused again. `always`: reconcile even with no
-        demand since, as a demand stop always has.
+        asked again here. Unless the newest operator decision is a Pause
+        made after a demand arrival that could start the session (a stream
+        and a watcher) and after the stop: in that order the session was
+        started and then paused, and a later arrival's `_reconcile` would
+        not resume it, so it is started and paused again. `always`:
+        reconcile even with no demand since, as a demand stop always has.
         """
         pause = False
         with self._demand:
@@ -309,7 +321,7 @@ class SceneLive(LiveSession):
             if (
                 demand_since
                 and self._decision == _PAUSE
-                and self._decision_order > self._demand_order
+                and self._pause_saw_start > since
             ):
                 if (
                     not self._closed
