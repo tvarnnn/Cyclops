@@ -223,7 +223,9 @@ meshes, photos and the viewer page go over HTTP.
    metric depth (`log(z_sfm / z_metric)`). A run
    of cameras is set aside only when it has at least 10 measurements, its median
    ratio is outside [0.8, 1.25], and its 95% bootstrap interval (400 draws,
-   fixed seed) excludes 1. Set-aside pieces are kept as separate pieces, never
+   fixed seed) excludes 1. A run with fewer measurements is set aside only when
+   its median is outside that band and every one of its ratios lies beyond the
+   range the certified room's own cameras show. Set-aside pieces are kept as separate pieces, never
    drawn at the wrong size inside the room. The guard can only *remove* room
    membership; it never attaches anything.
    *Why:* an evidence gate decides what to attach, but nothing checked the

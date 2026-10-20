@@ -10,8 +10,11 @@ and returns a `GuardOutcome` that carries the summary and the audit. v2 is the r
     deterministic 95 % bootstrap interval (400 draws, seed 20261006) excluding 1. A plateau is bounded by
     its first and last MEASURED camera: no class is carried across an unmeasured tail. Re-segment after
     each removal.
+  * A SHORT plateau (< 10 ratios, too few for the interval) is isolated the same way only when its median is
+    outside the band AND every one of its ratios lies beyond the certified core's own per-camera range on
+    that side (`_decide_short`).
   * QUALIFYING in-band plateaus with >= 10 ratios stay `certified`. The room is `SCALE_CERTIFIED` when
-    its certified core has >= 10 ratios and no attached uncertified span. Short plateaus, unmeasured
+    its certified core has >= 10 ratios and no attached uncertified span. Other short plateaus, unmeasured
     stretches, excursions and out-of-band plateaus whose interval includes 1 stay attached but are
     recorded `uncertified`, in `final_scale_guard.json` and on the placed component of
     `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen recorded only).
@@ -47,10 +50,12 @@ WHAT v2 MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30
      until the decisions stop changing (a contaminated first median cannot hide a second mismatch).
   4. DECISIONS, per plateau with >= 10 ratios: its median ratio to the reference inside [0.8, 1.25] is
      kept and certified; outside it the plateau is a candidate, isolated `final-scale-outlier` only when its
-     bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios, an
-     unmeasured stretch, and a run of >= 3 consecutive measured cameras each beyond the clear boundary
-     (below 0.75 or above 1.333) on one side (an excursion, which the running median swallows) stay
-     attached and `uncertified`: the record does not certify an unmeasured piece's scale.
+     bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios is
+     isolated the same way only when the room's own scatter rules out every one of its cameras
+     (`_decide_short`). Any other plateau with < 10 ratios, an unmeasured stretch, and a run of >= 3
+     consecutive measured cameras each beyond the clear boundary (below 0.75 or above 1.333) on one side
+     (an excursion, which the running median swallows) stay attached and `uncertified`: the record does
+     not certify an unmeasured piece's scale.
   5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference), over the
      room's cameras in capture order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
      it moves more than max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m, or more
@@ -457,8 +462,8 @@ def _counts(items: list[dict]) -> dict:
 # reference outside the inclusive [screen_low, screen_high]; and the deterministic 95 % bootstrap interval
 # of its median against the certified core (`bootstrap_draws`, `bootstrap_seed`) excludes 1. A plateau is
 # bounded by its FIRST and LAST MEASURED camera: unmeasured cameras inside it go with it, an unmeasured
-# head, tail or gap never does. Everything
-# else -- short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
+# head, tail or gap never does. A short plateau is isolated only by `_decide_short`. Everything
+# else -- other short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
 # STAYS ATTACHED and is recorded `uncertified`, in the audit and on the placed component. No evidence: the
 # whole room is `uncertified`, nothing is isolated, nothing is withheld. No pose-only quarantine: the pose
 # screen is recorded for audit and applied to nothing. After each removal the rest is re-segmented.
@@ -529,6 +534,35 @@ def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> lis
     return out
 
 
+def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams) -> None:
+    """A SHORT plateau (< `min_ratios` ratios, too few for the bootstrap interval) isolated
+    `final-scale-outlier` in place when the room's own evidence rules out every one of its cameras: the
+    certified core has >= `min_ratios` ratios spanning a real range (min < max); the plateau's median is
+    outside the screen band; every one of its ratios lies strictly beyond the core's extreme on that side; and
+    the chance that that many room-scale cameras would all land there, 1 / C(|core| + n, n) under
+    exchangeability, is at most the bootstrap's own tail (1 - ci_level) / 2. Otherwise it stays attached
+    `short`.
+
+    Mechanism: the core is this walk's record of how far one camera at room scale scatters; a stretch the
+    solve placed with a common scale error (one rigid similarity) shifts every camera's log ratio by one
+    amount, past that scatter and to one side. Gauge-free (log differences) and no new constant: the cut is
+    the core's own min and max. A ratio on an end of the range is inside; a non-finite value refuses."""
+    m = np.asarray(row["values"], np.float64)
+    c = np.asarray(core, np.float64)
+    if len(c) < params.min_ratios or not len(m) or not (np.isfinite(m).all() and np.isfinite(c).all()):
+        return
+    lo, hi = float(c.min()), float(c.max())
+    side = classify(float(np.median(m)) - ref, params)
+    beyond = ((side == HIGH and bool((m > hi).all())) or (side == LOW and bool((m < lo).all()))) and hi > lo
+    tail = (1.0 - params.ci_level) / 2.0
+    level = tail > 0 and math.comb(len(c) + len(m), len(m)) >= 1.0 / tail  # an exact int-float compare
+    row.update(core_range=[round(math.exp(lo - ref), 4), round(math.exp(hi - ref), 4)],
+               ratio_range=[round(math.exp(float(m.min()) - ref), 4), round(math.exp(float(m.max()) - ref), 4)],
+               beyond_core=bool(beyond and level))
+    if row["beyond_core"]:
+        row.update(decision="isolated", reason=REASON_SCALE_OUTLIER, uncertified=None)
+
+
 def _v2_segment(groups: dict, values: dict, params: GuardParams):
     """(reference log or None, rows, reference rounds, certified core values) for `groups`, the reference
     refined from the certified core until the decisions stop changing (at most `max_reference_rounds`); every
@@ -557,6 +591,10 @@ def _v2_segment(groups: dict, values: dict, params: GuardParams):
         seen.add(sig)
     core = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
     for r in rows:
+        if r.get("uncertified") == UNCERTIFIED_SHORT:
+            _decide_short(r, core, ref, params)
+
+    for r in rows:
         if r["decision"] != "candidate":
             continue
         if len(core) < params.min_ratios:
@@ -582,6 +620,8 @@ def _v2_row_record(r: dict) -> dict:
     if "ci" in r:
         out["ci"] = r["ci"]
         out["ci_excludes_one"] = r["ci_excludes_one"]
+    if "beyond_core" in r:
+        out.update(core_range=r["core_range"], ratio_range=r["ratio_range"], beyond_core=r["beyond_core"])
     return out
 
 

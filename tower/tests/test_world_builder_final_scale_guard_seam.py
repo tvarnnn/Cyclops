@@ -6,8 +6,9 @@ scale; on an ungated solve the live depth cache's metric log, `FSG._live_cache_e
 slice 4: evidence is READ, never made at publish):
   * THE VETO CASE: the walk-3-shaped fixture through the live product's final solve (unmasked, ungated,
     one draw) WITH live-cache evidence: zero bathroom keyframes in the published room; the pieces are
-    explicit components the product's own reader takes; the audit names them; the short desk stretch stays
-    attached and is flagged uncertified on the placed component; no depth stage runs;
+    explicit components the product's own reader takes; the audit names them; the short desk stretch (9
+    ratios, every one beyond the room's own range) is isolated too, with no interval (lane D); the placed
+    component stays flagged uncertified where nothing was measured; no depth stage runs;
   * no evidence (or too little) publishes the room `uncertified`, isolates nothing and never runs depth; a
     failed gate is no evidence; an exception -> nothing written, the solution published before stands,
     `solved: false` with a one-line reason;
@@ -259,29 +260,32 @@ def test_a_sustained_out_of_band_ratio_stretch_is_isolated_by_the_live_products_
     desk_bad = {f"{sid}:{i:08d}" for i in range(74, 84)}
     room = _room_ids(meta)
     assert not (room & bathroom), "a bathroom keyframe stayed in the room"
-    # v2: the desk stretch has fewer than 10 ratios (the fixture's missing ones): attached, flagged.
-    assert desk_bad <= room
-    assert len(room) == W3_N - len(bathroom)
+    # The desk stretch has fewer than 10 ratios (the fixture's missing ones), every one beyond the room's own
+    # range: isolated too, as its own piece (lane D; before, attached and flagged `short`).
+    assert not (room & desk_bad)
+    assert len(room) == W3_N - len(bathroom) - len(desk_bad)
     # the pieces are explicit components, never dropped: every keyframe is still posed
     assert set(meta["poses"]) == {f"{sid}:{i:08d}" for i in range(W3_N)}
     assert "gate" not in meta and meta["solve"]["final_scale_guard"]["decision"] == "published"
     assert meta["solve_identity"]
-    # the components record: the room, the bathroom pieces as areas, the desk stretch counted only
+    # the components record: the room, the bathroom pieces as areas, the desk stretch a piece of its own
     rec = parse_components(comp)
     assert rec is not None
     entries = comp["components"]
     assert entries[0]["state"] == "placed" and entries[0]["shown_as"] == "room"
     unplaced = [e for e in entries if e["state"] == "unplaced"]
     assert {e["reason"] for e in unplaced} == {FSG.REASON_SCALE_OUTLIER}
-    assert set().union(*(set(e["keyframe_ids"]) for e in unplaced)) == bathroom
+    assert set().union(*(set(e["keyframe_ids"]) for e in unplaced)) == bathroom | desk_bad
+    assert any(set(e["keyframe_ids"]) == desk_bad for e in unplaced)
     assert any(e["shown_as"] == "area" for e in unplaced)
-    # the placed component says the room is uncertified, and where: the desk stretch among its spans
+    # the placed component says the room is uncertified, and where: an unmeasured camera, not the desk stretch
     status = _placed(comp)["final_scale_guard"]
     assert status["id"] == FSG.GUARD_ID and status["scale_status"] == FSG.SCALE_UNCERTIFIED
     assert status["evidence"] == FSG.EVIDENCE_LIVE
-    flagged = {k for sp in status["uncertified_spans"] if sp["kind"] == FSG.UNCERTIFIED_SHORT
-               for k in (sp["first_keyframe_id"], sp["last_keyframe_id"])}
-    assert flagged & desk_bad
+    assert status["uncertified_spans"] and status["uncertified_keyframes"] == sum(
+        sp["keyframes"] for sp in status["uncertified_spans"])
+    flagged = {k for sp in status["uncertified_spans"] for k in (sp["first_keyframe_id"], sp["last_keyframe_id"])}
+    assert not (flagged & desk_bad)
     # the product's own reader takes it (solve_identity and input_digest agree)
     assert read_components_record(s.store, s.world_id, s.session_id) is not None
     # no ratio or figure in the record
@@ -290,10 +294,14 @@ def test_a_sustained_out_of_band_ratio_stretch_is_isolated_by_the_live_products_
     assert audit["mode"] == "on" and audit["decision"] == "published"
     assert audit["solve_identity"] == meta["solve_identity"]
     isolated = {k for p in audit["assessment"]["pieces"] for k in p["keyframe_ids"]}
-    assert isolated == bathroom
-    assert all(p["ci_excludes_one"] for p in audit["assessment"]["pieces"])
+    assert isolated == bathroom | desk_bad
+    for p in audit["assessment"]["pieces"]:
+        if p["measured"] >= P.min_ratios:
+            assert p["ci_excludes_one"] and "beyond_core" not in p
+        else:
+            assert set(p["keyframe_ids"]) == desk_bad and p["beyond_core"] is True and "ci" not in p
     assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED
-    assert desk_bad <= {k for u in audit["assessment"]["uncertified"] for k in u["keyframe_ids"]}
+    assert not (desk_bad & {k for u in audit["assessment"]["uncertified"] for k in u["keyframe_ids"]})
     assert audit["inputs"]["source"] == FSG.EVIDENCE_LIVE
     assert eng.depth_calls == 0 and eng.metric_calls == 0
 
