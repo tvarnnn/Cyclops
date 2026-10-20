@@ -771,64 +771,32 @@ const NAV = (() => {
      a direction is dark until some field is built, and widening the tube
      doubled how long that takes). The page builds a coarse one first, uses it,
      and swaps in the fine one when it lands. */
-  /* THE LATTICE IS WALKED WHERE THE WALK IS, NOT ACROSS ITS BOUNDING BOX.
-     Walk 10.2 (2026-10-20) published six solver blow-up poses in its camera
-     list, one 158 km out: the box of all 207 points was 4.7e14 cells, the
-     Int32Array threw a RangeError inside `buildNav`'s slice, and the page sat
-     on "Preparing the view" with no field at all -- no Best view, no ring, no
-     dark hint, no walk collision -- while the pictures looked fine.
-     A cell is in the field only when it is within the envelope (plus the
-     interpolation margin) of a recorded pose or of a walkable segment, so it
-     lies in a cube around one of the poses: half-side `reach` = the widened
-     envelope (never further than its larger axis times the margin) plus half a
-     JUMP when the pose ends a walkable segment (a point of a segment is within
-     JUMP/2 of one of its ends). Those cubes hold every cell the box would have
-     kept, ON THE SAME LATTICE (anchored at the box's corner), and they are put
-     back in the box's own z, y, x order -- so it is the same field, cell for
-     cell, whichever way it is enumerated, and the cheaper way is taken: the
-     box when it is smaller than the cubes' total (every compact walk; nothing
-     changes there), the cubes when it is not, whose cost is bounded by the
-     NUMBER of poses and not by how far apart the solver put them. A far pose
-     then costs one small cube of its own and nothing else.
-     The page does not decide which poses are real; that is the Tower's
-     (`surface_render.viewable_poses`). This has to hold whatever arrives.
-     MAX_FIELD_CELLS bounds what one synchronous enumeration may visit: 2^22,
-     a 16 MB index and ~1.7e9 path-distance terms at ~400 per cell, about the
-     most one call can hold a phone's main thread. The largest healthy box
-     measured is 105,300 (kitchen 9.1; walks 10 / 10.1: 21,780 / 74,460), and
-     the cubes at the Tower's 240-camera cap total ~2.2M, so it never binds on
-     a list the Tower sends. Past it the field is `failed` rather than built,
-     and the page carries on as it does before any field exists. */
+  /* THE LATTICE IS WALKED WHERE THE WALK IS. Walk 10.2's list held a pose
+     158 km out; the box of every pose was 4.7e14 cells and `new Int32Array`
+     threw, so no field ever landed (LANE-F.md). A kept cell is within the
+     widened envelope of a pose or a walkable segment, so it lies in a cube
+     round a pose (half-side: margin x the envelope's larger axis, + JUMP/2 at
+     a segment end). The cubes, on the box's own lattice and put back in its
+     z, y, x order, are the box's field cell for cell; the cheaper of the two
+     is walked, so a compact walk is enumerated exactly as before. Which poses
+     are real is the Tower's call (`viewable_poses`), not the page's.
+     MAX_FIELD_CELLS bounds one synchronous enumeration (2^22: a 16 MB index,
+     ~1.7e9 path terms); the cubes of a 240-pose list total ~2.2M. */
   const MAX_FIELD_CELLS = 1 << 22;
-  /* How far from THE WALK, in lattice steps, a pose can still be put on the
-     lattice. Cells are counted from the box's corner, and past 2^53 steps
-     `x++` stops advancing: a pose 1e16 out walked its cube forever (R1). The
-     walk is located by a REFERENCE pose -- the finite pose nearest (largest
-     axis) to the element-wise median of the finite poses, so a minority of
-     blow-ups cannot move it and it is always one of the walk's own -- and a
-     pose more than LATTICE_STEPS steps from it on any axis is skipped like a
-     non-finite one. Every lattice index then stays under ~2^41, far from 2^53.
-     Measured from the walk and not from the origin (R2): a compact walk
-     anywhere, 1e12 out included, keeps every pose and is the box's own field,
-     with the box's own float64 arithmetic. 2^40 steps is 7.7e11 units at the
-     fine spacing; the worst blow-up seen is 9.4e6 (walk 4). */
+  /* A pose more than LATTICE_STEPS steps (any axis) from the walk's REFERENCE
+     pose -- the finite pose nearest the element-wise median, so always one of
+     the walk's own -- is skipped like a non-finite one: indices stay under
+     ~2^41, far from 2^53 where `x++` stops advancing (R1: a pose 1e16 out never
+     finished). From the walk, not the origin (R2): a compact walk 1e12 out is
+     the box's own field. 2^40 steps is 7.7e11 units; the worst blow-up seen
+     is 9.4e6. */
   const LATTICE_STEPS = Math.pow(2, 40);
-  /* What the field may COST once its cells are known, checked before a byte
-     of it is allocated (R2: MAX_FIELD_CELLS bounds the enumeration, not the
-     field). Each kept cell holds three CELLS-entry cube maps (1,152 bytes),
-     and `fieldWork` compares every kept cell with every proxy sample. Real
-     walks, measured by the page itself (LANE-F.md §6): fine fields of 5,230 -
-     8,840 cells = 6.0 - 10.2 MB and 31 - 53 million comparisons, landing in
-     1.1 - 1.5 s. MAX_FIELD_BYTES = 2^25 (32 MiB) is three times the largest of
-     those, held beside the ~128 texture layers the page already keeps;
-     MAX_FIELD_WORK = 2^28 comparisons is five times it, several seconds of
-     slices on a desktop and far longer on a phone, past which the Best view
-     would wait longer than a person does. A field over either is `failed`
-     before allocation: a fine field over budget leaves the coarse one (an
-     eighth of the cells) in use, as `buildNav` already does for any fine
-     fault; a coarse one over budget leaves no field. A valid 240-pose list
-     with every pose isolated reaches ~120,000 fine cells (139 MB), which is
-     what this stops. */
+  /* What the field may COST, checked before it is allocated (R2): a cell holds
+     three cube maps (1,152 bytes) and `fieldWork` compares it with every proxy
+     sample. Real fine fields are 5,230-8,840 cells, 6-10 MB, 31-53M
+     comparisons (LANE-F.md §6); the caps are 3x and 5x the largest. Over
+     either the job is `failed`: a fine field leaves the coarse one in use, a
+     coarse one leaves none. 240 isolated poses would need 141 MB. */
   const MAX_FIELD_BYTES = Math.pow(2, 25), MAX_FIELD_WORK = Math.pow(2, 28);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
@@ -922,32 +890,18 @@ const NAV = (() => {
             con: new Uint8Array(count * CELLS), near: null,
             next: 0, done: count === 0, failed: null};
   }
-  /* WHAT THE WALK LOOKED AT: the mean of the recorded look targets (centre +
-     forward x `ref`), the Best view's "toward" -- over the poses that are
-     where the walk was. One 158 km pose of 207 (walk 10.2) moved the plain
-     mean ~800 units off the room, and "toward" then pointed every candidate
-     the same way across the world. `lookKept` leaves a pose out only by the
-     SURFACE's gate rule for a pose the solver placed nowhere near the rest
-     (`surface.robust_pose_outliers`): beyond both FAR_RADIUS (10) x the median
-     distance from the element-wise median centre AND FAR_DETACH (2.5) x the
-     95th-percentile distance; nobody when that would leave out more than
-     FAR_SHARE (5 %), or with fewer than MIN_ROBUST (8) poses, or all of them
-     in one place. Both tests, because a walk that DWELLS has a tiny median and
-     a legitimate tail (80 poses on one spot and a crossing put 16 real poses
-     past 10 medians, none past 2.5 x p95). Where it drops nothing, the plain
-     mean, bit for bit.
-     WHERE IT CAN DIFFER FROM THE SURFACE'S OWN DECISION (R2). It is the same
-     rule with the same constants -- production always builds the surface with
-     `SurfaceParams()` defaults; only the research CLI `world_surface.py` can
-     change them -- but not the same INPUT: the surface judges the poses it is
-     offered (those with depth, unrounded), this judges the published list
-     (component 0, decimated to <= 240, rounded to 5 decimals), so the median,
-     the p95 and a pose sitting exactly on a threshold can come out
-     differently. The surface's per-pose decisions are not in the page's
-     CONFIG; carrying them would be a contract change for a preference. What
-     bounds the difference: it moves only the Best view's "toward" factor
-     (0.5 - 1 on a candidate's score), and it can never leave out more than 5 %
-     of the list, so never every pose. */
+  /* WHAT THE WALK LOOKED AT, for the Best view's "toward": the mean look
+     target (centre + forward x `ref`) over the poses the SURFACE's gate rule
+     (`surface.robust_pose_outliers`, defaults) would keep: out only beyond
+     both 10 x the median distance from the element-wise median AND 2.5 x the
+     p95, nobody when that is over 5 % of them, under 8 poses, or all in one
+     place (a dwelling walk keeps its crossing). Walk 10.2's 158 km pose moved
+     the plain mean ~800 units off the room. Where nothing is dropped it is the
+     plain mean, bit for bit. It can differ from the surface's own decision
+     (R2): same rule and constants (production builds with SurfaceParams()
+     defaults), different input -- the surface judges the poses it is offered,
+     unrounded; this, the published list, decimated and rounded to 5 decimals.
+     It only moves the "toward" factor (0.5-1) and never drops over 5 %. */
   const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
   function lookKept(cams){
     const keep = cams.map(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
@@ -3430,14 +3384,10 @@ async function main(){
     status(PREPARING);
     const steps = navInputSteps();
     let input = null, job = null, spent = 0, inputMs = 0, coarse = true;
-    // A field that cannot be built must not leave the page saying it is
-    // being prepared. Walk 10.2: `fieldJob` threw inside this slice, nothing
-    // caught it or asked again, and "Preparing the view…" stayed up for good
-    // over a page whose every field-gated control was dead. Now the page says
-    // nothing more, records why (`S.nav.phase` "failed", `S.nav.error`), and
-    // stays as it is before any field exists -- a look turns, a move is held
-    // to the walk's tube by the path alone, Best view and Face the room stay
-    // off -- unless a coarse field already landed, which keeps working.
+    // A field that cannot be built must not leave "Preparing the view…" up
+    // for good, as a RangeError here did on walk 10.2: say nothing more, record
+    // why (`S.nav.phase` "failed", `S.nav.error`), keep a coarse field that
+    // already landed, and carry on as before any field exists.
     const stop = (why) => {
       if (gen !== navGeneration) return;
       navJob = null;
