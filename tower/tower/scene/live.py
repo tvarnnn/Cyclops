@@ -257,8 +257,11 @@ class SceneLive(LiveSession):
             if self._closed:
                 return self.status()
             self._operator_hold = True
+            # A failed session is begun afresh by the base start, paused
+            # target or not, so it is folded from stopped.
+            prior = STATE_STOPPED if self.state == STATE_FAILED else self._target
             self._target = decision_order_state(
-                self._target, EVENT_START, resume_paused=resume_paused
+                prior, EVENT_START, resume_paused=resume_paused
             )
             return super().start(resume_paused=resume_paused)
 
@@ -404,14 +407,16 @@ class SceneLive(LiveSession):
     def _stop_then_reconcile(self) -> None:
         """A demand stop's base stop, OUTSIDE the demand lock, then `_drive`.
 
-        Skipped when an event since the decision has already set the
-        target running or paused again, so a Start or a watcher landing in
-        between costs no churn.
+        The base stop is skipped when an event since the decision has
+        already set the target running or paused again, so a Start or a
+        watcher landing in between costs no churn. `_drive` is not: a
+        Pause in between can have paused a session that a later watcher
+        set running again, and its base start does not resume.
         """
         with self._demand:
-            if self._target != STATE_STOPPED:
-                return
-        super().stop()
+            skip = self._target != STATE_STOPPED
+        if not skip:
+            super().stop()
         self._drive()
 
     def _reconcile(self) -> None:

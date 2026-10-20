@@ -979,12 +979,21 @@ _WINDOW_EVENTS = (
     "shutdown",
 )
 
-# Parked call -> (the base verb it is parked at, the event it is).
+# Parked call -> (where it is parked, the event it is). "stop" and
+# "pause" are the base calls; "decided" is a demand stop just after it
+# decides, before `_stop_then_reconcile` looks at the target again.
 _PARKED = {
     "operator_stop": ("stop", "stop"),
     "operator_pause": ("pause", "pause"),
     "last_watcher_leaves": ("stop", "watcher_leave"),
     "last_stream_closes": ("stop", "stream_close"),
+    "last_watcher_leaves_decided": ("decided", "watcher_leave"),
+    "last_stream_closes_decided": ("decided", "stream_close"),
+}
+_PARK_AT = {
+    "stop": (LiveSession, "stop"),
+    "pause": (LiveSession, "pause"),
+    "decided": (SceneLive, "_stop_then_reconcile"),
 }
 
 
@@ -1127,9 +1136,10 @@ def _check_case(parked, window, *, sequential=False):
     """Run one case. None if the session ends where `_Model` says, else
     a description. `sequential`: no parking, every event in turn (checks
     the model against the session's own behaviour without a race)."""
-    verb, first_event = _PARKED[parked]
+    where, first_event = _PARKED[parked]
+    owner, verb = _PARK_AT[where]
     session = SceneLive(_Engine, decode=lambda raw: raw, follow_stream=True)
-    real = getattr(LiveSession, verb)
+    real = owner.__dict__[verb]
     arrived, release = threading.Event(), threading.Event()
     model = _Model()
     ids = {"n": 0, "streams": [], "watchers": []}
@@ -1160,7 +1170,7 @@ def _check_case(parked, window, *, sequential=False):
                     release.wait(10)
                 return real(self_, *args, **kwargs)
 
-            setattr(LiveSession, verb, parked_call)
+            setattr(owner, verb, parked_call)
             first, first_outcome = _in_thread(
                 "first", lambda: _do(session, first_event, first_arg)
             )
@@ -1175,7 +1185,7 @@ def _check_case(parked, window, *, sequential=False):
                     return "the window's events never returned"
             finally:
                 release.set()
-                setattr(LiveSession, verb, real)
+                setattr(owner, verb, real)
             first.join(10)
             if first.is_alive():
                 return "the parked call never returned"
@@ -1192,7 +1202,7 @@ def _check_case(parked, window, *, sequential=False):
             problem = f"(hold, state) {got}, decision order gives {want}"
         return problem
     finally:
-        setattr(LiveSession, verb, real)
+        setattr(owner, verb, real)
         stopper, _ = _in_thread("cleanup", session.stop)
         stopper.join(10)
         worker = getattr(session, "_worker", None)
@@ -1211,7 +1221,7 @@ def _failures(parked, *, sequential=False):
 
 class TestEveryShortOrderingEndsInDecisionOrder:
     """820 orderings per parked call (every sequence of up to three of
-    the nine events), 3280 in all."""
+    the nine events), 4920 in all."""
 
     @pytest.mark.parametrize("parked", sorted(_PARKED))
     def test_the_model_is_the_sessions_own_behaviour_without_a_race(self, parked):
@@ -1222,3 +1232,34 @@ class TestEveryShortOrderingEndsInDecisionOrder:
     def test_a_window_of_up_to_three_events_ends_in_decision_order(self, parked):
         failures = _failures(parked)
         assert not failures, f"{len(failures)} of 820 differ: {failures[:5]}"
+
+
+class TestAStartAfterAFailedLoadRecordsItsTarget:
+    def test_a_start_that_keeps_a_pause_still_retries_a_failed_load_running(self):
+        """A paused session whose load then fails is begun afresh by
+        `start(resume_paused=False)`, and runs. Its decision-order target
+        must say so, or the next `_drive` -- which every stop and pause
+        ends with -- pauses the fresh session again."""
+        loading = threading.Event()
+
+        class _FailsOnce(_Engine):
+            failed = False
+
+            def load(self):
+                if not _FailsOnce.failed:
+                    _FailsOnce.failed = True
+                    assert loading.wait(5), "the test never released the load"
+                    raise RuntimeError("no weights")
+                return None
+
+        session = _session(_FailsOnce)
+        session.start()
+        session.pause()  # while the first load is in flight
+        assert session.state == STATE_PAUSED
+        loading.set()
+        assert _await_state(session, STATE_FAILED)
+
+        session.start(resume_paused=False)
+        assert _await_state(session, STATE_RUNNING)
+        session._drive()
+        assert session.state == STATE_RUNNING
