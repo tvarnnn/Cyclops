@@ -2540,8 +2540,10 @@ assert.deepStrictEqual([NAV.MAX_FIELD_BYTES, NAV.MAX_FIELD_WORK], [Math.pow(2, 2
 const iso = Array.from({length: 240}, (_, i) => [i * 1000, (i % 3) * 1000, (i % 5) * 1000, 0, 0, 1]);
 const six = Object.assign({}, F.input, {path: NAV.makePath(iso, up), samples: new Float32Array(6000 * 3)});
 for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
-  const X = NAV.fieldJob(six, sp);
+  const t0 = Date.now(), X = NAV.fieldJob(six, sp);
   assert.ok(X.failed && /bytes/.test(X.failed) && X.count === 0 && X.cov.length === 0, String(X.failed));
+  // R1: it stops as the kept cells pass the budget, not after walking every cube (900 ms, 165 MB)
+  assert.ok(/over 29127 cells/.test(X.failed), X.failed);
 }
 // the real walks measured stay far inside: the synthetic room's fine field, with 6,000 samples
 const R = NAV.fieldJob(Object.assign({}, F.input, {samples: new Float32Array(6000 * 3)}));
@@ -2700,9 +2702,10 @@ assert.deepStrictEqual(withFar, alone, "the far poses do not move the Best view"
 const real = NAV.lookFocus;
 NAV.lookFocus = (cs, ref) => { const m = [0, 0, 0];
   for (const c of cs) for (let k = 0; k < 3; k++) m[k] += (c[k] + c[k + 3] * ref) / cs.length; return m; };
-const before = destination(spliced);
+const before = destination(spliced), control = destination(walk);
 NAV.lookFocus = real;
-assert.notDeepStrictEqual(before, alone, "with the old plain mean they did: " + JSON.stringify(before));
+assert.deepStrictEqual(control, alone, "control: the plain mean over the walk alone lands the same");
+assert.notDeepStrictEqual(before, alone, "with the old plain mean the far poses moved it: " + JSON.stringify(before));
 """)
 
     def test_what_the_walk_looked_at_never_leaves_out_more_than_a_twentieth(self):

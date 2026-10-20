@@ -788,15 +788,14 @@ const NAV = (() => {
      the walk's own -- is skipped like a non-finite one: indices stay under
      ~2^41, far from 2^53 where `x++` stops advancing (R1: a pose 1e16 out never
      finished). From the walk, not the origin (R2): a compact walk 1e12 out is
-     the box's own field. 2^40 steps is 7.7e11 units; the worst blow-up seen
-     is 9.4e6. */
+     the box's own field. 2^40 fine steps is 7.7e11 units; the worst seen is
+     9.4e6. */
   const LATTICE_STEPS = Math.pow(2, 40);
-  /* What the field may COST, checked before it is allocated (R2): a cell holds
-     three cube maps (1,152 bytes) and `fieldWork` compares it with every proxy
-     sample. Real fine fields are 5,230-8,840 cells, 6-10 MB, 31-53M
-     comparisons (LANE-F.md §6); the caps are 3x and 5x the largest. Over
-     either the job is `failed`: a fine field leaves the coarse one in use, a
-     coarse one leaves none. 240 isolated poses would need 141 MB. */
+  /* What the field may COST, checked as cells are kept, before allocation (R2):
+     a cell holds three cube maps (1,152 bytes) and `fieldWork` compares it with
+     every proxy sample. Real fine fields are 5,230-8,840 cells, 6-10 MB, 31-53M
+     comparisons (LANE-F.md §6); the caps are 3x and 5x the largest. Over either
+     the job is `failed`: a fine field leaves the coarse one in use. */
   const MAX_FIELD_BYTES = Math.pow(2, 25), MAX_FIELD_WORK = Math.pow(2, 28);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
@@ -845,7 +844,11 @@ const NAV = (() => {
     const work = Math.min(box, cubes);
     if (!(work <= MAX_FIELD_CELLS)) return empty("the walk's field would visit " + work + " cells, over "
                                                  + MAX_FIELD_CELLS);
-    const where = [];
+    const where = [], nS = input.samples ? input.samples.length / 3 : 0;
+    const most = Math.min(MAX_FIELD_BYTES / (CELLS * 3), nS > 0 ? MAX_FIELD_WORK / nS : Infinity);
+    const costly = (n) => empty("the walk's field would hold over " + Math.floor(most) + " cells ("
+      + n * CELLS * 3 + " bytes, " + n * nS + " sample comparisons), over " + MAX_FIELD_BYTES + " bytes or "
+      + MAX_FIELD_WORK);
     let index = null, lookup = null;
     const keep = (x, y, z) => {
       const p = [lo[0] + x * sp, lo[1] + y * sp, lo[2] + z * sp];
@@ -858,6 +861,7 @@ const NAV = (() => {
         if (!p) continue;
         index[(z * dims[1] + y) * dims[0] + x] = where.length / 3;
         where.push(p[0], p[1], p[2]);
+        if (where.length / 3 > most) return costly(where.length / 3);
       }
     } else {
       // The same cells, visited per pose and put back in the box's order.
@@ -874,17 +878,14 @@ const NAV = (() => {
           if (seen.has(key)) continue;
           seen.add(key);
           const p = keep(x, y, z);
-          if (p) cells.push([z, y, x, key, p]);
+          if (p && cells.push([z, y, x, key, p]) > most) return costly(cells.length);
         }
       }
       cells.sort((u, v) => u[0] - v[0] || u[1] - v[1] || u[2] - v[2]);
       lookup = new Map();
       for (const c of cells){ lookup.set(c[3], where.length / 3); where.push(c[4][0], c[4][1], c[4][2]); }
     }
-    const count = where.length / 3, bytes = count * CELLS * 3, compares = count * (input.samples ? input.samples.length / 3 : 0);
-    if (bytes > MAX_FIELD_BYTES || compares > MAX_FIELD_WORK)
-      return empty("the walk's field would hold " + count + " cells (" + bytes + " bytes, " + compares
-                   + " sample comparisons), over " + MAX_FIELD_BYTES + " bytes or " + MAX_FIELD_WORK);
+    const count = where.length / 3;
     return {input, lo, dims, index, lookup, spacing: sp, where: Float32Array.from(where), count,
             cov: new Uint8Array(count * CELLS), dist: new Uint8Array(count * CELLS),
             con: new Uint8Array(count * CELLS), near: null,
