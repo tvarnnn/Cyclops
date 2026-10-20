@@ -808,6 +808,8 @@ def summary(assessment: dict | None, *, mode_: str, decision: str, seconds: floa
         out["pieces_placed"] = int((assessment["place_pieces"] or {}).get("placed") or 0)
         if (assessment["place_pieces"] or {}).get("error"):
             out["place_pieces_error"] = str(assessment["place_pieces"]["error"])[:200]
+        if (assessment["place_pieces"] or {}).get("aborted"):
+            out["place_pieces_aborted"] = str(assessment["place_pieces"]["aborted"].get("by"))
     if (assessment or {}).get("rule") == "v2":
         out["scale_status"] = assessment["scale_status"]
         out["uncertified_keyframes"] = assessment["uncertified_keyframes"]

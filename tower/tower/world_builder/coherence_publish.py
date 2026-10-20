@@ -1568,41 +1568,39 @@ def solver_candidate(solution):
     """The published solution with the SOLVER's partition back (`solver_component`, kept by
     `relabel_solution`): what the gate saw. A solution the gate never relabelled (it
     failed) is its own candidate. A camera the final guard placed by its metric depth
-    (`placed_by_depth`, `place_pieces`) gets the SOLVER's translation back, and the points
-    that moved with it (those its placement's cameras observe most) are moved back: a
+    (`placed_by_depth`, `place_pieces`) gets the SOLVER's translation back, and exactly the
+    points each placement moved (`solve.placed_by_depth`, their indices) are moved back: a
     re-gate must judge the solver's geometry, never a depth placement as if solved."""
     poses = {}
     labels = {}
-    moved = {}
+    placed_cams = False
     for kid, p in (solution.poses or {}).items():
         q = dict(p)
         if "solver_component" in q:
             q["component"] = int(q.pop("solver_component"))
         placed = q.pop("placed_by_depth", None)
         if isinstance(placed, dict) and placed.get("solver_translation") is not None:
-            moved[kid] = (float(placed["ratio"]), tuple(float(x) for x in placed["t"]))
             q["translation"] = [float(x) for x in placed["solver_translation"]]
+            placed_cams = True
         poses[kid] = q
         labels[kid] = int(q.get("component", 0))
     xyz = solution.xyz
-    if moved:
-        # The points move back by the partition the placement moved them by: each placement its own label.
-        published = {kid: int(p.get("component", 0)) for kid, p in (solution.poses or {}).items()}
-        sims = sorted(set(moved.values()))
-        base = max(published.values(), default=0) + 1
-        sim_label = {sim: base + i for i, sim in enumerate(sims)}
-        kf = np.asarray([sim_label[moved[k]] if k in moved else published.get(k, -1)
-                         for k in solution.keyframe_ids], np.int64)
-        pl = _point_labels(solution, kf)
+    solve = solution.solve
+    moves = (solution.solve or {}).get("placed_by_depth")
+    if placed_cams and moves is None:
+        raise ValueError("depth-placed cameras without the record of the points they moved: "
+                         "the solver's geometry cannot be restored")
+    if moves:
         xyz = np.asarray(solution.xyz, np.float64).copy()
-        for (ratio, t), lab in sim_label.items():
-            sel = pl == lab
-            xyz[sel] = (xyz[sel] - np.asarray(t)) * ratio
+        for mv in moves:
+            idx = np.asarray(mv["points"], np.int64)
+            xyz[idx] = (xyz[idx] - np.asarray(mv["t"], np.float64)) * float(mv["ratio"])
         xyz = xyz.astype(np.asarray(solution.xyz).dtype)
+        solve = {k: v for k, v in solution.solve.items() if k != "placed_by_depth"}
     kf_label = np.asarray([labels.get(k, -1) for k in solution.keyframe_ids], np.int64)
     point_label = _point_labels(solution, kf_label)
-    return dataclasses.replace(solution, poses=poses, xyz=xyz, component=point_label.astype(np.int32),
-                               gate=None)
+    return dataclasses.replace(solution, poses=poses, xyz=xyz, solve=solve,
+                               component=point_label.astype(np.int32), gate=None)
 
 
 class RegateRefused(RuntimeError):

@@ -117,6 +117,7 @@ REFUSE_CORROBORATION = "not-corroborated"
 REFUSE_REGION = "anchor-region-too-large"
 REFUSE_TOO_LARGE = "too-large"
 REFUSE_WORK = "work-bound"
+REFUSE_ABORT = "aborted"           # the wall-clock backstop fired: an operational abort, not a certification result
 REFUSE_NO_CONTROLS = "no-matched-controls"
 REFUSE_GROUP_ANCHORS = "group-anchors-disagree"
 REFUSE_COVERAGE = "coverage-not-shown"
@@ -227,26 +228,41 @@ class PlaceParams:
     anchor_dt_s: float = 2.0
     speed_mps: float = 2.0
     speed_margin_m: float = 0.3
-    # An anchor's allowance is the WALK'S OWN motion: the walk_quantile of how far its certified room cameras
-    # moved over the anchor's time gap (each camera against the one nearest in time to t + dt, within
-    # walk_gap_tol_s: half the ~0.2 s keyframe spacing), never more than the walking limit above (2.0 m/s x
-    # dt + 0.3 m), which is used when fewer than walk_min_pairs such pairs exist. 0.99: a correct placement
-    # must hold EVERY anchor of a group (up to ~5), so it is falsely refused at most ~5 % of the time.
+    # The WALK'S OWN motion, from ALL its certified room cameras (each camera against the one nearest in time
+    # to t + dt, within walk_gap_tol_s: half the ~0.2 s keyframe spacing), on gaps every walk_grid_s and made
+    # monotone (an upper envelope: a longer gap never allows less), never more than the walking limit above
+    # (2.0 m/s x dt + 0.3 m), which is used where fewer than walk_min_pairs pairs exist. Two uses, two numbers:
+    #   * an anchor's CHECK: the walk_quantile (0.99) of that motion. A correct placement must hold EVERY
+    #     anchor of a group (up to ~5): it is falsely refused at most ~5 % of the time -- an availability
+    #     choice, and the check is corroboration, so it may be tight;
+    #   * the search REGION: region_quantile (1.0: the largest move the walk itself made at that gap). The
+    #     region must CONTAIN the truth -- a safety property: a truth outside it leaves only wrong basins to
+    #     rank, which no control can test -- so it is sized by the extreme the walker demonstrably reached.
     walk_quantile: float | None = 0.99
+    region_quantile: float = 1.0
     walk_gap_tol_s: float = 0.1
+    walk_grid_s: float = 0.05
     walk_min_pairs: int = 50
     # Groups. G1: two pieces are one body in the solve only when they triangulate points of their own
     # together -- at least min_shared_points points seen by both and by no room camera (a point the room
     # also sees ties each piece to the room, not to each other; one shared track is not a relative pose).
     # 10: the guard's own floor for a measurement. Each member keeps at least min_frames measured frames
-    # with depth, and is tested on its own at the group's placement (R4 against the envelope, and its views
-    # compared with the other members' on at least min_hit_share of its samples).
+    # with depth, and is tested on its own at the group's placement: R4 against the envelope; its views
+    # compared with the other members', and AGREEING with them, on at least min_hit_share of its samples; and
+    # COVERAGE spread over its frames -- at least min_member_frames_share of its measured frames must each
+    # meet the room (hit share >= min_hit_share) and agree with it no worse than the room's own controls.
+    # One half: the member's similarity is what is certified, so a majority of its own frames must support
+    # it; an aligned minority (a doorway) cannot carry the rest.
     min_shared_points: int = 10
-    # R0 at the prior's error: at least min_outer_good GOOD controls among those started in the outer half
-    # of the region, and the false-accept test exercised on wrong placements from at least
-    # min_safety_controls different controls (their misplaced winners, and each control's best refined
-    # basin away from its truth, judged as if the truth were withheld).
-    min_outer_good: int = 2
+    min_member_frames_share: float = 0.5
+    # R0 at the prior's error: at least min_edge_good GOOD controls among those started at the region's edge
+    # (at least edge_start of its radius: with six controls, the two outermost, in two different directions)
+    # -- the piece's own starting error may be the whole radius --, and the false-accept test exercised on
+    # SCORED wrong placements from at least min_safety_controls different controls (their misplaced
+    # winners, and each control's best refined basin away from its truth, judged as if the truth were
+    # withheld).
+    min_edge_good: int = 2
+    edge_start: float = 0.8
     min_safety_controls: int = 2
     cross_new_m: float = 0.10
     cross_overlap_m: float = 0.30
@@ -347,8 +363,10 @@ class _OutOfWork(Exception):
 
 
 class Budget:
-    """The step's deterministic work bound (PlaceParams.max_work), with the wall clock only as a backstop.
-    `spend` raises _OutOfWork once either has run out, and keeps raising; `fired` says which."""
+    """The step's work bound (PlaceParams.max_work): counted units, so the same input decides the same. The
+    wall clock is a separate backstop: when it fires the step is ABORTED (an operational abort, recorded as
+    such, not a certification result). `spend` raises _OutOfWork once either has run out, and keeps
+    raising; `fired` says which."""
 
     def __init__(self, units: float, backstop_s: float):
         self.units = float(units)
@@ -373,6 +391,12 @@ class Budget:
         except _OutOfWork:
             return True
         return False
+
+    @property
+    def refusal(self) -> str:
+        """`work-bound` when the deterministic budget ran out; `aborted` when the wall-clock backstop fired
+        (an operational abort: the step stopped, it did not certify anything either way)."""
+        return REFUSE_ABORT if self.fired == "wall-clock backstop" else REFUSE_WORK
 
 
 def _spend(budget: Budget | None, n: float = 0.0) -> None:
@@ -887,7 +911,7 @@ def rigidity(piece: Piece, params: PlaceParams, units_per_m: float, budget: Budg
             np.asarray([m != member[k] for m in member]))
         sel = fi == k
         if member is not None:
-            d = per.setdefault(member[k], {"points": 0, "compared": 0, "agree": 0, "through": 0})
+            d = per.setdefault(member[k], {"points": 0, "compared": 0, "agreeing": 0, "agree": 0, "through": 0})
             d["points"] += int(sel.sum())
         if not len(others) or not sel.any():
             continue
@@ -898,12 +922,14 @@ def rigidity(piece: Piece, params: PlaceParams, units_per_m: float, budget: Budg
         through += int(thr.sum())
         if member is not None:
             d["compared"] += int(((thr + agr) > 0).sum())
+            d["agreeing"] += int((agr > 0).sum())
             d["agree"] += int(agr.sum())
             d["through"] += int(thr.sum())
     tot = agree + through
     out = {"agree": agree, "through": through, "through_share": through / tot if tot else None}
     if member is not None:
-        out["members"] = {m: dict(d, overlap=round(d["compared"] / d["points"], 4) if d["points"] else 0.0)
+        out["members"] = {m: dict(d, overlap=round(d["compared"] / d["points"], 4) if d["points"] else 0.0,
+                                  agreeing_share=round(d["agreeing"] / d["points"], 4) if d["points"] else 0.0)
                           for m, d in per.items()}
     return out
 
@@ -914,27 +940,52 @@ def rigidity(piece: Piece, params: PlaceParams, units_per_m: float, budget: Budg
 
 
 def walk_motion(frames: list[Frame], params: PlaceParams, units_per_m: float) -> Callable[[float], tuple]:
-    """allowance(dt) -> (metres, pairs, source): how far the walk's own certified room cameras moved over a
-    time gap of dt -- the walk_quantile of each camera's distance to the camera nearest in time to t + dt
-    (within walk_gap_tol_s) -- never more than the walking limit (speed_mps x dt + speed_margin_m), which is
-    also what is used with fewer than walk_min_pairs pairs or no quantile."""
+    """allowance(dt) -> (check metres, region metres, pairs, source): how far the walk's own certified room
+    cameras moved over a time gap of dt -- each camera against the camera nearest in time to t + dt (within
+    walk_gap_tol_s) -- as the walk_quantile (the anchor's CHECK) and the region_quantile (the search REGION,
+    containment), on gaps every walk_grid_s up to anchor_dt_s, each made a monotone upper envelope over the
+    gaps and read at the first grid gap at or past dt; never more than the walking limit (speed_mps x dt +
+    speed_margin_m), which is also what a gap with fewer than walk_min_pairs pairs, or no quantile, uses."""
     timed = sorted((f for f in frames if f.t is not None), key=lambda f: f.t)
     ts = np.asarray([f.t for f in timed], np.float64)
     cs = np.stack([f.c for f in timed]) if timed else np.zeros((0, 3))
 
+    def walking(dt: float) -> float:
+        return params.speed_mps * dt + params.speed_margin_m
+
+    grid = np.arange(1, int(math.ceil(params.anchor_dt_s / params.walk_grid_s - 1e-9)) + 1) * params.walk_grid_s
+    rows = []
+    for g in grid:
+        n, q, m = 0, walking(g), walking(g)
+        if params.walk_quantile is not None and len(ts) >= 2:
+            target = ts + g
+            j = np.clip(np.searchsorted(ts, target), 1, len(ts) - 1)
+            j = np.where(np.abs(ts[j - 1] - target) <= np.abs(ts[j] - target), j - 1, j)
+            ok = (np.abs(ts[j] - target) <= params.walk_gap_tol_s) & (j != np.arange(len(ts)))
+            n = int(ok.sum())
+            if n >= params.walk_min_pairs:
+                d = np.linalg.norm(cs[j[ok]] - cs[ok], axis=1) / units_per_m
+                q = min(float(np.quantile(d, params.walk_quantile)), walking(g))
+                m = min(float(np.quantile(d, params.region_quantile)), walking(g))
+        rows.append((q, m, n))
+    # The upper envelope runs over the MEASURED gaps only (a gap too short to pair cameras is not evidence of
+    # motion; it falls back to the walking limit on its own and is not carried to longer gaps).
+    q_env, m_env, top_q, top_m = [], [], 0.0, 0.0
+    for q, m, n in rows:
+        if n >= params.walk_min_pairs:
+            top_q, top_m = max(top_q, q), max(top_m, m)
+            q_env.append(top_q)
+            m_env.append(top_m)
+        else:
+            q_env.append(q)
+            m_env.append(m)
+
     def allowance(dt: float) -> tuple:
-        walking = params.speed_mps * dt + params.speed_margin_m
-        if params.walk_quantile is None or len(ts) < 2:
-            return walking, 0, "walking-limit"
-        target = ts + dt
-        j = np.clip(np.searchsorted(ts, target), 1, len(ts) - 1)
-        j = np.where(np.abs(ts[j - 1] - target) <= np.abs(ts[j] - target), j - 1, j)
-        ok = (np.abs(ts[j] - target) <= params.walk_gap_tol_s) & (j != np.arange(len(ts)))
-        if int(ok.sum()) < params.walk_min_pairs:
-            return walking, int(ok.sum()), "walking-limit"
-        d = np.linalg.norm(cs[j[ok]] - cs[ok], axis=1) / units_per_m
-        q = float(np.quantile(d, params.walk_quantile))
-        return (min(q, walking), int(ok.sum()), "walk" if q < walking else "walking-limit")
+        if not len(grid) or dt > grid[-1] + 1e-9:
+            return walking(dt), walking(dt), 0, "walking-limit"
+        k = int(np.searchsorted(grid, dt - 1e-9))
+        q, m, n = float(q_env[k]), float(m_env[k]), rows[k][2]
+        return q, m, n, ("walk" if n >= params.walk_min_pairs else "walking-limit")
 
     return allowance
 
@@ -958,11 +1009,11 @@ def anchors(piece: Piece, room_frames: list[Frame], params: PlaceParams, motion=
             continue
         rc = max(cands, key=lambda f: f.t) if side == "before" else min(cands, key=lambda f: f.t)
         dt = abs(pc.t - rc.t)
-        allow, pairs, source = (motion(dt) if motion is not None
-                                else (params.speed_mps * dt + params.speed_margin_m, 0, "walking-limit"))
+        walking = params.speed_mps * dt + params.speed_margin_m
+        allow, contain, pairs, source = (motion(dt) if motion is not None else (walking, walking, 0, "walking-limit"))
         out.append({"side": side, "piece_kid": pc.kid, "room_kid": rc.kid, "dt_s": dt,
-                    "t": rc.c - pc.c / piece.ratio, "allowance_m": allow, "allowance_pairs": pairs,
-                    "allowance_source": source, "piece_centre": pc.c / piece.ratio})
+                    "t": rc.c - pc.c / piece.ratio, "allowance_m": allow, "containment_m": contain,
+                    "allowance_pairs": pairs, "allowance_source": source, "piece_centre": pc.c / piece.ratio})
     return out
 
 
@@ -998,18 +1049,21 @@ class Placement:
 
 
 def regions(piece: Piece, ci_log: tuple | None, anc: list[dict], params: PlaceParams, upm: float) -> dict | None:
-    """Each anchor's bound -- its walking allowance plus the scale interval's lever arm (the distance from the
-    anchor's piece camera to where the piece meets the room, its samples' centroid, times the interval's
-    largest log half-width; translation-free) -- written into the anchor, and the REGION: the tightest
-    anchor's ball (the centre anchor). None without an anchor."""
+    """Each anchor's CHECK bound (its allowance) and REGION bound (its containment), each plus the scale
+    interval's lever arm (the distance from the anchor's piece camera to where the piece meets the room, its
+    samples' centroid, times the interval's largest log half-width; translation-free), written into the
+    anchor (`bound_m`, `region_m`), and the REGION: the anchor with the tightest region bound (the centre
+    anchor), searched over a ball of that radius. None without an anchor."""
     if not anc:
         return None
     lever = 0.0 if ci_log is None else max(abs(ci_log[0]), abs(ci_log[1]))
     P0, _fi0 = piece_points(piece, params, np.zeros(3), params.piece_stride_px)
     centroid0 = P0.mean(0) if len(P0) else np.zeros(3)
     for a in anc:
-        a["bound_m"] = a["allowance_m"] + float(np.linalg.norm(a["piece_centre"] - centroid0) / upm) * lever
-    return min(anc, key=lambda a: a["bound_m"])
+        arm = float(np.linalg.norm(a["piece_centre"] - centroid0) / upm) * lever
+        a["bound_m"] = a["allowance_m"] + arm
+        a["region_m"] = a.get("containment_m", a["allowance_m"]) + arm
+    return min(anc, key=lambda a: a["region_m"])
 
 
 def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dict], region: dict,
@@ -1027,7 +1081,7 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
         pl.refused.append(REFUSE_FRAMES)
         return pl
     t0 = time.perf_counter()
-    radius_m = region["bound_m"] if radius_m is None else radius_m
+    radius_m = region.get("region_m", region["bound_m"]) if radius_m is None else radius_m
     centre = region["t"]
     lattice = lattice_size(radius_m * upm, params.coarse_step_m * upm, params.max_region_evaluations)
     st["region"] = {"side": region["side"], "dt_s": round(region["dt_s"], 3), "radius_m": round(radius_m, 3),
@@ -1075,14 +1129,14 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
     except Exception:  # noqa: BLE001 -- the cross-piece record then has nothing from this piece
         pl.new_points = np.zeros((0, 3))
     st["new_points"] = int(len(pl.new_points))
-    # R6's evidence: every anchor's room camera within its bound of the placed piece camera. An anchor is
-    # INDEPENDENT evidence only when it is not the region's centre AND its check could have failed INSIDE the
-    # region the search ranks: some lattice points of the region lie outside its bound (the share is kept).
-    pts = centre + region_lattice(radius_m * upm, params.coarse_step_m * upm)
+    # R6's evidence: every anchor's room camera within its CHECK bound of the placed piece camera. An anchor
+    # is INDEPENDENT evidence only when it is not the region's centre AND its check could have failed INSIDE
+    # the region: some lattice points within the region's radius (not the lattice's overhang past it, which
+    # the region excludes anyway) lie outside its bound (the share is kept).
     checks = []
     for a in anc:
         miss = float(np.linalg.norm(t - a["t"]) / upm)
-        outside = float(np.mean(np.linalg.norm(pts - a["t"], axis=1) / upm > a["bound_m"])) if len(pts) else 0.0
+        outside = outside_share(centre, radius_m * upm, params.coarse_step_m * upm, a["t"], a["bound_m"] * upm)
         independent = a is not region and outside > 0.0
         checks.append({"side": a["side"], "dt_s": round(a["dt_s"], 3), "miss_m": round(miss, 3),
                        "bound_m": round(a["bound_m"], 3), "outside_share": round(outside, 3),
@@ -1093,20 +1147,33 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
     return pl
 
 
+def outside_share(centre: np.ndarray, radius_units: float, step_units: float, at: np.ndarray,
+                  bound_units: float) -> float:
+    """The share of the region's lattice points WITHIN its radius (not the lattice's overhang past it, which
+    the region excludes anyway) that lie farther than `bound_units` from `at`: what an anchor's check would
+    refuse inside the region."""
+    offs = region_lattice(radius_units, step_units)
+    pts = centre + offs[np.linalg.norm(offs, axis=1) <= radius_units + 1e-9]
+    if not len(pts):
+        return 0.0
+    return float(np.mean(np.linalg.norm(pts - np.asarray(at, np.float64), axis=1) > bound_units))
+
+
 def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams) -> dict:
     """What the room's own controls show, under a prior matched to the piece's. A control is GOOD when the
     search put it back within max_control_miss_m of its own pose and the placement is pinned and unique
     (R5). The envelope is the good controls' least agreement, most seeing-through, most free space and least
     rigidity. `usable` needs:
       * every one of control_segments controls measured, at least min_good_controls (and half) of them good;
-      * at least min_outer_good good among the controls started in the OUTER half of the region (a piece's
-        own starting error may be anywhere up to the radius);
+      * at least min_edge_good good among the controls started at the region's EDGE (at least edge_start of
+        its radius; a piece's own starting error may be the whole radius), from different directions;
       * a rigidity bound;
       * the false-accept test passed and exercised: every WRONG placement -- a control's winner farther than
         max_control_miss_m from its truth, and each control's best refined basin that far from its truth,
         judged as if the truth were withheld (`withheld_probe`) -- is refused by R3-R5 (R6 is not credited:
-        a piece can be corroborated by another piece, which no control can be tested on), with wrong
-        placements from at least min_safety_controls different controls (safety must not rest on one)."""
+        a piece can be corroborated by another piece, which no control can be tested on), with SCORED wrong
+        placements (ones that met the room) from at least min_safety_controls different controls (safety
+        must not rest on one, nor on a probe refused only because it met nothing)."""
     for c in controls:
         if c.t is not None:
             truth = np.asarray(c.stats.get("true_translation") or np.zeros(3), np.float64)
@@ -1118,19 +1185,20 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
 
     good = [c for c in controls if c.t is not None and c.stats.get("agree_share") is not None
             and not c.refused and c.stats["miss_m"] <= params.max_control_miss_m and pinned(c)]
-    outer = [c for c in controls if (c.stats.get("start_error_m") or 0.0)
-             >= 0.5 * ((c.stats.get("region") or {}).get("radius_m") or 0.0) - 1e-6]
-    good_outer = [c for c in good if c in outer]
-    out = {"controls": len(controls), "good": len(good), "outer": len(outer), "good_outer": len(good_outer),
-           "usable": False}
+    edge = [c for c in controls if (c.stats.get("start_error_m") or 0.0)
+            >= params.edge_start * ((c.stats.get("region") or {}).get("radius_m") or 0.0) - 1e-6]
+    good_edge = [c for c in good if c in edge]
+    out = {"controls": len(controls), "good": len(good), "edge": len(edge), "good_edge": len(good_edge),
+           "edge_directions": len({tuple(np.sign(np.round(c.stats.get("start_direction") or [0, 0, 0], 6)))
+                                   for c in good_edge}), "usable": False}
     if len(controls) < params.control_segments:
         out["why"] = f"{len(controls)} of the {params.control_segments} controls could be formed"
         return out
     if len(good) < max(params.min_good_controls, (len(controls) + 1) // 2):
         out["why"] = "too few of the room's own stretches are placed back where they are"
         return out
-    if len(good_outer) < params.min_outer_good:
-        out["why"] = "too few of the stretches started in the outer half of the region are placed back"
+    if len(good_edge) < params.min_edge_good or out["edge_directions"] < min(2, params.min_edge_good):
+        out["why"] = "the stretches started at the region's edge are not placed back (from more than one direction)"
         return out
     rig = [c.stats["rigidity"]["through_share"] for c in good if c.stats["rigidity"]["through_share"] is not None]
     if not rig:
@@ -1147,14 +1215,17 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
         if c.stats.get("withheld_probe"):
             probes.append((c.label + "/withheld", c.label, dict(c.stats["withheld_probe"]), []))
     accepted = []
-    for label, _src, st, refused in probes:
+    scored = set()
+    for label, src, st, refused in probes:
         probe = Placement(label=label, kids=[], ratio=1.0, ci=None, t=np.zeros(3), stats=st, refused=refused)
         certify(probe, dict(out, usable=True), params, r6=False)
         if not probe.refused:
             accepted.append(label)
+        if st.get("agree_share") is not None:
+            scored.add(src)
     out["misplaced_accepted"] = accepted
     out["safety_probes"] = len(probes)
-    out["safety_controls"] = len({src for _l, src, _st, _r in probes})
+    out["safety_controls"] = len(scored)
     if accepted:
         out["why"] = "the rule would accept a stretch of the room's own frames in the wrong place"
     elif out["safety_controls"] < params.min_safety_controls:
@@ -1196,7 +1267,13 @@ def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> N
     # A group: every member on its own at the group's placement, and its views against the other members'.
     for ms in (st.get("member_checks") or {}).values():
         ct = ms.get("cross_through_share")
+        fs = ms.get("frame_shares") or []
+        covered = (sum(1 for h, a in fs if h >= params.min_hit_share and a >= env["min_agree_share"]) / len(fs)
+                   if fs else 0.0)
+        ms["frames_covered"] = round(covered, 4)
         if (ms.get("hit_share") is None or ms["hit_share"] < params.min_hit_share
+                or covered < params.min_member_frames_share
+                or ms.get("cross_agreeing", 0.0) < params.min_hit_share
                 or ms.get("agree_share") is None or ms["agree_share"] < env["min_agree_share"]
                 or ms["through_share"] > env["max_through_share"] or ms["free_share"] > env["max_free_share"]
                 or ms.get("overlap", 0.0) < params.min_hit_share
@@ -1318,8 +1395,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     contradictions; the groups, measured the same way; only then, for the pieces and groups still standing,
     the room's controls under each one's prior error (its region's radius, starts spanning it) and R0, R3,
     R4; then the groups' decisions; last, R6's corroboration of the single pieces. Every measurement spends
-    from one deterministic work budget (max_work; the wall clock only as a backstop): past it the pieces
-    not yet decided stay cut, and when it has run out by the end nothing is placed."""
+    from one counted work budget (max_work): past it the pieces not yet decided stay cut (`work-bound`), and
+    when it has run out by the end nothing is placed. A wall-clock backstop firing aborts the step
+    (`aborted`, recorded in `rec["aborted"]`): nothing is placed, and that is not a certification result."""
     from tower.world_builder.final_scale_guard import GuardParams  # noqa: PLC0415
 
     params = params or PlaceParams()
@@ -1390,7 +1468,8 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
                           budget=budget)
     except _OutOfWork:
         room, room_late = None, True
-    motion = walk_motion(anchor_pool, params, upm)
+    motion = walk_motion(room_frames, params, upm)       # ALL certified room cameras: poses held out of the
+    #                                                      depth evidence still show how the walker moved
     rec["room"] = {"seconds": round(time.perf_counter() - t_room, 3), "frames": 0 if room is None else room.frames,
                    "voxels": 0 if room is None else len(room.points),
                    "free_voxels": 0 if room is None else len(room.free_keys),
@@ -1407,7 +1486,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         label = f"piece-{n}"
         if not len(vals) or not len(core) or room is None:
             pl = Placement(label=label, kids=kids, ratio=float("nan"), ci=p.get("ci"))
-            pl.refused.append(REFUSE_FRAMES if not len(vals) else (REFUSE_WORK if room_late else REFUSE_ROOM))
+            pl.refused.append(REFUSE_FRAMES if not len(vals) else (budget.refusal if room_late else REFUSE_ROOM))
             placements.append(pl)
             continue
         level = float(np.median(vals))
@@ -1449,7 +1528,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         try:
             m = measure(label, piece, p.get("ci"), room, anc, region, params, budget=budget)
         except _OutOfWork:
-            pl.refused.append(REFUSE_WORK)
+            pl.refused.append(budget.refusal)
             continue
         m.stats.update(ci_log=pl.stats["ci_log"], anchors=pl.stats["anchors"])
         m.kids = kids
@@ -1520,7 +1599,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
                 "controls": [_jsonable({k: v for k, v in c.record().items() if k not in ("ci", "placed")})
                              for c in controls], "envelope": cache[key][1]}
         if budget.out():                               # nothing is certified past the bound
-            m.refused.append(REFUSE_WORK)
+            m.refused.append(budget.refusal)
             continue
         m.stats["envelope"] = f"r{key}"
         certify(m, cache[key][1], params, r6=not m.stats.get("group"))
@@ -1535,12 +1614,12 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         except _OutOfWork:
             for pl in placements:
                 if not pl.refused and not str(pl.stats.get("corroborated_by") or "").startswith("group:"):
-                    pl.refused.append(REFUSE_WORK)
+                    pl.refused.append(budget.refusal)
     # The last check: nothing is placed once the budget (or its backstop) has run out.
     if budget.out():
         for pl in placements:
             if not pl.refused:
-                pl.refused.append(REFUSE_WORK)
+                pl.refused.append(budget.refusal)
     rec["groups"] = [_jsonable(dict(g["record"], members=[f"piece-{n}" for n in g["members"]],
                                     decision=g["decision"], **{k: v for k, v in g["placement"].record().items()
                                                                if k not in ("ci", "placed")}))
@@ -1552,6 +1631,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     rec["placements"] = placements
     rec["seconds"] = round(time.perf_counter() - started, 3)
     rec["work"] = {"used": budget.used, "budget": budget.units, "fired": budget.fired}
+    if budget.fired == "wall-clock backstop":
+        # Not a certification result: the same input on a machine that did not stall decides by its work alone.
+        rec["aborted"] = {"by": "wall-clock backstop", "after_s": params.max_seconds}
     return rec
 
 
@@ -1632,6 +1714,14 @@ def _measure_group(label, mem, info, params, ref, upm, room, anchor_pool, index,
                             scales=[union.scales[i] for i in sel], ratio=union.ratio, cam=union.cam)
                 c = Scorer(sub, room, room.points, m.t, 0.05 * upm, params.fine_stride_px, params, prune=False,
                            budget=budget).counts(m.t)
+                frames = []
+                for i in sel:                      # coverage, frame by frame
+                    one = Piece(frames=[union.frames[i]], depths=[union.depths[i]], scales=[union.scales[i]],
+                                ratio=union.ratio, cam=union.cam)
+                    cf = Scorer(one, room, room.points, m.t, 0.05 * upm, params.fine_stride_px, params,
+                                prune=False, budget=budget).counts(m.t)
+                    frames.append([round(cf["hit"] / cf["valid"], 4) if cf["valid"] else 0.0,
+                                   round(cf["agree"] / cf["hit"], 4) if cf["hit"] else 0.0])
                 cm = (cross.get("members") or {}).get(n) or {}
                 ct = cm.get("agree", 0) + cm.get("through", 0)
                 mstats[f"piece-{n}"] = {
@@ -1639,11 +1729,11 @@ def _measure_group(label, mem, info, params, ref, upm, room, anchor_pool, index,
                     "agree_share": c["agree"] / c["hit"] if c["hit"] else None,
                     "through_share": c["through"] / c["hit"] if c["hit"] else None,
                     "free_share": c["free"] / c["valid"] if c["valid"] else None,
-                    "overlap": cm.get("overlap", 0.0),
-                    "cross_through_share": cm.get("through", 0) / ct if ct else None}
+                    "overlap": cm.get("overlap", 0.0), "cross_agreeing": cm.get("agreeing_share", 0.0),
+                    "cross_through_share": cm.get("through", 0) / ct if ct else None, "frame_shares": frames}
             m.stats["member_checks"] = mstats
     except _OutOfWork:
-        pl.refused.append(REFUSE_WORK)
+        pl.refused.append(budget.refusal)
         return out
     out.update(placement=m, region=region)
     return out
@@ -1726,6 +1816,7 @@ def _matched_control(label, i, seg, radius, room, params, upm, ref, log_values, 
     c.stats["true_translation"] = truth.tolist()
     c.stats["ratio"] = ratio
     c.stats["start_error_m"] = round(float(np.linalg.norm(offset)) / upm, 4)
+    c.stats["start_direction"] = _START_DIRECTIONS[i % len(_START_DIRECTIONS)].tolist()
     wrong = [(t, sc, s) for t, sc, s in c.refined
              if math.isfinite(s) and np.linalg.norm(t - truth) / upm > params.max_control_miss_m]
     if wrong and c.typical is not None and math.isfinite(c.typical):
@@ -1771,6 +1862,7 @@ def apply_placements(solution, assessment: dict, placements: list[Placement]):
     point_label = CP._point_labels(solution, kf_label)
     poses = {k: dict(v) for k, v in (solution.poses or {}).items()}
     xyz = np.asarray(solution.xyz, np.float64).copy()
+    moved = []
     for pl in placed:
         s, t = 1.0 / pl.ratio, np.asarray(pl.t, np.float64)
         for kid in pl.kids:
@@ -1784,7 +1876,12 @@ def apply_placements(solution, assessment: dict, placements: list[Placement]):
             poses[kid]["translation"] = [float(x) for x in (-R @ (c * s + t))]
         sel = point_label == label_of_piece[pl.label]
         xyz[sel] = xyz[sel] * s + t
-    new_solution = dataclasses.replace(solution, poses=poses, xyz=xyz.astype(np.float32))
+        moved.append({"id": PLACE_ID, "piece": pl.label, "ratio": float(pl.ratio), "t": [float(x) for x in t],
+                      "points": np.flatnonzero(sel).astype(int).tolist()})
+    # Exactly which points each placement moved, beside the solution: a re-gate reverses only these
+    # (`coherence_publish.solver_candidate`).
+    new_solution = dataclasses.replace(solution, poses=poses, xyz=xyz.astype(np.float32),
+                                       solve=dict(solution.solve or {}, placed_by_depth=moved))
     placed_kids = {k for pl in placed for k in pl.kids}
     keep = [p for p in assessment.get("pieces") or [] if not set(p.get("keyframe_ids") or []) & placed_kids]
     unc = list(assessment.get("uncertified") or [])

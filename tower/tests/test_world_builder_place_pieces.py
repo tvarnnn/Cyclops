@@ -38,7 +38,12 @@ FURNITURE = [(np.array([0.4, 1.7, 0.3]), np.array([1.1, 2.5, 1.0])),
 # The synthetic room is small (60 frames): two controls of ten frames, and two good ones suffice here.
 PARAMS = PP.PlaceParams(room_stride_px=2, piece_stride_px=2, fine_stride_px=2, coarse_stride_px=4, edge_px=1,
                         free_stride_px=2, voxel_m=0.10, coarse_voxel_m=0.20, coarse_frames=12,
-                        control_segments=2, control_frames=10, min_good_controls=2)
+                        control_segments=2, control_frames=10, min_good_controls=2,
+                        # The synthetic room's cameras barely move (p99 ~0.16 m over 0.3 s) while its pieces stand
+                        # 0.3 m from their anchors: the walking limit is these tests' allowance. The walk's own
+                        # motion has its own tests (WALK below).
+                        walk_quantile=None)
+WALK = dataclasses.replace(PARAMS, walk_quantile=0.99)
 N_ROOM = 60
 SID = "s"
 
@@ -98,7 +103,7 @@ class World:
                  ci=None, piece_looks=None, piece_forward=None, piece_step=(0.08, 0.0, 0.05), room_solids=None,
                  piece_solids=None, noise=True, tail_room=0, tail_offset_m=(0.1, 0.0, 0.0), piece_log_jitter=0.0,
                  tail_dt=None, split=None, link_pieces=True, second_log_offset=0.0, second_log_jitter=0.0,
-                 second_looks=None, second_offset_m=None):
+                 second_looks=None, second_offset_m=None, second_offset_from=0):
         rng = np.random.default_rng(7)
         self.depth, self.poses, self.times, self.metric = {}, {}, {}, {}
         self.true = {}
@@ -138,7 +143,7 @@ class World:
             blown = (c * UPM - hinge) * K + hinge
             if piece_jitter_m:
                 blown = blown + rng.normal(scale=piece_jitter_m * UPM * K, size=3)
-            if split is not None and j >= split and second_offset_m is not None:
+            if split is not None and j >= split + second_offset_from and second_offset_m is not None:
                 blown = blown + np.asarray(second_offset_m, float) * UPM * K   # the solve put this half elsewhere
             self.poses[kid] = _pose(R, blown)
             m, self.depth[kid] = _noisy(_render(R, c, solids=piece_solids if piece_solids is not None else FURNITURE),
@@ -410,11 +415,14 @@ _CONTROL_IDS = itertools.count()
 
 
 def _control(miss_m, start=1.0, withheld=WITHHELD_REFUSED, **stats):
-    """A measured control `miss_m` from its truth, started `start` x the region's radius (1 m) from it."""
+    """A measured control `miss_m` from its truth, started `start` x the region's radius (1 m) from it, along
+    the six start directions in turn."""
     c = _measured(**stats)
-    c.label = f"control-{next(_CONTROL_IDS)}"
+    i = next(_CONTROL_IDS)
+    c.label = f"control-{i}"
     c.t = np.array([miss_m * UPM, 0.0, 0.0])
-    c.stats.update(true_translation=[0.0, 0.0, 0.0], start_error_m=start, region={"radius_m": 1.0})
+    c.stats.update(true_translation=[0.0, 0.0, 0.0], start_error_m=start, region={"radius_m": 1.0},
+                   start_direction=PP._START_DIRECTIONS[i % 6].tolist())
     if withheld is not None:
         c.stats["withheld_probe"] = dict(withheld)
     return c
@@ -446,16 +454,21 @@ def test_the_envelope_is_the_good_controls_and_refuses_a_room_it_cannot_trust():
     assert not PP.envelope(norig + [_control(0.9, agree_share=0.2)], UPM, P6)["usable"]
 
 
-def test_r0_needs_recoveries_from_the_outer_half_of_the_region():
-    # Five good controls, but only one started in the outer half (the others a sixth of the radius away):
-    # the room has not shown it recovers a stretch from the piece's possible starting error.
-    P6 = dataclasses.replace(PARAMS, control_segments=6, min_good_controls=3, min_outer_good=2)
-    inner = [_control(0.05, start=0.17) for _ in range(4)]
-    env = PP.envelope(inner + [_control(0.05, start=0.9), _control(0.9, start=1.0, agree_share=0.2)], UPM, P6)
-    assert env["good"] == 5 and env["good_outer"] == 1 and not env["usable"]
-    env = PP.envelope(inner[:3] + [_control(0.05, start=0.5), _control(0.05, start=1.0),
-                                   _control(0.9, start=1.0, agree_share=0.2)], UPM, P6)
-    assert env["good_outer"] == 2 and env["usable"]
+def test_r0_needs_recoveries_at_the_regions_edge_from_more_than_one_direction():
+    # Five good controls, but at the edge (at least 0.8 of the radius) only one is good -- the other edge
+    # start is misplaced: the room has not shown it recovers a stretch from the piece's largest possible error.
+    P6 = dataclasses.replace(PARAMS, control_segments=6, min_good_controls=3, min_edge_good=2)
+    inner = [_control(0.05, start=s) for s in (0.17, 0.33, 0.5, 0.67)]
+    env = PP.envelope(inner + [_control(0.05, start=0.83), _control(0.9, start=1.0, agree_share=0.2)], UPM, P6)
+    assert env["good"] == 5 and env["good_edge"] == 1 and not env["usable"]
+    env = PP.envelope(inner[:3] + [_control(0.05, start=0.83), _control(0.05, start=1.0),
+                                   _control(0.9, start=0.67, agree_share=0.2)], UPM, P6)
+    assert env["good_edge"] == 2 and env["edge_directions"] == 2 and env["usable"]
+    # Two good edge recoveries from ONE direction are not enough.
+    a, b = _control(0.05, start=0.83), _control(0.05, start=1.0)
+    b.stats["start_direction"] = a.stats["start_direction"]
+    env = PP.envelope(inner[:3] + [a, b, _control(0.9, start=0.67, agree_share=0.2)], UPM, P6)
+    assert env["edge_directions"] == 1 and not env["usable"]
 
 
 def test_r0_safety_must_be_exercised_by_more_than_one_control():
@@ -955,9 +968,9 @@ def test_work_is_bounded_and_a_piece_past_the_bound_is_refused():
     a, b = w.plan(small), w.plan(small)
     assert a["pieces"][0]["refused"] == [PP.REFUSE_WORK] and a["placed"] == 0 and a["work"]["fired"] == "work"
     assert a["work"]["used"] == b["work"]["used"] and a["pieces"] == b["pieces"]
-    # The wall clock is only a backstop, and the record says when it fired.
+    # The wall clock is only a backstop: an operational abort, recorded as such (not `work-bound`).
     rec = w.plan(dataclasses.replace(PARAMS, max_seconds=0.0))
-    assert rec["pieces"][0]["refused"] == [PP.REFUSE_WORK] and rec["work"]["fired"] == "wall-clock backstop"
+    assert rec["pieces"][0]["refused"] == [PP.REFUSE_ABORT] and rec["work"]["fired"] == "wall-clock backstop"
 
 
 def test_the_step_runs_only_on_live_depth_evidence(monkeypatch):
@@ -1195,12 +1208,26 @@ def test_an_anchors_allowance_is_the_walks_own_motion():
     # walking limit.
     frames = [PP.Frame(kid=f"r{i}", R=np.eye(3), c=np.array([0.1 * i * UPM + (0.8 * UPM if i == 50 else 0.0), 0, 0]),
                        s=1.0, t=0.2 * i) for i in range(200)]
-    allow = PP.walk_motion(frames, PARAMS, UPM)
-    m, pairs, source = allow(0.4)
-    assert source == "walk" and pairs > 150 and 0.2 <= m < 0.3
-    assert m < PARAMS.speed_mps * 0.4 + PARAMS.speed_margin_m
-    m, pairs, source = PP.walk_motion(frames[:20], PARAMS, UPM)(0.4)
-    assert source == "walking-limit" and m == pytest.approx(PARAMS.speed_mps * 0.4 + PARAMS.speed_margin_m)
+    allow = PP.walk_motion(frames, WALK, UPM)
+    q, m, pairs, source = allow(0.4)
+    # (the lurch's few pairs are the top 1-3 % at the gaps up to 0.4 s, so the check lies between the walk's
+    # 0.2 m and the lurch's moves; the envelope carries the highest of the shorter gaps)
+    assert source == "walk" and pairs > 150 and 0.2 <= q <= 0.4
+    # the REGION's containment is the largest move at that gap (the lurch), the CHECK the 0.99 quantile
+    assert m == pytest.approx(1.0, abs=0.01) and m < PARAMS.speed_mps * 0.4 + PARAMS.speed_margin_m
+    q, m, pairs, source = PP.walk_motion(frames[:20], WALK, UPM)(0.4)
+    assert source == "walking-limit" and q == m == pytest.approx(PARAMS.speed_mps * 0.4 + PARAMS.speed_margin_m)
+
+
+def test_the_walks_motion_never_allows_less_at_a_longer_gap():
+    # A walker who darts 0.5 m between two frames 0.2 s apart and otherwise stands still: at 0.4 s and beyond
+    # the pairs show almost no motion, but a longer gap can always contain the shorter one's move.
+    frames = [PP.Frame(kid=f"r{i}", R=np.eye(3), c=np.array([(0.5 * UPM if i % 2 else 0.0), 0, 0]),
+                       s=1.0, t=0.2 * i) for i in range(400)]
+    allow = PP.walk_motion(frames, WALK, UPM)
+    q2, m2, _n, _s = allow(0.2)
+    q4, m4, _n, _s = allow(0.4)
+    assert q2 == pytest.approx(0.5, abs=0.01) and q4 >= q2 and m4 >= m2
 
 
 def test_pieces_that_share_too_few_points_of_their_own_are_not_grouped(monkeypatch):
@@ -1351,7 +1378,7 @@ def test_an_anchor_disagreeing_with_an_ambiguous_winner_does_not_refuse_the_memb
 
 def test_the_plan_takes_each_anchors_allowance_from_the_walk():
     w = World(tail_room=6)
-    rec = w.plan(dataclasses.replace(PARAMS, walk_min_pairs=20))
+    rec = w.plan(dataclasses.replace(WALK, walk_min_pairs=20))
     (a, *_rest) = rec["pieces"][0]["anchors"]
     assert a["allowance_source"] == "walk" and a["allowance_pairs"] >= 20
     assert a["allowance_m"] < PARAMS.speed_mps * a["dt_s"] + PARAMS.speed_margin_m
@@ -1366,3 +1393,55 @@ def test_groups_are_decided_before_single_pieces_are_corroborated(monkeypatch):
     monkeypatch.setattr(PP, "corroborate", lambda *a, **k: (order.append("corroborate"), real_c(*a, **k))[1])
     World(**SPLIT).plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
     assert order == ["group", "corroborate"]
+
+
+def test_an_anchor_that_excludes_only_the_lattices_overhang_corroborates_nothing():
+    # The region: a ball of 1 m about the origin, on its 0.3 m lattice (which reaches 0.26 m past it).
+    step = 0.3 * UPM
+    centre, radius = np.zeros(3), 1.0 * UPM
+    # An anchor at the centre whose bound is a little past the radius refuses only overhang points.
+    assert PP.outside_share(centre, radius, step, centre, radius + 0.1 * UPM) == 0.0
+    assert PP.outside_share(centre, radius, step, centre, radius - 0.2 * UPM) > 0.0
+
+
+def test_a_re_gate_moves_back_exactly_the_points_a_group_moved():
+    # A point seen once by each of two grouped pieces and once by a room camera: placing (each piece its own
+    # label, the three-way tie to the room) left it where it was, so the re-gate must too -- though the two
+    # pieces share one similarity.
+    from tower.world_builder.coherence_publish import solver_candidate
+
+    w = World(**dict(SPLIT, noise=False))
+    ki = {k: i for i, k in enumerate(w.kids)}
+    a, b, r = ki[w.piece_kids[0]], ki[w.piece_kids[SPLIT["split"]]], ki[w.kids[0]]
+    rx, ro, rxy = w.points
+    n = len(rx)
+    xyz = np.concatenate([rx, [[1.0, 1.0, 1.0], [5.0, 5.0, 5.0]]])
+    obs = np.concatenate([ro, [[a, 0, n], [b, 0, n], [r, 0, n], [a, 1, n + 1], [a + 1, 1, n + 1], [a + 2, 1, n + 1]]])
+    w.solution = types_solution(w.kids, w.poses, xyz=xyz, obs=obs, xy=np.concatenate([rxy, np.full((6, 2), 5.0)]))
+    t = w.true[w.piece_kids[0]] * UPM - PP.centre_of(w.poses[w.piece_kids[0]])[1] / K
+    split = SPLIT["split"]
+    pls = [PP.Placement(label="piece-0", kids=list(w.piece_kids[:split]), ratio=K, ci=None, placed=True, t=t),
+           PP.Placement(label="piece-1", kids=list(w.piece_kids[split:]), ratio=K, ci=None, placed=True, t=t)]
+    sol, _ass = PP.apply_placements(w.solution, w.assessment, pls)
+    np.testing.assert_allclose(sol.xyz[n], [1.0, 1.0, 1.0])                 # the tie stayed with the room
+    assert not np.allclose(sol.xyz[n + 1], [5.0, 5.0, 5.0])                  # piece-0's own point moved
+    cand = solver_candidate(sol)
+    np.testing.assert_allclose(cand.xyz[n], [1.0, 1.0, 1.0])
+    np.testing.assert_allclose(cand.xyz[n + 1], [5.0, 5.0, 5.0], rtol=1e-4)
+    assert "placed_by_depth" not in (cand.solve or {})
+
+
+def test_a_member_aligned_only_at_a_doorway_is_refused(monkeypatch):
+    # The second half's first three frames stand where the solve put them (a doorway the first half also saw);
+    # the rest of it the solve put 0.6 m off. Its aligned minority cannot carry it.
+    _vouching_envelope(monkeypatch)
+    w = World(**SPLIT, second_offset_m=(0.0, 0.0, 0.6), second_offset_from=3)
+    rec = w.plan(dataclasses.replace(PARAMS, max_control_miss_m=0.25))
+    assert all(g["decision"] != "placed" for g in rec["groups"])
+    assert not any(p.get("placed_with") for p in rec["pieces"])
+
+
+def test_a_stalled_machine_aborts_and_says_so():
+    rec = World(tail_room=6).plan(dataclasses.replace(PARAMS, max_seconds=0.0))
+    assert rec["pieces"][0]["refused"] == [PP.REFUSE_ABORT] and rec["placed"] == 0
+    assert rec["aborted"]["by"] == "wall-clock backstop"
