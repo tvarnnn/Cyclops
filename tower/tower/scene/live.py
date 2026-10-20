@@ -82,6 +82,54 @@ from tower.live_session import (
 # running, in one word it can pin.
 RUNS_WHEN = "stream-and-watcher-or-operator"
 
+# The events `decision_order_state` knows.
+EVENT_START = "start"
+EVENT_STOP = "stop"
+EVENT_PAUSE = "pause"
+EVENT_RESUME = "resume"
+EVENT_DEMAND = "demand"
+
+
+def decision_order_state(
+    state: str, event: str, *, can_run: bool = False, resume_paused: bool = True
+) -> str:
+    """Where `event` leaves a session that the events before it left in
+    `state`, taking every event in the order it was decided. Pure.
+
+    This is the one rule. `SceneLive` folds it over its events as each
+    one is decided under `_demand`, into `_target`, and every path that
+    finishes a stop or a pause outside that lock brings the session to
+    `_target` and nothing else (`_drive`).
+
+    `state` and the result are `STATE_STOPPED`, `STATE_RUNNING` or
+    `STATE_PAUSED`. The events:
+
+      EVENT_START   the operator's Start: running, or still paused with
+                    `resume_paused=False`.
+      EVENT_STOP    any stop: the operator's, a demand stop (the last
+                    watcher or stream gone) or shutdown. Stopped.
+      EVENT_PAUSE   pauses a running session; nothing to pause otherwise.
+      EVENT_RESUME  resumes a paused session; nothing otherwise.
+      EVENT_DEMAND  a stream or watcher arrived. Starts a stopped session
+                    when it leaves a stream AND a watcher (`can_run`), and
+                    never resumes a paused one: a Pause is a person's
+                    decision; a socket connecting is not.
+    """
+    if event == EVENT_STOP:
+        return STATE_STOPPED
+    if event == EVENT_START:
+        if state == STATE_PAUSED and not resume_paused:
+            return STATE_PAUSED
+        return STATE_RUNNING
+    if event == EVENT_PAUSE:
+        return STATE_PAUSED if state == STATE_RUNNING else state
+    if event == EVENT_RESUME:
+        return STATE_RUNNING if state == STATE_PAUSED else state
+    if event == EVENT_DEMAND:
+        return STATE_RUNNING if state == STATE_STOPPED and can_run else state
+    raise ValueError(f"unknown event {event!r}")
+
+
 __all__ = [
     "LIFECYCLE_STATES",
     "RUNS_WHEN",
@@ -93,6 +141,7 @@ __all__ = [
     "STATE_STOPPED",
     "STOP_JOIN_TIMEOUT_S",
     "SceneLive",
+    "decision_order_state",
     "decode_frame",
 ]
 
@@ -151,13 +200,16 @@ class SceneLive(LiveSession):
         # connection, so a connection closing can drop every watcher it
         # held without knowing their tokens.
         self._watchers: dict = {}
-        # Whether an operator started this by hand. Cleared by `stop()` and
-        # by a demand stop (`_stop_then_reconcile`).
+        # Whether an operator started this by hand. Cleared by `stop()`, by
+        # a demand stop and by `refuse_starts()`.
         self._operator_hold = False
-        # Bumped by every operator `start()`. A demand stop records it
-        # when it decides, so a start that lands after the decision is
-        # seen as newer and is neither cleared nor left stopped.
-        self._hold_epoch = 0
+        # Where the session's events leave it in decision order:
+        # `decision_order_state` folded over every event as it is decided
+        # under `_demand`. See DECISION ORDER below.
+        self._target = STATE_STOPPED
+        # Set once, by `refuse_starts()`, before the shutdown stop. Nothing
+        # starts a worker after it.
+        self._closed = False
 
     def latest(self):
         """The most recent `SceneState`, or None, with when it was taken.
@@ -177,31 +229,120 @@ class SceneLive(LiveSession):
     # -- demand --------------------------------------------------------
     #
     # `_demand` guards the three facts and the DECISION. It is never held
-    # across `super().stop()`: a stop joins its worker for up to
+    # across `super().stop()` or `super().pause()`: both wait on
+    # `_lifecycle`, which a stop holds across its join for up to
     # `STOP_JOIN_TIMEOUT_S`, and `stream_opened` / `watcher_joined` are
     # called inline on the event loop -- so a lock held across the join
     # would freeze every connection's frames, pings and `/health` while
-    # one phone's session wound down.
-    # The price is a small race: a watcher joining while a stop it did
-    # not ask for is in flight can see its start undone. So every stop
-    # is followed by `_reconcile()` under the lock, which starts a fresh
-    # session if the facts still say so. The final state is right; at
-    # worst one session churns.
+    # one phone's session wound down. Only a base start or resume, which
+    # return at once (the load is off-thread), is made under it.
+    #
+    # DECISION ORDER. Every event -- the operator's Start, Stop, Pause and
+    # Resume, a stream or watcher arriving, a demand stop, shutdown --
+    # records its effect on `_target` under `_demand`, with
+    # `decision_order_state`, and makes its base call there if it does
+    # not block. A base stop or pause runs outside the lock, so it can
+    # land after NEWER events and undo them. Whoever made it then calls
+    # `_drive`, which brings the session to `_target`. The final state is
+    # the one the events give in the order they were decided; at worst
+    # one session churns.
 
     def start(self, *, resume_paused: bool = True) -> dict:
-        """The operator's Start. Runs at once, stream or no stream."""
+        """The operator's Start. Runs at once, stream or no stream.
+
+        Decided and made in one step under `_demand`, so no stop can
+        decide between them. Refused after `refuse_starts()`.
+        """
         with self._demand:
+            if self._closed:
+                return self.status()
             self._operator_hold = True
-            self._hold_epoch += 1
-        return super().start(resume_paused=resume_paused)
+            # A failed session is begun afresh by the base start, paused
+            # target or not, so it is folded from stopped.
+            prior = STATE_STOPPED if self.state == STATE_FAILED else self._target
+            self._target = decision_order_state(
+                prior, EVENT_START, resume_paused=resume_paused
+            )
+            return super().start(resume_paused=resume_paused)
 
     def stop(self) -> dict:
         """The operator's Stop, and any stop but a demand stop. Releases the
-        hold. A demand stop goes through `_stop_then_reconcile`, which
-        releases the hold itself and calls the base `stop()`."""
+        hold. Returns the status once `_drive` has run, not as the base
+        stop left it.
+        """
         with self._demand:
             self._operator_hold = False
-        return super().stop()
+            self._target = decision_order_state(self._target, EVENT_STOP)
+        super().stop()
+        self._drive()
+        return self.status()
+
+    def pause(self) -> dict:
+        """The operator's Pause. See `LiveSession.pause`."""
+        with self._demand:
+            if self.state != STATE_FAILED:
+                # A failed load has nothing to pause, as in the base.
+                self._target = decision_order_state(self._target, EVENT_PAUSE)
+        super().pause()
+        self._drive()
+        return self.status()
+
+    def resume(self) -> dict:
+        """The operator's Resume. Refused after `refuse_starts()`."""
+        with self._demand:
+            if self._closed:
+                return self.status()
+            self._target = decision_order_state(self._target, EVENT_RESUME)
+            return super().resume()
+
+    def refuse_starts(self) -> None:
+        """The app is shutting down: no later start, operator or demand,
+        starts a worker. `LiveCartridges.shutdown()` calls it, then `stop()`.
+
+        Set with the hold released and the target stopped, under
+        `_demand`, so a Start racing the shutdown is either stopped by that
+        stop or refused. Terminal for this object, which `create_app()`
+        builds once per app: a second lifespan on the same app would get a
+        Scene that never starts.
+        """
+        with self._demand:
+            self._closed = True
+            self._operator_hold = False
+            self._target = decision_order_state(self._target, EVENT_STOP)
+
+    def _drive(self) -> None:
+        """After a base stop or pause made OUTSIDE `_demand`, bring the
+        session to `_target`.
+
+        Running: resume a pause, or start a stopped session. Paused: pause
+        it, starting it first if it was stopped. Stopped: nothing; the
+        newest stop's own base stop has landed or is still to land. A
+        failed load is left failed: nothing here retries it, though an
+        older stop landing after it turns it into STOPPED, which is
+        started again (a churn, like any restart here). Every start is made
+        under `_demand`, never after `refuse_starts()`. A pause waits on
+        `_lifecycle`, so it runs outside the lock and the loop asks again;
+        each pass that does not return answers a stop that landed since.
+        """
+        while True:
+            with self._demand:
+                if self._closed:
+                    return
+                state = self.state
+                target = self._target
+                if target == STATE_STOPPED or state == STATE_FAILED:
+                    return
+                if target == STATE_RUNNING:
+                    if state == STATE_PAUSED:
+                        super().resume()
+                    elif state == STATE_STOPPED:
+                        super().start(resume_paused=False)
+                    return
+                if state == STATE_PAUSED:
+                    return
+                if state == STATE_STOPPED:
+                    super().start(resume_paused=False)
+            super().pause()
 
     def stream_opened(self, owner=None) -> None:
         """A connection began streaming frames. Run if somebody is watching."""
@@ -222,9 +363,10 @@ class SceneLive(LiveSession):
             was_streaming = owner in self._open_streams
             self._open_streams.discard(owner)
             last_one_out = was_streaming and not self._open_streams
-            epoch = self._hold_epoch
+            if last_one_out:
+                self._demand_stop_decided()
         if last_one_out:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile()
 
     def watcher_joined(self, token, *, owner=None) -> None:
         """A client subscribed to the live scene. Run if a stream is open."""
@@ -241,9 +383,10 @@ class SceneLive(LiveSession):
         with self._demand:
             self._watchers.pop(token, None)
             unwatched = not self._operator_hold and not self._watchers
-            epoch = self._hold_epoch
+            if unwatched:
+                self._demand_stop_decided()
         if unwatched:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile()
 
     def watchers_left(self, *, owner) -> None:
         """A connection closed; every watcher it held leaves with it."""
@@ -251,42 +394,51 @@ class SceneLive(LiveSession):
             for token in [t for t, o in self._watchers.items() if o == owner]:
                 del self._watchers[token]
             unwatched = not self._operator_hold and not self._watchers
-            epoch = self._hold_epoch
+            if unwatched:
+                self._demand_stop_decided()
         if unwatched:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile()
 
-    def _stop_then_reconcile(self, epoch: int) -> None:
-        """Stop OUTSIDE the demand lock, then re-ask the facts under it.
+    def _demand_stop_decided(self) -> None:
+        """A demand stop, decided. Under `_demand`."""
+        self._operator_hold = False
+        self._target = decision_order_state(self._target, EVENT_STOP)
 
-        `epoch` is `_hold_epoch` as it was when the stop was decided. A
-        hold that existed then is released with the session; an operator
-        `start()` since then is newer than the decision and wins: before
-        the stop it cancels it, and during the stop it is restarted.
+    def _stop_then_reconcile(self) -> None:
+        """A demand stop's base stop, OUTSIDE the demand lock, then `_drive`.
+
+        The base stop is skipped when an event since the decision has
+        already set the target running or paused again, so a Start or a
+        watcher landing in between costs no churn. `_drive` is not: a
+        Pause in between can have paused a session that a later watcher
+        set running again, and its base start does not resume.
         """
         with self._demand:
-            if self._hold_epoch != epoch:
-                return
-            self._operator_hold = False
-        super().stop()
-        with self._demand:
-            if self._operator_hold and self._hold_epoch != epoch:
-                super().start(resume_paused=False)
-            self._reconcile()
+            skip = self._target != STATE_STOPPED
+        if not skip:
+            super().stop()
+        self._drive()
 
     def _reconcile(self) -> None:
-        """Start if the facts say so. Under `_demand`.
+        """A stream or watcher arrived: record it, and start if the facts
+        say so. Under `_demand`.
 
-        `resume_paused=False`: a demand event is a socket or a screen, not
-        a person, and must not undo a Pause. Starting from FAILED is
-        allowed because each call here is one discrete request -- a new
-        watcher, a new stream -- and gets one new attempt; nothing here
-        loops, so a load that keeps failing fails once per request.
-        `start()` itself returns at once (the load is off-thread), so
-        holding the lock across it costs nothing.
+        `resume_paused=False`, and a session whose target is paused is
+        not started: a demand event is a socket or a screen, not a person,
+        and must not undo a Pause. Starting from FAILED is allowed because
+        each call here is one discrete request -- a new watcher, a new
+        stream -- and gets one new attempt; nothing here loops, so a load
+        that keeps failing fails once per request. `start()` itself
+        returns at once (the load is off-thread), so holding the lock
+        across it costs nothing. Never after `refuse_starts()`.
         """
-        if not self._follow_stream:
+        if not self._follow_stream or self._closed:
             return
-        if self._open_streams and self._watchers:
+        can_run = bool(self._open_streams and self._watchers)
+        self._target = decision_order_state(
+            self._target, EVENT_DEMAND, can_run=can_run
+        )
+        if can_run and self._target == STATE_RUNNING:
             super().start(resume_paused=False)
 
     # -- hooks ---------------------------------------------------------

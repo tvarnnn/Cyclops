@@ -153,6 +153,19 @@ class LiveCartridges:
         reading would publish one last payload saying `stopped` for no
         reason, and the order that avoids that is free.
         """
+        # First every session that can refuse later starts does, so a
+        # Start racing the shutdown cannot leave a model loading after this
+        # returns (`SceneLive.refuse_starts`). Then every session stops.
+        for consumer in self.frame_consumers:
+            refuse_starts = getattr(consumer, "refuse_starts", None)
+            if refuse_starts is None:
+                continue
+            try:
+                refuse_starts()
+            except Exception:
+                logger.exception(
+                    "[Tower][Cartridge] a live session did not refuse starts"
+                )
         for consumer in self.frame_consumers:
             try:
                 consumer.stop()
