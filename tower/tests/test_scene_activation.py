@@ -658,6 +658,81 @@ class TestOperatorDecisionsArriveTogether:
         assert state in (STATE_STARTING, STATE_RUNNING)
 
 
+    @staticmethod
+    def _demand_session(held=False):
+        session = _session()
+        session.stream_opened(owner="phone")
+        session.watcher_joined("phone:sub-1", owner="phone")
+        if held:
+            session.start()
+        assert _await_state(session, STATE_RUNNING)
+        return session
+
+    @pytest.mark.parametrize("held", [False, True])
+    def test_a_pause_after_a_watcher_inside_an_operator_stop_is_kept(
+        self, monkeypatch, held
+    ):
+        # Stop A, a watcher joins, Pause P, then A's base stop. In that
+        # order the watcher restarted the session and P paused it: P is
+        # the newest decision, and the detector must not end up running.
+        session = self._demand_session(held)
+
+        def watcher_then_pause():
+            session.watcher_joined("phone:sub-2", owner="phone")
+            session.pause()
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(watcher_then_pause,),
+        )
+        assert self._held_and_state(session) == (False, STATE_PAUSED)
+
+    def test_a_watcher_after_a_pause_inside_an_operator_stop_runs(
+        self, monkeypatch
+    ):
+        # The control: Stop A, Pause P (nothing left to pause), then the
+        # watcher joins. The watcher is newest, so the session runs.
+        session = self._demand_session()
+
+        def pause_then_watcher():
+            session.pause()
+            session.watcher_joined("phone:sub-2", owner="phone")
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(pause_then_watcher,),
+        )
+        held, state = self._held_and_state(session)
+        assert held is False
+        assert state in (STATE_STARTING, STATE_RUNNING)
+
+    def test_a_pause_after_a_watcher_inside_a_demand_stop_is_kept(
+        self, monkeypatch
+    ):
+        # The demand-stop path: the last watcher leaves (stop D), a new
+        # watcher joins, Pause P, then D's base stop. P is newest.
+        session = self._demand_session()
+
+        def watcher_then_pause():
+            session.watcher_joined("phone:sub-2", owner="phone")
+            session.pause()
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.watcher_left, "phone:sub-1"),
+            second=(watcher_then_pause,),
+        )
+        assert self._held_and_state(session) == (False, STATE_PAUSED)
+
+
 class TestDemandNeverUndoesAPause:
     def test_a_new_watcher_does_not_resume_a_paused_session(self):
         session = _session()

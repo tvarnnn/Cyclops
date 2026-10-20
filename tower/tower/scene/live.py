@@ -169,11 +169,14 @@ class SceneLive(LiveSession):
         # `resume()`. See OPERATOR DECISIONS below.
         self._decision = _STOP
         self._decision_seq = 0
-        # Bumped by `stream_opened` and `watcher_joined`, so an operator
-        # `stop()` can see a demand start that landed inside it.
-        self._demand_seq = 0
-        # Set once, by `close()`, before the shutdown stop. Nothing starts
-        # a worker after it.
+        # One order across operator decisions and demand starts
+        # (`stream_opened`, `watcher_joined`), and where the newest of each
+        # falls in it, so a stop can tell which came last.
+        self._order = 0
+        self._decision_order = 0
+        self._demand_order = 0
+        # Set once, by `refuse_starts()`, before the shutdown stop. Nothing
+        # starts a worker after it.
         self._closed = False
 
     def latest(self):
@@ -219,7 +222,7 @@ class SceneLive(LiveSession):
 
         The decision and the base start are one step under `_demand`, so
         no stop can decide between them and leave a session running that
-        nobody holds. Refused after `close()`.
+        nobody holds. Refused after `refuse_starts()`.
         """
         with self._demand:
             if self._closed:
@@ -241,14 +244,10 @@ class SceneLive(LiveSession):
         with self._demand:
             self._operator_hold = False
             seen = self._decide(_STOP)
-            demand_seen = self._demand_seq
+            since = self._decision_order
         super().stop()
         self._settle(seen)
-        with self._demand:
-            if self._demand_seq != demand_seen:
-                # A stream or watcher arrived during the stop, and its own
-                # `_reconcile` found the session still running. Ask again.
-                self._reconcile()
+        self._reconcile_after_stop(since, always=False)
         return self.status()
 
     def pause(self) -> dict:
@@ -260,30 +259,74 @@ class SceneLive(LiveSession):
         return self.status()
 
     def resume(self) -> dict:
-        """The operator's Resume. Refused after `close()`."""
+        """The operator's Resume. Refused after `refuse_starts()`."""
         with self._demand:
             if self._closed:
                 return self.status()
             self._decide(_RUN)
             return super().resume()
 
-    def close(self) -> dict:
-        """Stop for good: the app is shutting down.
+    def refuse_starts(self) -> None:
+        """The app is shutting down: no later start, operator or demand,
+        starts a worker. `LiveCartridges.shutdown()` calls it, then `stop()`.
 
-        The gate is set BEFORE the stop, with the hold released, under
-        `_demand`, so a Start racing the shutdown is either stopped by it
-        or refused, and no settle or demand event starts a worker after it.
+        Set with the hold released, under `_demand`, so a Start racing the
+        shutdown is either stopped by that stop or refused. Terminal for
+        this object, which `create_app()` builds once per app: a second
+        lifespan on the same app would get a Scene that never starts.
         """
         with self._demand:
             self._closed = True
             self._operator_hold = False
-        return self.stop()
 
     def _decide(self, decision: str) -> int:
         """Record the newest operator decision. Under `_demand`."""
         self._decision = decision
         self._decision_seq += 1
+        self._order += 1
+        self._decision_order = self._order
         return self._decision_seq
+
+    def _demand_arrived(self) -> None:
+        """A stream or watcher arrived. Under `_demand`."""
+        self._order += 1
+        self._demand_order = self._order
+
+    def _reconcile_after_stop(self, since: int, *, always: bool) -> None:
+        """After a stop decided at order `since` has landed and settled, let
+        the demand facts decide, as they would have in order.
+
+        A stream or watcher that arrived after the stop decided found the
+        session still running, so its own `_reconcile` did nothing; it is
+        asked again here. Unless an operator Pause is newer than it: in
+        that order the session was started by the demand and then paused,
+        so it is started and paused again. `always`: reconcile even with no
+        demand since, as a demand stop always has.
+        """
+        pause = False
+        with self._demand:
+            demand_since = self._demand_order > since
+            if (
+                demand_since
+                and self._decision == _PAUSE
+                and self._decision_order > self._demand_order
+            ):
+                if (
+                    not self._closed
+                    and self._follow_stream
+                    and self._open_streams
+                    and self._watchers
+                ):
+                    state = self.state
+                    if state == STATE_STOPPED:
+                        super().start(resume_paused=False)
+                    pause = state in (STATE_STOPPED, STATE_RUNNING, STATE_STARTING)
+            elif demand_since or always:
+                self._reconcile()
+            seen = self._decision_seq
+        if pause:
+            super().pause()
+            self._settle(seen)
 
     def _settle(self, seen: int) -> None:
         """After a base stop or pause, made OUTSIDE `_demand`: if a decision
@@ -292,10 +335,12 @@ class SceneLive(LiveSession):
         Run gives running and Pause gives paused. A session is only
         restarted while the operator holds it, so a later Stop or demand
         stop always stands. A Stop needs nothing: its own base stop has
-        landed or is still to land. A load that failed is left failed;
-        it already had its attempt. Whatever starts a worker happens under
-        `_demand`, and never after `close()`. A pause waits on `_lifecycle`,
-        so it runs outside the lock and the loop asks again.
+        landed or is still to land. A session FAILED now is left failed,
+        but an older stop that lands after a newer Start's load failed
+        turns FAILED into STOPPED, and that gets one more attempt: a churn,
+        like any restart here. Whatever starts a worker happens under
+        `_demand`, and never after `refuse_starts()`. A pause waits on
+        `_lifecycle`, so it runs outside the lock and the loop asks again.
         """
         while True:
             with self._demand:
@@ -321,7 +366,7 @@ class SceneLive(LiveSession):
         """A connection began streaming frames. Run if somebody is watching."""
         with self._demand:
             self._open_streams.add(owner)
-            self._demand_seq += 1
+            self._demand_arrived()
             self._reconcile()
 
     def stream_closed(self, owner=None) -> None:
@@ -337,15 +382,15 @@ class SceneLive(LiveSession):
             was_streaming = owner in self._open_streams
             self._open_streams.discard(owner)
             last_one_out = was_streaming and not self._open_streams
-            epoch = self._hold_epoch
+            epoch, since = self._hold_epoch, self._order
         if last_one_out:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile(epoch, since)
 
     def watcher_joined(self, token, *, owner=None) -> None:
         """A client subscribed to the live scene. Run if a stream is open."""
         with self._demand:
             self._watchers[token] = owner
-            self._demand_seq += 1
+            self._demand_arrived()
             self._reconcile()
 
     def watcher_left(self, token) -> None:
@@ -357,9 +402,9 @@ class SceneLive(LiveSession):
         with self._demand:
             self._watchers.pop(token, None)
             unwatched = not self._operator_hold and not self._watchers
-            epoch = self._hold_epoch
+            epoch, since = self._hold_epoch, self._order
         if unwatched:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile(epoch, since)
 
     def watchers_left(self, *, owner) -> None:
         """A connection closed; every watcher it held leaves with it."""
@@ -367,17 +412,18 @@ class SceneLive(LiveSession):
             for token in [t for t, o in self._watchers.items() if o == owner]:
                 del self._watchers[token]
             unwatched = not self._operator_hold and not self._watchers
-            epoch = self._hold_epoch
+            epoch, since = self._hold_epoch, self._order
         if unwatched:
-            self._stop_then_reconcile(epoch)
+            self._stop_then_reconcile(epoch, since)
 
-    def _stop_then_reconcile(self, epoch: int) -> None:
+    def _stop_then_reconcile(self, epoch: int, since: int) -> None:
         """Stop OUTSIDE the demand lock, then re-ask the facts under it.
 
         `epoch` is `_hold_epoch` as it was when the stop was decided. A
         hold that existed then is released with the session; an operator
         `start()` since then is newer than the decision and wins: before
         the stop it cancels it, and during the stop `_settle` restores it.
+        `since` is `_order` at the decision, for `_reconcile_after_stop`.
         """
         with self._demand:
             if self._hold_epoch != epoch:
@@ -386,8 +432,7 @@ class SceneLive(LiveSession):
             seen = self._decision_seq
         super().stop()
         self._settle(seen)
-        with self._demand:
-            self._reconcile()
+        self._reconcile_after_stop(since, always=True)
 
     def _reconcile(self) -> None:
         """Start if the facts say so. Under `_demand`.
@@ -398,7 +443,7 @@ class SceneLive(LiveSession):
         watcher, a new stream -- and gets one new attempt; nothing here
         loops, so a load that keeps failing fails once per request.
         `start()` itself returns at once (the load is off-thread), so
-        holding the lock across it costs nothing. Never after `close()`.
+        holding the lock across it costs nothing. Never after `refuse_starts()`.
         """
         if not self._follow_stream or self._closed:
             return
