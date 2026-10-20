@@ -800,23 +800,60 @@ const NAV = (() => {
      a list the Tower sends. Past it the field is `failed` rather than built,
      and the page carries on as it does before any field exists. */
   const MAX_FIELD_CELLS = 1 << 22;
-  /* How far from the origin, in lattice steps, a pose can still be put on the
-     lattice: cell positions are lo + i x spacing in float64, whose error at
-     2^40 steps is 2^-13 of a step -- the lattice stays exact near the room
-     with a pose that far out on the other side. 2^40 steps is 7.7e11 units
-     at the fine spacing; the worst blow-up seen is 9.4e6 (walk 4).
-     Past it a pose is skipped like a non-finite one: before this rule a pose
-     1e16 out walked the per-pose cube with `x++` at 2^53, which never ends. */
+  /* How far from THE WALK, in lattice steps, a pose can still be put on the
+     lattice. Cells are counted from the box's corner, and past 2^53 steps
+     `x++` stops advancing: a pose 1e16 out walked its cube forever (R1). The
+     walk is located by a REFERENCE pose -- the finite pose nearest (largest
+     axis) to the element-wise median of the finite poses, so a minority of
+     blow-ups cannot move it and it is always one of the walk's own -- and a
+     pose more than LATTICE_STEPS steps from it on any axis is skipped like a
+     non-finite one. Every lattice index then stays under ~2^41, far from 2^53.
+     Measured from the walk and not from the origin (R2): a compact walk
+     anywhere, 1e12 out included, keeps every pose and is the box's own field,
+     with the box's own float64 arithmetic. 2^40 steps is 7.7e11 units at the
+     fine spacing; the worst blow-up seen is 9.4e6 (walk 4). */
   const LATTICE_STEPS = Math.pow(2, 40);
+  /* What the field may COST once its cells are known, checked before a byte
+     of it is allocated (R2: MAX_FIELD_CELLS bounds the enumeration, not the
+     field). Each kept cell holds three CELLS-entry cube maps (1,152 bytes),
+     and `fieldWork` compares every kept cell with every proxy sample. Real
+     walks, measured by the page itself (LANE-F.md §6): fine fields of 5,230 -
+     8,840 cells = 6.0 - 10.2 MB and 31 - 53 million comparisons, landing in
+     1.1 - 1.5 s. MAX_FIELD_BYTES = 2^25 (32 MiB) is three times the largest of
+     those, held beside the ~128 texture layers the page already keeps;
+     MAX_FIELD_WORK = 2^28 comparisons is five times it, several seconds of
+     slices on a desktop and far longer on a phone, past which the Best view
+     would wait longer than a person does. A field over either is `failed`
+     before allocation: a fine field over budget leaves the coarse one (an
+     eighth of the cells) in use, as `buildNav` already does for any fine
+     fault; a coarse one over budget leaves no field. A valid 240-pose list
+     with every pose isolated reaches ~120,000 fine cells (139 MB), which is
+     what this stops. */
+  const MAX_FIELD_BYTES = Math.pow(2, 25), MAX_FIELD_WORK = Math.pow(2, 28);
   function fieldJob(input, spacing){
     const sp = spacing > 0 ? spacing : SPACING;
     const {path} = input, pad = R_MAX + sp, margin = 1 + sp / UNIT * 1.2;   // a margin for interpolation
-    // A pose the lattice can hold: finite, and within LATTICE_STEPS steps of the origin. Past that,
-    // float64 cannot keep the cells near the room on the lattice (and past 2^53 steps `x++` stops
-    // advancing), so such a pose is skipped exactly like a non-finite one: it gets no cells of its
+    // A pose the lattice can hold: finite, and within LATTICE_STEPS steps of the walk's reference
+    // pose on every axis. Any other is skipped exactly like a non-finite one: it gets no cells of its
     // own, and it stays in the path, where `pathDist` picks it only for a point nearer to it than to
     // the walk.
-    const finite = i => [0, 1, 2].every(k => Math.abs(path.P[i*3+k]) <= LATTICE_STEPS * sp);
+    const isFin = i => isFinite(path.P[i*3]) && isFinite(path.P[i*3+1]) && isFinite(path.P[i*3+2]);
+    const fin = [];
+    for (let i = 0; i < path.n; i++) if (isFin(i)) fin.push(i);
+    let refPose = null;
+    if (fin.length){
+      const med = [0, 1, 2].map(k => {
+        const v = fin.map(i => path.P[i*3+k]).sort((a, b) => a - b), m = v.length >> 1;
+        return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]);
+      });
+      let best = Infinity;
+      for (const i of fin){
+        const d = Math.max(...[0, 1, 2].map(k => Math.abs(path.P[i*3+k] - med[k])));
+        if (d < best){ best = d; refPose = i; }
+      }
+    }
+    const finite = i => isFin(i) && refPose !== null
+      && [0, 1, 2].every(k => Math.abs(path.P[i*3+k] - path.P[refPose*3+k]) <= LATTICE_STEPS * sp);
     const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
     let nf = 0;
     for (let i = 0; i < path.n; i++){
@@ -830,7 +867,7 @@ const NAV = (() => {
                                 where: new Float32Array(0), count: 0, cov: new Uint8Array(0),
                                 dist: new Uint8Array(0), con: new Uint8Array(0), near: null,
                                 next: 0, done: true, failed});
-    if (!nf) return empty(null);
+    if (!nf) return empty("no pose of the walk is finite: there is nothing to build a field around");
     const dims = [0, 1, 2].map(k => Math.max(1, Math.ceil((hi[k] - lo[k]) / sp) + 1));
     const box = dims[0] * dims[1] * dims[2];
     const touches = i => (i > 0 && path.ok[i - 1]) || (i < path.n - 1 && path.ok[i]);
@@ -876,7 +913,10 @@ const NAV = (() => {
       lookup = new Map();
       for (const c of cells){ lookup.set(c[3], where.length / 3); where.push(c[4][0], c[4][1], c[4][2]); }
     }
-    const count = where.length / 3;
+    const count = where.length / 3, bytes = count * CELLS * 3, compares = count * (input.samples ? input.samples.length / 3 : 0);
+    if (bytes > MAX_FIELD_BYTES || compares > MAX_FIELD_WORK)
+      return empty("the walk's field would hold " + count + " cells (" + bytes + " bytes, " + compares
+                   + " sample comparisons), over " + MAX_FIELD_BYTES + " bytes or " + MAX_FIELD_WORK);
     return {input, lo, dims, index, lookup, spacing: sp, where: Float32Array.from(where), count,
             cov: new Uint8Array(count * CELLS), dist: new Uint8Array(count * CELLS),
             con: new Uint8Array(count * CELLS), near: null,
@@ -886,40 +926,51 @@ const NAV = (() => {
      forward x `ref`), the Best view's "toward" -- over the poses that are
      where the walk was. One 158 km pose of 207 (walk 10.2) moved the plain
      mean ~800 units off the room, and "toward" then pointed every candidate
-     the same way across the world. A pose is left out of the mean only by the
-     SURFACE's own gate for a pose the solver placed nowhere near the rest
-     (`surface.robust_pose_outliers`, its defaults, which decide what the
-     surface fuses): beyond both FAR_RADIUS (10) x the median distance from
-     the element-wise median centre AND FAR_DETACH (2.5) x the 95th-percentile
-     distance; nobody when that would leave out more than FAR_SHARE (5 %), or
-     with fewer than MIN_ROBUST (8) poses, or all of them in one place. Both
-     tests, because a walk that DWELLS has a tiny median and a legitimate tail
-     (80 poses on one spot and a crossing put 16 real poses past 10 medians,
-     none past 2.5 x p95), and this is a preference the page applies to every
-     world, not the camera list's filter (`viewable_poses`, which drops the
-     detachment on purpose). Where the gate drops nothing, the plain mean,
-     bit for bit. It is the same RULE as the Tower's, not a bit-exact copy:
-     the page sees centres rounded to 5 decimals, so a pose sitting exactly on
-     a threshold may fall the other way. */
+     the same way across the world. `lookKept` leaves a pose out only by the
+     SURFACE's gate rule for a pose the solver placed nowhere near the rest
+     (`surface.robust_pose_outliers`): beyond both FAR_RADIUS (10) x the median
+     distance from the element-wise median centre AND FAR_DETACH (2.5) x the
+     95th-percentile distance; nobody when that would leave out more than
+     FAR_SHARE (5 %), or with fewer than MIN_ROBUST (8) poses, or all of them
+     in one place. Both tests, because a walk that DWELLS has a tiny median and
+     a legitimate tail (80 poses on one spot and a crossing put 16 real poses
+     past 10 medians, none past 2.5 x p95). Where it drops nothing, the plain
+     mean, bit for bit.
+     WHERE IT CAN DIFFER FROM THE SURFACE'S OWN DECISION (R2). It is the same
+     rule with the same constants -- production always builds the surface with
+     `SurfaceParams()` defaults; only the research CLI `world_surface.py` can
+     change them -- but not the same INPUT: the surface judges the poses it is
+     offered (those with depth, unrounded), this judges the published list
+     (component 0, decimated to <= 240, rounded to 5 decimals), so the median,
+     the p95 and a pose sitting exactly on a threshold can come out
+     differently. The surface's per-pose decisions are not in the page's
+     CONFIG; carrying them would be a contract change for a preference. What
+     bounds the difference: it moves only the Best view's "toward" factor
+     (0.5 - 1 on a candidate's score), and it can never leave out more than 5 %
+     of the list, so never every pose. */
   const FAR_RADIUS = 10, FAR_DETACH = 2.5, FAR_SHARE = 0.05, MIN_ROBUST = 8;
+  function lookKept(cams){
+    const keep = cams.map(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
+    const ok = cams.filter((c, i) => keep[i]);
+    if (ok.length < MIN_ROBUST) return keep;
+    const median = (v) => { const m = v.length >> 1; return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]); };
+    const mid = [0, 1, 2].map(k => median(ok.map(c => c[k]).sort((a, b) => a - b)));
+    // numpy's norm order, ((x^2 + y^2) + z^2), not Math.hypot's
+    const radOf = c => { const dx = c[0] - mid[0], dy = c[1] - mid[1], dz = c[2] - mid[2];
+                         return Math.sqrt(dx * dx + dy * dy + dz * dz); };
+    const rad = ok.map(radOf);
+    const sorted = rad.slice().sort((a, b) => a - b), med = median(sorted);
+    // numpy's default (linear) percentile, in numpy's own two-sided lerp
+    const q = 0.95 * (sorted.length - 1), lo = Math.floor(q), g = q - lo;
+    const a = sorted[lo], b = sorted[Math.min(lo + 1, sorted.length - 1)];
+    const p95 = g >= 0.5 ? b - (b - a) * (1 - g) : a + (b - a) * g;
+    const cut = Math.max(FAR_RADIUS * med, FAR_DETACH * p95);
+    const dropped = rad.filter(r => r > cut).length;
+    if (!(med > 0) || dropped > FAR_SHARE * ok.length) return keep;
+    return cams.map((c, i) => keep[i] && !(radOf(c) > cut));
+  }
   function lookFocus(cams, ref){
-    const ok = cams.filter(c => c.length >= 6 && c.slice(0, 6).every(v => isFinite(v)));
-    let use = ok;
-    if (ok.length >= MIN_ROBUST){
-      const median = (v) => { const m = v.length >> 1; return v.length % 2 ? v[m] : 0.5 * (v[m - 1] + v[m]); };
-      const mid = [0, 1, 2].map(k => median(ok.map(c => c[k]).sort((a, b) => a - b)));
-      // numpy's norm order, ((x^2 + y^2) + z^2), not Math.hypot's
-      const rad = ok.map(c => { const dx = c[0] - mid[0], dy = c[1] - mid[1], dz = c[2] - mid[2];
-                                return Math.sqrt(dx * dx + dy * dy + dz * dz); });
-      const sorted = rad.slice().sort((a, b) => a - b), med = median(sorted);
-      // numpy's default (linear) percentile, in numpy's own two-sided lerp
-      const q = 0.95 * (sorted.length - 1), lo = Math.floor(q), g = q - lo;
-      const a = sorted[lo], b = sorted[Math.min(lo + 1, sorted.length - 1)];
-      const p95 = g >= 0.5 ? b - (b - a) * (1 - g) : a + (b - a) * g;
-      const cut = Math.max(FAR_RADIUS * med, FAR_DETACH * p95);
-      const kept = ok.filter((c, i) => !(rad[i] > cut));
-      if (med > 0 && ok.length - kept.length <= FAR_SHARE * ok.length) use = kept;
-    }
+    const kept = lookKept(cams), use = cams.filter((c, i) => kept[i]);
     const focus = [0, 0, 0];
     for (const c of use) for (let k = 0; k < 3; k++) focus[k] += (c[k] + c[k + 3] * ref) / use.length;
     return focus;
@@ -1401,13 +1452,13 @@ const NAV = (() => {
     return {index: from, skipped: 0, capped: false};
   }
 
-  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, lookFocus, support, positionBound,
+  return {smooth, cellOf, angleWeight, makePath, pathDist, fieldJob, fieldWork, voxelAt, lookKept, lookFocus, support, positionBound,
           lookBound, darkness, step, sampleReachable, glide, glideMs, nearest, closeBound, nextPose,
           richness, sampleGrid, ringProfile, bestHeading,
           UNIT, R_SOFT, R_MAX, V_MAX, T_LO, T_HI, SPACING, CELLS, JUMP, PITCH_MAX, PITCH_SOFT, D_MIN, D_SOFT, B_FREE,
           C_LO, C_HI, C_DRIFT_MAX, C_DRIFT_RATE, C_SETTLE, C_GRAD_EPS, C_GRAD_WIDE,
           DARK_LO, DARK_HI,
-          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, LATTICE_STEPS, FAR_RADIUS, FAR_DETACH, FAR_SHARE, MIN_ROBUST};
+          RING_TURN_PENALTY, RING_FLOOR, RING_RICH_FLOOR, MAX_SKIP, MAX_FIELD_CELLS, MAX_FIELD_BYTES, MAX_FIELD_WORK, LATTICE_STEPS, FAR_RADIUS, FAR_DETACH, FAR_SHARE, MIN_ROBUST};
 })();
 /* ---------- end navigation */
 

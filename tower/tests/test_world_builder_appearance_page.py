@@ -2507,6 +2507,51 @@ for (const v of [7e15, 1e16, 1e300, -1e300]){
 assert.strictEqual(NAV.LATTICE_STEPS, Math.pow(2, 40));
 """)
 
+    def test_a_compact_walk_far_from_the_origin_is_the_boxs_own_field(self):
+        """R2 HIGH: the lattice cutoff was measured from the origin, so a compact walk 1e12
+        out lost every pose and landed an EMPTY field reported as ready (cc0208c5 built
+        485 cells for a single pose there). It is measured from the walk now."""
+        _run_far(r"""
+const single = [[1e12, 0, 0, 0, 0, 1]];
+const shifted = cams.map(c => [c[0] + 1e12, c[1] - 7, c[2] - 3e11, c[3], c[4], c[5]]);
+for (const list of [single, shifted]) for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
+  const H = NAV.fieldJob(Object.assign({}, F.input, {path: NAV.makePath(list, up)}), sp);
+  assert.ok(!H.failed && H.count > 0, "a field, not an empty one: " + H.count + " " + H.failed);
+  assert.deepStrictEqual(Array.from(H.where), boxField(H), "the box's own cells (cc0208c5's field)");
+}
+assert.strictEqual(NAV.fieldJob(Object.assign({}, F.input, {path: NAV.makePath(single, up)}), NAV.SPACING).count, 485);
+// two blow-up clusters with nothing between them: the field is built round one of the walk's own poses
+const two = [0, 1, 2, 3].map(i => [1e16 + i, 0, 0, 0, 0, 1]).concat([0, 1, 2, 3].map(i => [0, 1e16 + i, 0, 0, 0, 1]));
+const T = NAV.fieldJob(Object.assign({}, F.input, {path: NAV.makePath(two, up)}));
+assert.ok(!T.failed && T.count > 0, "never empty while a finite pose exists");
+// and with no finite pose at all (or none), it is a failed field, never an empty "ready" one
+for (const list of [[], [[NaN, 0, 0, 0, 0, 1], [Infinity, 1, 1, 0, 0, 1]]]){
+  const Z = NAV.fieldJob(Object.assign({}, F.input, {path: NAV.makePath(list, up)}));
+  assert.ok(Z.failed && /finite/.test(Z.failed) && Z.count === 0 && Z.done, String(Z.failed));
+}
+""")
+
+    def test_a_field_too_costly_is_failed_before_it_is_allocated(self):
+        """R2 MEDIUM: the cell cap bounded the enumeration, not the field. 240 poses a
+        thousand units apart is a valid list: ~122,000 fine cells, 141 MB of cube maps,
+        ~7e8 sample comparisons. The cost is checked before any of it is allocated."""
+        _run_far(r"""
+assert.deepStrictEqual([NAV.MAX_FIELD_BYTES, NAV.MAX_FIELD_WORK], [Math.pow(2, 25), Math.pow(2, 28)]);
+const iso = Array.from({length: 240}, (_, i) => [i * 1000, (i % 3) * 1000, (i % 5) * 1000, 0, 0, 1]);
+const six = Object.assign({}, F.input, {path: NAV.makePath(iso, up), samples: new Float32Array(6000 * 3)});
+for (const sp of [NAV.SPACING, NAV.SPACING * 2]){
+  const X = NAV.fieldJob(six, sp);
+  assert.ok(X.failed && /bytes/.test(X.failed) && X.count === 0 && X.cov.length === 0, String(X.failed));
+}
+// the real walks measured stay far inside: the synthetic room's fine field, with 6,000 samples
+const R = NAV.fieldJob(Object.assign({}, F.input, {samples: new Float32Array(6000 * 3)}));
+assert.ok(!R.failed && R.count * NAV.CELLS * 3 < NAV.MAX_FIELD_BYTES / 10);
+// the comparisons bound on its own: few cells, a very large proxy sample set
+const many = Object.assign({}, F.input, {samples: new Float32Array(Math.ceil(NAV.MAX_FIELD_WORK / F.count + 1) * 3)});
+const W = NAV.fieldJob(many);
+assert.ok(W.failed && /comparisons/.test(W.failed) && W.count === 0, String(W.failed));
+""")
+
     def test_what_the_walk_looked_at_leaves_out_only_the_far_poses(self):
         _run_far(r"""
 const ref = 3;
@@ -2596,6 +2641,14 @@ buildNav(); flush();
 assert.strictEqual(S.nav.phase, "ready", JSON.stringify(S.nav)); assert.ok(navFine && navField.count > 0);
 assert.ok(!els.bOverview.disabled && !els.bBack.disabled && scored === 1);
 assert.strictEqual(els.status.textContent, ""); assert.ok(!("error" in S.nav));
+// (6) R2: a fine field over the cost budget leaves the coarse one (an eighth of the cells) in use
+fresh(); const spread = Array.from({length: 100}, (_, i) => [i * 1000, (i % 3) * 1000, (i % 5) * 1000, 0, 0, 1]);
+inputFor = () => Object.assign(pageInput(spread), {samples: Float32Array.from([0, 0, 3]), seenOff: Int32Array.from([0, 1]),
+  seenIdx: Int32Array.from([0]), centres: Float32Array.from([0, 0, 0]), sampleQ: Uint8Array.from([255]), sampleC: Uint8Array.from([64])});
+buildNav(); flush();
+assert.strictEqual(S.nav.phase, "coarse", JSON.stringify(S.nav)); assert.ok(/bytes/.test(S.nav.error), S.nav.error);
+assert.ok(!els.bBack.disabled && els.bOverview.disabled && navField.count > 0 && !navFine);
+assert.strictEqual(els.status.textContent, "");
 // (5) nothing to build from (no layers yet): not "preparing" either
 fresh(); inputFor = () => null;
 buildNav(); flush();
@@ -2604,10 +2657,71 @@ assert.strictEqual(els.status.textContent, ""); assert.strictEqual(S.nav.phase, 
         # The section reads the page's `cams`; the stand-in has none, so `floorAt` is not asked.
         _run_far(harness + build.replace("cams.length", "pageCams.length") + run)
 
-    def test_best_view_aims_at_what_the_walk_looked_at_robustly(self):
-        over = _section(_template(), "  function findOverview(){", "  function overview(){")
-        assert "const focus = NAV.lookFocus(cams, ref);" in over
-        assert "focus[k] += " not in over, "the plain mean over every pose is gone"
+    def test_best_view_lands_where_it_would_without_the_far_poses(self):
+        """R2: an actual destination, not the source text. `findOverview` itself, under
+        node, over a stand-in page: an 80-pose walk facing a wall, its field, and a
+        render that rates every candidate alike, so "toward what the walk looked at"
+        decides. With walk 10.2's three far poses spliced into the camera list the
+        destination is the one the walk alone gets; with the plain mean the page
+        used before (stood in for `lookFocus`), it is not."""
+        text = _template()
+        helpers = "\n".join(line for line in text.splitlines()
+                             if line.startswith(("const norm3 =", "const dot3 =", "const cross3 =")))
+        page = (_section(text, "  function basis(){", "  function currentCamera(")
+                + _section(text, "  const OVERVIEW_AWAY", "  function overview(){"))
+        _run_plain(_nav_source() + "\n" + helpers + r"""
+const walk = Array.from({length: 80}, (_, i) => [i * 0.1, 0, 0, 0, 0, 1]);
+const walkPath = NAV.makePath(walk, [0, 1, 0]);
+const samples = [], off = [0], idx = [];
+for (let x = -4; x <= 12; x += 0.25) for (let y = -2.5; y <= 2.5; y += 0.25){
+  samples.push(x, y, 3); for (let k = 0; k < walk.length; k++) idx.push(k); off.push(idx.length); }
+const Fw = NAV.fieldJob({samples: Float32Array.from(samples), seenOff: Int32Array.from(off),
+                         seenIdx: Int32Array.from(idx), path: walkPath,
+                         centres: Float32Array.from(walk.flatMap(c => [c[0], c[1], c[2]]))}, NAV.SPACING * 2);
+while (!NAV.fieldWork(Fw, 200)) { /* slices */ }
+function destination(camsList){
+  let cams = camsList, cam = {p: [0, 0, 0], yaw: 0, pitch: 0, floor: 1}, override = null, B = null, UP = [0, 1, 0];
+  const canvas = {width: 900, height: 700}, Q = new URLSearchParams(""), CONFIG = {median_scene_depth: 3};
+  const diag = 10, OPT = {sceneUnit: 1}, centre = [0, 0, 0], S = {};
+  let navField = Fw, navPath = walkPath, opening = 0;
+  const navView = () => ({dir: dirFrom, up: UP, fy: 1.25, aspect: 1.2}), currentCamera = () => ({});
+  const drawnFraction = () => ({drawn: 1, distance: 4, detail: 0.02, depthSpread: 3, faded: 0, torn: 0, speck: 0});
+  const detailTerm = d => Math.max(0, Math.min(1, d / 0.02));
+""" + page + r"""
+  basis();
+  return findOverview();
+}
+const far = [[158178.2, -9095.5, 178526.3, 0, 0, 1], [2113.6, 5887.4, -14933.2, 0, 0, 1],
+             [6101.1, -1177.2, -2752.7, 0, 0, 1]];
+const spliced = walk.slice(0, 20).concat([far[0]], walk.slice(20, 50), [far[1], far[2]], walk.slice(50));
+const alone = destination(walk), withFar = destination(spliced);
+assert.ok(alone && alone.p, "a destination: " + JSON.stringify(alone));
+assert.deepStrictEqual(withFar, alone, "the far poses do not move the Best view");
+const real = NAV.lookFocus;
+NAV.lookFocus = (cs, ref) => { const m = [0, 0, 0];
+  for (const c of cs) for (let k = 0; k < 3; k++) m[k] += (c[k] + c[k + 3] * ref) / cs.length; return m; };
+const before = destination(spliced);
+NAV.lookFocus = real;
+assert.notDeepStrictEqual(before, alone, "with the old plain mean they did: " + JSON.stringify(before));
+""")
+
+    def test_what_the_walk_looked_at_never_leaves_out_more_than_a_twentieth(self):
+        """R2: the page's filter is the surface's rule on a different input, so it can
+        disagree with the surface's own decision (documented at `lookKept`); what it can
+        never do is leave out every pose, or more than 5 % of the list."""
+        _run_far(r"""
+let seed = 11; const rand = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+for (let t = 0; t < 400; t++){
+  const n = 1 + Math.floor(rand() * 260), list = [];
+  for (let i = 0; i < n; i++){
+    const kind = rand(), s = kind < 0.2 ? Math.pow(10, rand() * 6) : kind < 0.3 ? 0 : 1;   // spread, piled, or a room
+    list.push([(rand() - 0.5) * 6 * s, (rand() - 0.5) * s, (rand() - 0.5) * 6 * s, 0, 0, 1]);
+  }
+  const kept = NAV.lookKept(list).filter(Boolean).length;
+  assert.ok(kept >= 1 && n - kept <= Math.floor(NAV.FAR_SHARE * n + 1e-9), n + " poses, " + kept + " kept");
+  assert.ok(NAV.lookFocus(list, 3).every(isFinite));
+}
+""")
 
 
 def _run_plain(script):
