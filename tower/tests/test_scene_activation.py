@@ -956,3 +956,269 @@ class TestAFailingDetectorDoesNotFloodTheLog:
                 engine.observe(np.zeros((8, 8, 3), np.uint8), received_at=index * 0.1)
         assert engine.detect_failures == 120
         assert len(caplog.records) == 3  # 1st, 10th, 100th
+
+
+# -- every short ordering, checked against decision order ---------------
+#
+# A small-scope exhaustive check. Each kind of call that leaves `_demand`
+# for a blocking base call is parked there; every ordering of up to three
+# further events lands inside its window; then it goes on. The session
+# must end where `_Model` -- the module's rules, written down here
+# independently of `SceneLive` -- says those events leave it when taken
+# one at a time in the order they were decided.
+
+_WINDOW_EVENTS = (
+    "start",
+    "stop",
+    "pause",
+    "resume",
+    "stream_open",
+    "stream_close",
+    "watcher_join",
+    "watcher_leave",
+    "shutdown",
+)
+
+# Parked call -> (the base verb it is parked at, the event it is).
+_PARKED = {
+    "operator_stop": ("stop", "stop"),
+    "operator_pause": ("pause", "pause"),
+    "last_watcher_leaves": ("stop", "watcher_leave"),
+    "last_stream_closes": ("stop", "stream_close"),
+}
+
+
+def _windows(longest=3):
+    import itertools
+
+    for length in range(longest + 1):
+        yield from itertools.product(_WINDOW_EVENTS, repeat=length)
+
+
+class _Model:
+    """The rules, from the module's docstrings, one event at a time.
+
+    Start holds the session and runs it (resuming a pause); Stop releases
+    the hold and stops it; Pause pauses a running session; Resume resumes
+    a paused one. A stream or watcher arriving starts a stopped session
+    when there is a stream AND a watcher, and never resumes a pause. The
+    last stream closing stops the session whoever started it; the last
+    watcher leaving stops it unless the operator holds it. Shutdown stops
+    it for good: nothing starts it afterwards.
+    """
+
+    def __init__(self) -> None:
+        self.state = STATE_STOPPED
+        self.hold = False
+        self.closed = False
+        self.streams: set = set()
+        self.watchers: set = set()
+
+    def _stop(self) -> None:
+        self.hold = False
+        self.state = STATE_STOPPED
+
+    def _arrived(self) -> None:
+        if not self.closed and self.streams and self.watchers:
+            if self.state == STATE_STOPPED:
+                self.state = STATE_RUNNING
+
+    def apply(self, event, arg) -> None:
+        if event == "start":
+            if not self.closed:
+                self.hold = True
+                self.state = STATE_RUNNING
+        elif event == "stop":
+            self._stop()
+        elif event == "pause":
+            if self.state == STATE_RUNNING:
+                self.state = STATE_PAUSED
+        elif event == "resume":
+            if not self.closed and self.state == STATE_PAUSED:
+                self.state = STATE_RUNNING
+        elif event == "stream_open":
+            self.streams.add(arg)
+            self._arrived()
+        elif event == "watcher_join":
+            self.watchers.add(arg)
+            self._arrived()
+        elif event == "stream_close":
+            was = arg in self.streams
+            self.streams.discard(arg)
+            if was and not self.streams:
+                self._stop()
+        elif event == "watcher_leave":
+            self.watchers.discard(arg)
+            if not self.hold and not self.watchers:
+                self._stop()
+        elif event == "shutdown":
+            self.closed = True
+            self._stop()
+        else:  # pragma: no cover - a typo in the table
+            raise ValueError(event)
+
+
+def _resolve(event, ids):
+    """The argument an event takes. New streams and watchers get new
+    names; a close or leave takes the newest one still there."""
+    if event == "stream_open":
+        ids["n"] += 1
+        ids["streams"].append(f"s{ids['n']}")
+        return ids["streams"][-1]
+    if event == "watcher_join":
+        ids["n"] += 1
+        ids["watchers"].append(f"w{ids['n']}")
+        return ids["watchers"][-1]
+    if event == "stream_close":
+        return ids["streams"].pop() if ids["streams"] else "s-none"
+    if event == "watcher_leave":
+        return ids["watchers"].pop() if ids["watchers"] else "w-none"
+    return None
+
+
+def _do(session, event, arg) -> None:
+    if event == "start":
+        session.start()
+    elif event == "stop":
+        session.stop()
+    elif event == "pause":
+        session.pause()
+    elif event == "resume":
+        session.resume()
+    elif event == "stream_open":
+        session.stream_opened(owner=arg)
+    elif event == "stream_close":
+        session.stream_closed(owner=arg)
+    elif event == "watcher_join":
+        session.watcher_joined(arg, owner="phone")
+    elif event == "watcher_leave":
+        session.watcher_left(arg)
+    elif event == "shutdown":
+        LiveCartridges(frame_consumers=[session], scene=session).shutdown()
+    else:  # pragma: no cover
+        raise ValueError(event)
+
+
+def _in_thread(name, function, timeout=10.0):
+    """Run `function` on a thread called `name`; its error, or a hang."""
+    outcome = {}
+
+    def run():
+        try:
+            function()
+        except BaseException as exc:  # reported, never swallowed
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=run, name=name, daemon=True)
+    thread.start()
+    return thread, outcome
+
+
+def _settled(session, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if session.state != STATE_STARTING:
+            return True
+        time.sleep(0.001)
+    return False
+
+
+def _check_case(parked, window, *, sequential=False):
+    """Run one case. None if the session ends where `_Model` says, else
+    a description. `sequential`: no parking, every event in turn (checks
+    the model against the session's own behaviour without a race)."""
+    verb, first_event = _PARKED[parked]
+    session = SceneLive(_Engine, decode=lambda raw: raw, follow_stream=True)
+    real = getattr(LiveSession, verb)
+    arrived, release = threading.Event(), threading.Event()
+    model = _Model()
+    ids = {"n": 0, "streams": [], "watchers": []}
+    problem = None
+    try:
+        for event in ("stream_open", "watcher_join"):
+            arg = _resolve(event, ids)
+            _do(session, event, arg)
+            model.apply(event, arg)
+        if not _settled(session) or session.state != STATE_RUNNING:
+            return f"setup did not run: {session.state}"
+
+        first_arg = _resolve(first_event, ids)
+        model.apply(first_event, first_arg)
+        plan = [(event, _resolve(event, ids)) for event in window]
+        for event, arg in plan:
+            model.apply(event, arg)
+
+        if sequential:
+            _do(session, first_event, first_arg)
+            for event, arg in plan:
+                _do(session, event, arg)
+        else:
+
+            def parked_call(self_, *args, **kwargs):
+                if threading.current_thread().name == "first" and not arrived.is_set():
+                    arrived.set()
+                    release.wait(10)
+                return real(self_, *args, **kwargs)
+
+            setattr(LiveSession, verb, parked_call)
+            first, first_outcome = _in_thread(
+                "first", lambda: _do(session, first_event, first_arg)
+            )
+            try:
+                if not arrived.wait(5):
+                    return "the parked call never reached its base call"
+                rest, rest_outcome = _in_thread(
+                    "window", lambda: [_do(session, e, a) for e, a in plan]
+                )
+                rest.join(10)
+                if rest.is_alive():
+                    return "the window's events never returned"
+            finally:
+                release.set()
+                setattr(LiveSession, verb, real)
+            first.join(10)
+            if first.is_alive():
+                return "the parked call never returned"
+            for outcome in (first_outcome, rest_outcome):
+                if "error" in outcome:
+                    return f"raised {outcome['error']!r}"
+
+        if not _settled(session):
+            return "never settled"
+        status = session.status()
+        got = (status["demand"]["operator_hold"], status["state"])
+        want = (model.hold, model.state)
+        if got != want:
+            problem = f"(hold, state) {got}, decision order gives {want}"
+        return problem
+    finally:
+        setattr(LiveSession, verb, real)
+        stopper, _ = _in_thread("cleanup", session.stop)
+        stopper.join(10)
+        worker = getattr(session, "_worker", None)
+        if worker is not None:
+            worker.retire()
+
+
+def _failures(parked, *, sequential=False):
+    failures = []
+    for window in _windows():
+        problem = _check_case(parked, window, sequential=sequential)
+        if problem is not None:
+            failures.append((window, problem))
+    return failures
+
+
+class TestEveryShortOrderingEndsInDecisionOrder:
+    """820 orderings per parked call (every sequence of up to three of
+    the nine events), 3280 in all."""
+
+    @pytest.mark.parametrize("parked", sorted(_PARKED))
+    def test_the_model_is_the_sessions_own_behaviour_without_a_race(self, parked):
+        failures = _failures(parked, sequential=True)
+        assert not failures, f"{len(failures)} of 820 differ: {failures[:5]}"
+
+    @pytest.mark.parametrize("parked", sorted(_PARKED))
+    def test_a_window_of_up_to_three_events_ends_in_decision_order(self, parked):
+        failures = _failures(parked)
+        assert not failures, f"{len(failures)} of 820 differ: {failures[:5]}"
