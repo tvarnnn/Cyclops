@@ -116,10 +116,11 @@ REFUSE_AMBIGUOUS = "ambiguous"
 REFUSE_CORROBORATION = "not-corroborated"
 REFUSE_REGION = "anchor-region-too-large"
 REFUSE_TOO_LARGE = "too-large"
-REFUSE_TIME = "time-bound"
+REFUSE_WORK = "work-bound"
 REFUSE_NO_CONTROLS = "no-matched-controls"
 REFUSE_GROUP_ANCHORS = "group-anchors-disagree"
 REFUSE_COVERAGE = "coverage-not-shown"
+REFUSE_MEMBER = "member-not-one-body"
 
 
 @dataclass(frozen=True)
@@ -183,11 +184,18 @@ class PlaceParams:
     # between its points: depth bands widened by its reach, no hit-share cut, no free-space penalty -- above
     # the region's median. Each refinement costs ~180 fine evaluations; a region with more basins than this
     # cannot be shown covered inside the step's wall time and is refused (`coverage-not-shown`).
-    max_basins: int = 8
+    max_basins: int = 16
     # R5's profile is scaled by a typical placement scored by the fine scorer at this many lattice points.
     typical_points: int = 64
-    # Bounded wall time for the whole step: past it, the pieces not yet decided stay cut (`time-bound`).
-    max_seconds: float = 900.0
+    # Bounded WORK for the whole step, counted, so a walk decides the same on a busy Tower as on an idle one:
+    # every depth sample and room voxel a measurement touches (each score evaluation, scorer, rigidity
+    # comparison, room frame and its consolidation, corroboration query) spends a unit. Past the budget the
+    # pieces not yet decided stay cut (`work-bound`), and nothing is placed once it has run out. 1.1e10: the
+    # 900 s the step was allowed before, at the Tower's measured 1.2e7 units/s (10.2 and 10.1, LANE-B2
+    # section 13.3). The wall clock is only a backstop well above that (it fires on a stalled machine, and the
+    # record says it fired).
+    max_work: float = 1.1e10
+    max_seconds: float = 3600.0
     # Bounded work: a piece of more than max_piece_keyframes keyframes is refused; at most max_measure_frames
     # of its frames (evenly spread) are measured.
     max_piece_keyframes: int = 400
@@ -195,6 +203,9 @@ class PlaceParams:
     # The room's evidence is built from at most this many certified frames (evenly spread): its cost is
     # linear in frames, and ~1,000 frames is a long walk's room.
     max_room_frames: int = 1500
+    # ...and from at most this many voxel keys in all (surface at both sizes and free space; ~8 bytes each
+    # plus a surface voxel's mean): frames past it are left out, in capture order, and the record says so.
+    max_room_keys: int = 40_000_000
     # The room's own controls: exactly this many stretches of control_frames consecutive certified room frames
     # with depth, evenly spread over the walk, left out of the evidence (and of the anchor pool) and placed
     # like pieces under each piece's matched prior; a room too short to spare them all places nothing. 6 x 20:
@@ -216,6 +227,27 @@ class PlaceParams:
     anchor_dt_s: float = 2.0
     speed_mps: float = 2.0
     speed_margin_m: float = 0.3
+    # An anchor's allowance is the WALK'S OWN motion: the walk_quantile of how far its certified room cameras
+    # moved over the anchor's time gap (each camera against the one nearest in time to t + dt, within
+    # walk_gap_tol_s: half the ~0.2 s keyframe spacing), never more than the walking limit above (2.0 m/s x
+    # dt + 0.3 m), which is used when fewer than walk_min_pairs such pairs exist. 0.99: a correct placement
+    # must hold EVERY anchor of a group (up to ~5), so it is falsely refused at most ~5 % of the time.
+    walk_quantile: float | None = 0.99
+    walk_gap_tol_s: float = 0.1
+    walk_min_pairs: int = 50
+    # Groups. G1: two pieces are one body in the solve only when they triangulate points of their own
+    # together -- at least min_shared_points points seen by both and by no room camera (a point the room
+    # also sees ties each piece to the room, not to each other; one shared track is not a relative pose).
+    # 10: the guard's own floor for a measurement. Each member keeps at least min_frames measured frames
+    # with depth, and is tested on its own at the group's placement (R4 against the envelope, and its views
+    # compared with the other members' on at least min_hit_share of its samples).
+    min_shared_points: int = 10
+    # R0 at the prior's error: at least min_outer_good GOOD controls among those started in the outer half
+    # of the region, and the false-accept test exercised on wrong placements from at least
+    # min_safety_controls different controls (their misplaced winners, and each control's best refined
+    # basin away from its truth, judged as if the truth were withheld).
+    min_outer_good: int = 2
+    min_safety_controls: int = 2
     cross_new_m: float = 0.10
     cross_overlap_m: float = 0.30
     # A cross-piece coincidence needs >= 50 overlapping new points: fewer is a few frames' edges.
@@ -310,13 +342,42 @@ def sampled_depth(D: np.ndarray, rows: np.ndarray, cols: np.ndarray, params: Pla
 _KEY_BITS = 21
 
 
-class _OutOfTime(Exception):
-    """The step's wall-time bound passed inside a measurement (raised by `_check`)."""
+class _OutOfWork(Exception):
+    """The step's work budget (or its wall-clock backstop) ran out inside a measurement."""
 
 
-def _check(deadline: float | None) -> None:
-    if deadline is not None and time.perf_counter() > deadline:
-        raise _OutOfTime
+class Budget:
+    """The step's deterministic work bound (PlaceParams.max_work), with the wall clock only as a backstop.
+    `spend` raises _OutOfWork once either has run out, and keeps raising; `fired` says which."""
+
+    def __init__(self, units: float, backstop_s: float):
+        self.units = float(units)
+        self.backstop_s = float(backstop_s)
+        self.used = 0.0
+        self.started = time.perf_counter()
+        self.fired: str | None = None
+
+    def spend(self, n: float = 0.0) -> None:
+        self.used += float(n)
+        if self.fired is None:
+            if self.used > self.units:
+                self.fired = "work"
+            elif time.perf_counter() - self.started > self.backstop_s:
+                self.fired = "wall-clock backstop"
+        if self.fired is not None:
+            raise _OutOfWork(self.fired)
+
+    def out(self) -> bool:
+        try:
+            self.spend(0.0)
+        except _OutOfWork:
+            return True
+        return False
+
+
+def _spend(budget: Budget | None, n: float = 0.0) -> None:
+    if budget is not None:
+        budget.spend(n)
 
 
 def _voxel_keys(X: np.ndarray, size: float, origin: np.ndarray, clip: bool = False) -> np.ndarray:
@@ -349,6 +410,8 @@ class Room:
     free_size: float            # free_voxel_m in room units
     units_per_m: float
     frames: int
+    keys: int = 0
+    truncated: bool = False
 
     def in_free_space(self, X: np.ndarray) -> np.ndarray:
         """Whether each point lies in a voxel the room's frames looked through more often than they saw."""
@@ -360,9 +423,10 @@ class Room:
 
 
 def build_room(frames: list[Frame], depth_of: Callable[[str], np.ndarray | None], cam: Pinhole,
-               units_per_m: float, params: PlaceParams, deadline: float | None = None) -> Room | None:
+               units_per_m: float, params: PlaceParams, budget: Budget | None = None) -> Room | None:
     """The room's surface voxels and its observed free space (from at most max_room_frames frames, evenly
-    spread), or None with no usable frame."""
+    spread, and at most max_room_keys voxel keys: later frames past it are left out, `truncated`), or None
+    with no usable frame. Every frame and the consolidation spend from `budget`."""
     if not frames:
         return None
     frames = [frames[i] for i in _spread(len(frames), params.max_room_frames)]
@@ -380,8 +444,13 @@ def build_room(frames: list[Frame], depth_of: Callable[[str], np.ndarray | None]
         raise ValueError("the room's reach does not fit the voxel key")
     keys, means, ckeys, cmeans, skeys, fkeys = [], [], [], [], [], []
     used = 0
+    n_keys = 0
+    truncated = False
     for f in frames:
-        _check(deadline)
+        _spend(budget)
+        if n_keys > params.max_room_keys:
+            truncated = True
+            break
         D = depth_of(f.kid)
         if D is None:
             continue
@@ -400,6 +469,8 @@ def build_room(frames: list[Frame], depth_of: Callable[[str], np.ndarray | None]
             ks.append(k)
             ms.append(m / np.bincount(inv, minlength=len(k))[:, None])
         skeys.append(np.unique(_voxel_keys(X, fsize, origin)))
+        n_keys += len(keys[-1]) + len(ckeys[-1]) + len(skeys[-1])
+        _spend(budget, len(X))
         # Free space: from the camera to depth / through_ratio along the sparser rays.
         fd = sampled_depth(D, frows, fcols, params).ravel()
         fok = np.isfinite(fd)
@@ -411,8 +482,11 @@ def build_room(frames: list[Frame], depth_of: Callable[[str], np.ndarray | None]
             P = f.c + (dirs[:, None, :] * steps[None, :, None])[sd]
             P = P[np.all(np.abs(P - mid) < reach, axis=1)]
             fkeys.append(np.unique(_voxel_keys(P, fsize, origin)))
+            n_keys += len(fkeys[-1])
+            _spend(budget, len(P))
     if not used:
         return None
+    _spend(budget, 4 * n_keys)                 # the consolidation: sorting and counting every key
     # Visibility vote at the free grid: per voxel, how many frames put a surface in it and how many looked
     # through it. A surface the room's frames looked through more often than they saw it is a transient (a
     # door that was shut for a while, a person) or a depth hallucination: not a room surface for these tests.
@@ -434,7 +508,8 @@ def build_room(frames: list[Frame], depth_of: Callable[[str], np.ndarray | None]
         return pts[s_at(fk) >= f_at(fk)]
 
     return Room(points=surface(keys, means), coarse=surface(ckeys, cmeans), free_keys=np.sort(free),
-                origin=origin, free_size=fsize, units_per_m=units_per_m, frames=used)
+                origin=origin, free_size=fsize, units_per_m=units_per_m, frames=used, keys=n_keys,
+                truncated=truncated)
 
 
 # ---------------------------------------------------------------------------
@@ -484,8 +559,10 @@ class Scorer:
     95th-percentile depth (plus `reach`) are dropped (they can only make a cell SHORT)."""
 
     def __init__(self, piece: Piece, room: Room, points: np.ndarray, t_ref: np.ndarray, reach: float,
-                 stride: int, params: PlaceParams, max_frames: int | None = None, prune: bool = True):
+                 stride: int, params: PlaceParams, max_frames: int | None = None, prune: bool = True,
+                 budget: Budget | None = None):
         cam = piece.cam
+        self.budget = budget
         self.cam, self.params, self.stride, self.room = cam, params, stride, room
         self.t_ref = np.asarray(t_ref, np.float64)
         keep = _spread(len(piece.frames), max_frames)
@@ -522,12 +599,14 @@ class Scorer:
         self.n_frames = len(frames)
         self.lo = math.log(params.through_ratio)
         self.zmin = params.depth_min_m * room.units_per_m
+        _spend(budget, len(frames) * len(points) + len(self.W0))
 
     def counts(self, t: np.ndarray, slack: float = 0.0) -> dict:
         """{agree, through, short, hit, free, valid} sample counts at translation `t`, and `closeness`: the
         agreeing samples each weighted 1 - |log(d/z)| / band (1 on the surface, 0 at the band's edge).
         `slack` (room units) widens every band by slack / z (a coarse search pass)."""
         out = {"agree": 0, "through": 0, "short": 0, "hit": 0, "free": 0, "closeness": 0.0, "valid": self.n_valid}
+        _spend(self.budget, self.n_valid + len(self.Y0))
         if not self.n_valid:
             return out
         d_t = np.asarray(t, np.float64) - self.t_ref
@@ -572,14 +651,13 @@ def _score(c: dict, params: PlaceParams) -> float:
 
 
 def _grid_search(scorer: Scorer, centre: np.ndarray, half: int, step_units: float, params: PlaceParams,
-                 landscape: list | None = None, deadline: float | None = None) -> tuple[np.ndarray, float, int]:
+                 landscape: list | None = None) -> tuple[np.ndarray, float, int]:
     offs = np.arange(-half, half + 1) * step_units
     slack = step_units * math.sqrt(3.0) / 2.0
     best_t, best_s, n = np.asarray(centre, np.float64), -math.inf, 0
     for dx in offs:
         for dy in offs:
             for dz in offs:
-                _check(deadline)
                 t = centre + np.array([dx, dy, dz])
                 s = _score(scorer.counts(t, slack), params)
                 n += 1
@@ -629,28 +707,43 @@ _NEIGHBOURS = [(a, b, c) for a in (-1, 0, 1) for b in (-1, 0, 1) for c in (-1, 0
 
 
 def basins(offs: np.ndarray, step_units: float, scores: list[float]) -> list[int]:
-    """The lattice points that are local maxima of `scores` over their lattice neighbours (up to 26): at
-    least every neighbour and above one of them (a flat stretch is no basin)."""
+    """One lattice point for every local maximum of `scores` over its lattice neighbours (up to 26): a
+    point at least as high as every neighbour; a connected stretch of such points at one height (a plateau)
+    is one maximum, given by its first point."""
     key = {tuple(int(x) for x in np.rint(o / step_units)): i for i, o in enumerate(offs)}
-    out = []
+    cand = {}
     for k, i in key.items():
-        s = scores[i]
-        if s == -math.inf:
+        sc = scores[i]
+        if sc == -math.inf:
             continue
-        ns = [scores[j] for d in _NEIGHBOURS
-              if (j := key.get((k[0] + d[0], k[1] + d[1], k[2] + d[2]))) is not None]
-        if all(s >= x for x in ns) and any(s > x for x in ns):
-            out.append(i)
+        if all(sc >= scores[j] for d in _NEIGHBOURS
+               if (j := key.get((k[0] + d[0], k[1] + d[1], k[2] + d[2]))) is not None):
+            cand[k] = i
+    out, seen = [], set()
+    for k, i in sorted(cand.items(), key=lambda kv: kv[1]):
+        if k in seen:
+            continue
+        out.append(i)
+        stack = [k]
+        seen.add(k)
+        while stack:
+            q = stack.pop()
+            for d in _NEIGHBOURS:
+                r = (q[0] + d[0], q[1] + d[1], q[2] + d[2])
+                if r in cand and r not in seen and scores[cand[r]] == scores[i]:
+                    seen.add(r)
+                    stack.append(r)
     return out
 
 
 def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, params: PlaceParams,
-           deadline: float | None = None) -> tuple:
-    """(best translation, the fine scorer around it, evaluations, uniqueness, typical, basins).
+           budget: Budget | None = None) -> tuple:
+    """(best translation, the fine scorer around it, evaluations, uniqueness, typical, basins, refined) --
+    `refined` every refined basin as (translation, its fine scorer, its fine score).
 
     Every point of the coarse lattice covering the ball of `radius_units` about `centre` (the region the walk
-    allows) is scored optimistically (`_optimistic`) on coarse voxels, cells and frames. Every BASIN of that
-    landscape (`basins`) above its median is refined on the fine evidence -- a fine scorer around it, each
+    allows) is scored optimistically (`_optimistic`) on coarse voxels, cells and frames. EVERY local maximum
+    of that landscape (`basins`), however low, is refined on the fine evidence -- a fine scorer around it, each
     finer step in turn (+-2 steps for the first, +-1 after), each pass's bands widened by its own lattice's
     reach -- and scored there without widening. The winner is the best refined basin. UNIQUENESS =
     (winner - best rival) / (winner - typical), all on the fine evidence: the rival the best refined basin
@@ -663,26 +756,18 @@ def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, pa
     step = params.coarse_step_m * upm
     offs = region_lattice(radius_units, step)
     coarse = Scorer(piece, room, room.coarse, centre, radius_units + 2 * step, params.coarse_stride_px, params,
-                    max_frames=params.coarse_frames)
+                    max_frames=params.coarse_frames, budget=budget)
     slack = step * math.sqrt(3.0) / 2.0
-    land = []
-    for o in offs:
-        _check(deadline)
-        land.append(_optimistic(coarse.counts(centre + o, slack), params))
+    land = [_optimistic(coarse.counts(centre + o, slack), params) for o in offs]
     evals = len(land)
-    finite = [sc for sc in land if sc > -math.inf]
-    middle = float(np.median(finite)) if finite else -math.inf
-    found = sorted((i for i in basins(offs, step, land) if land[i] > middle), key=lambda i: -land[i])
-    if not found and finite:
-        found = [int(np.argmax(land))]            # a landscape with no basin above its median: its best point
+    found = sorted(basins(offs, step, land), key=lambda i: -land[i])
     if len(found) > params.max_basins:
-        return None, None, evals, None, None, len(found)
+        return None, None, evals, None, None, len(found), []
     wide = Scorer(piece, room, room.points, centre, radius_units + 2 * step, params.fine_stride_px, params,
-                  max_frames=params.fine_frames)
+                  max_frames=params.fine_frames, budget=budget)
     pick = _spread(len(offs), params.typical_points)
     fine_typ = []
     for i in pick:
-        _check(deadline)
         sc = _score(wide.counts(centre + offs[i]), params)
         if sc > -math.inf:
             fine_typ.append(sc)
@@ -694,22 +779,22 @@ def search(piece: Piece, room: Room, centre: np.ndarray, radius_units: float, pa
     for i in found:
         t = centre + offs[i]
         fine = Scorer(piece, room, room.points, t, (extent + params.profile_m * math.sqrt(3) + 0.2) * upm,
-                      params.fine_stride_px, params, max_frames=params.fine_frames)
+                      params.fine_stride_px, params, max_frames=params.fine_frames, budget=budget)
         for half, step_m in zip(halves, params.fine_steps_m):
-            t, _s, k = _grid_search(fine, t, half, step_m * upm, params, deadline=deadline)
+            t, _s, k = _grid_search(fine, t, half, step_m * upm, params)
             evals += k
         refined.append((t, fine, _score(fine.counts(t), params)))
         evals += 1
     if not refined:
         return centre, Scorer(piece, room, room.points, centre, 0.05 * upm, params.fine_stride_px, params,
-                              max_frames=params.fine_frames), evals, None, typical_fine, 0
+                              max_frames=params.fine_frames, budget=budget), evals, None, typical_fine, 0, []
     t, fine, s_win = max(refined, key=lambda r: r[2])
     far = (params.profile_m + params.coarse_step_m) * upm
     rival = max((sc for tt, _f, sc in refined if np.linalg.norm(tt - t) > far), default=-math.inf)
     span = s_win - typical_fine
     unique = (None if not (math.isfinite(s_win) and span > 0) else
               (1.0 if rival == -math.inf else (s_win - max(rival, typical_fine)) / span))
-    return t, fine, evals, unique, typical_fine, len(found)
+    return t, fine, evals, unique, typical_fine, len(found), refined
 
 
 def profile(scorer: Scorer, t: np.ndarray, units_per_m: float, params: PlaceParams, typical: float) -> dict:
@@ -784,25 +869,43 @@ def piece_points(piece: Piece, params: PlaceParams, t: np.ndarray, stride: int
     return np.concatenate(P), np.concatenate(fi)
 
 
-def rigidity(piece: Piece, params: PlaceParams, units_per_m: float) -> dict:
+def rigidity(piece: Piece, params: PlaceParams, units_per_m: float, budget: Budget | None = None,
+             member: list | None = None) -> dict:
     """The piece's own frames against each other at their scaled poses (no translation involved): of the
-    comparisons that are not occlusions, the share where one frame sees through another frame's surface."""
+    comparisons that are not occlusions, the share where one frame sees through another frame's surface.
+    With `member` (per frame, the group member it belongs to), only frames of DIFFERENT members are compared,
+    and `members` gives each member's share of samples compared at all ("overlap") and its own counts."""
     P, fi = piece_points(piece, params, np.zeros(3), params.piece_stride_px)
     rows, cols, maps = piece.sampled(params.room_stride_px, params)
     Rs = np.stack([f.R for f in piece.frames])
     Cs = piece.centres
     agree = through = 0
+    per: dict = {}
+    idx = np.arange(len(piece.frames))
     for k in range(len(piece.frames)):
-        others = np.flatnonzero(np.arange(len(piece.frames)) != k)
+        others = np.flatnonzero(idx != k) if member is None else np.flatnonzero(
+            np.asarray([m != member[k] for m in member]))
         sel = fi == k
+        if member is not None:
+            d = per.setdefault(member[k], {"points": 0, "compared": 0, "agree": 0, "through": 0})
+            d["points"] += int(sel.sum())
         if not len(others) or not sel.any():
             continue
+        _spend(budget, int(sel.sum()) * len(others))
         thr, agr = seen_through(P[sel], Rs[others], Cs[others], maps[others], rows, cols, piece.cam, params,
                                 params.depth_min_m * units_per_m)
         agree += int(agr.sum())
         through += int(thr.sum())
+        if member is not None:
+            d["compared"] += int(((thr + agr) > 0).sum())
+            d["agree"] += int(agr.sum())
+            d["through"] += int(thr.sum())
     tot = agree + through
-    return {"agree": agree, "through": through, "through_share": through / tot if tot else None}
+    out = {"agree": agree, "through": through, "through_share": through / tot if tot else None}
+    if member is not None:
+        out["members"] = {m: dict(d, overlap=round(d["compared"] / d["points"], 4) if d["points"] else 0.0)
+                          for m, d in per.items()}
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -810,10 +913,37 @@ def rigidity(piece: Piece, params: PlaceParams, units_per_m: float) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def anchors(piece: Piece, room_frames: list[Frame], params: PlaceParams) -> list[dict]:
+def walk_motion(frames: list[Frame], params: PlaceParams, units_per_m: float) -> Callable[[float], tuple]:
+    """allowance(dt) -> (metres, pairs, source): how far the walk's own certified room cameras moved over a
+    time gap of dt -- the walk_quantile of each camera's distance to the camera nearest in time to t + dt
+    (within walk_gap_tol_s) -- never more than the walking limit (speed_mps x dt + speed_margin_m), which is
+    also what is used with fewer than walk_min_pairs pairs or no quantile."""
+    timed = sorted((f for f in frames if f.t is not None), key=lambda f: f.t)
+    ts = np.asarray([f.t for f in timed], np.float64)
+    cs = np.stack([f.c for f in timed]) if timed else np.zeros((0, 3))
+
+    def allowance(dt: float) -> tuple:
+        walking = params.speed_mps * dt + params.speed_margin_m
+        if params.walk_quantile is None or len(ts) < 2:
+            return walking, 0, "walking-limit"
+        target = ts + dt
+        j = np.clip(np.searchsorted(ts, target), 1, len(ts) - 1)
+        j = np.where(np.abs(ts[j - 1] - target) <= np.abs(ts[j] - target), j - 1, j)
+        ok = (np.abs(ts[j] - target) <= params.walk_gap_tol_s) & (j != np.arange(len(ts)))
+        if int(ok.sum()) < params.walk_min_pairs:
+            return walking, int(ok.sum()), "walking-limit"
+        d = np.linalg.norm(cs[j[ok]] - cs[ok], axis=1) / units_per_m
+        q = float(np.quantile(d, params.walk_quantile))
+        return (min(q, walking), int(ok.sum()), "walk" if q < walking else "walking-limit")
+
+    return allowance
+
+
+def anchors(piece: Piece, room_frames: list[Frame], params: PlaceParams, motion=None) -> list[dict]:
     """The time-adjacent anchor estimates: for the piece's first camera, the latest anchor-eligible room
     camera before it, and for its last, the earliest after it, each within anchor_dt_s. Each gives the
-    translation that puts the piece's camera on the room camera, and the walking allowance in metres."""
+    translation that puts the piece's camera on the room camera, and the allowance in metres: the walk's own
+    motion over that gap (`motion`, `walk_motion`), or the walking limit without one."""
     timed = [f for f in room_frames if f.t is not None]
     out = []
     fr = sorted((f for f in piece.frames if f.t is not None), key=lambda f: f.t)
@@ -828,10 +958,11 @@ def anchors(piece: Piece, room_frames: list[Frame], params: PlaceParams) -> list
             continue
         rc = max(cands, key=lambda f: f.t) if side == "before" else min(cands, key=lambda f: f.t)
         dt = abs(pc.t - rc.t)
+        allow, pairs, source = (motion(dt) if motion is not None
+                                else (params.speed_mps * dt + params.speed_margin_m, 0, "walking-limit"))
         out.append({"side": side, "piece_kid": pc.kid, "room_kid": rc.kid, "dt_s": dt,
-                    "t": rc.c - pc.c / piece.ratio,
-                    "allowance_m": params.speed_mps * dt + params.speed_margin_m,
-                    "piece_centre": pc.c / piece.ratio})
+                    "t": rc.c - pc.c / piece.ratio, "allowance_m": allow, "allowance_pairs": pairs,
+                    "allowance_source": source, "piece_centre": pc.c / piece.ratio})
     return out
 
 
@@ -853,6 +984,8 @@ class Placement:
     t: np.ndarray | None = None
     stats: dict = dataclasses.field(default_factory=dict)
     new_points: np.ndarray | None = None
+    refined: list = dataclasses.field(default_factory=list)     # the search's refined basins (not recorded)
+    typical: float | None = None
 
     def record(self) -> dict:
         out = {"label": self.label, "first_keyframe_id": self.kids[0] if self.kids else None,
@@ -862,13 +995,6 @@ class Placement:
                "translation": None if self.t is None else [float(x) for x in self.t]}
         out.update({k: v for k, v in self.stats.items()})
         return out
-
-
-def _reach_m(radius_m: float, params: PlaceParams) -> float:
-    """How far (metres) the search can put a placement from its region's centre: the region, the coarse
-    lattice's reach past it, and the fine passes' drift."""
-    drift = sum(h * st for h, st in zip(_fine_halves(params), params.fine_steps_m)) * math.sqrt(3)
-    return radius_m + params.coarse_step_m * math.sqrt(3) / 2 + drift
 
 
 def regions(piece: Piece, ci_log: tuple | None, anc: list[dict], params: PlaceParams, upm: float) -> dict | None:
@@ -887,12 +1013,12 @@ def regions(piece: Piece, ci_log: tuple | None, anc: list[dict], params: PlacePa
 
 
 def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dict], region: dict,
-            params: PlaceParams, radius_m: float | None = None, deadline: float | None = None) -> Placement:
+            params: PlaceParams, radius_m: float | None = None, budget: Budget | None = None) -> Placement:
     """Everything the certification reads, for a piece or a control, searched over `region`'s ball (radius
     `radius_m`, default its bound): rigidity, the search, the full counts at the placement (every measured
     frame, unpruned), the profile, uniqueness, the new geometry and every anchor's check. Refuses only what
     cannot be measured (too few frames, a region past the lattice cap, basins past max_basins, no overlap).
-    Raises _OutOfTime past `deadline`."""
+    Raises _OutOfWork when `budget` runs out."""
     upm = room.units_per_m
     pl = Placement(label=label, kids=[f.kid for f in piece.frames], ratio=piece.ratio, ci=ci)
     st = pl.stats
@@ -909,9 +1035,11 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
     if lattice > params.max_region_evaluations:
         pl.refused.append(REFUSE_REGION)
         return pl
-    _check(deadline)
-    st["rigidity"] = rigidity(piece, params, upm)
-    t, fine, evals, unique, typical, nb = search(piece, room, centre, radius_m * upm, params, deadline=deadline)
+    _spend(budget)
+    st["rigidity"] = rigidity(piece, params, upm, budget)
+    t, fine, evals, unique, typical, nb, refined = search(piece, room, centre, radius_m * upm, params,
+                                                          budget=budget)
+    pl.refined, pl.typical = refined, typical
     st["basins"] = nb
     st["evaluations"] = evals
     if t is None:
@@ -921,7 +1049,8 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
     pl.t = t
     st["uniqueness"] = None if unique is None else round(unique, 4)
     st["shift_from_anchor_m"] = float(np.linalg.norm(t - centre) / upm)
-    full = Scorer(piece, room, room.points, t, 0.05 * upm, params.fine_stride_px, params, prune=False)
+    full = Scorer(piece, room, room.points, t, 0.05 * upm, params.fine_stride_px, params, prune=False,
+                  budget=budget)
     c = full.counts(t)
     st.update({k: c[k] for k in ("agree", "through", "short", "hit", "free", "valid")})
     st["hit_share"] = c["hit"] / c["valid"] if c["valid"] else None
@@ -947,16 +1076,17 @@ def measure(label: str, piece: Piece, ci: list | None, room: Room, anc: list[dic
         pl.new_points = np.zeros((0, 3))
     st["new_points"] = int(len(pl.new_points))
     # R6's evidence: every anchor's room camera within its bound of the placed piece camera. An anchor is
-    # INDEPENDENT evidence only when it is not the region's centre AND its check could have failed: its bound
-    # is below the largest miss the search's reach allows from its own estimate.
-    reach = _reach_m(radius_m, params)
+    # INDEPENDENT evidence only when it is not the region's centre AND its check could have failed INSIDE the
+    # region the search ranks: some lattice points of the region lie outside its bound (the share is kept).
+    pts = centre + region_lattice(radius_m * upm, params.coarse_step_m * upm)
     checks = []
     for a in anc:
         miss = float(np.linalg.norm(t - a["t"]) / upm)
-        worst = float(np.linalg.norm(centre - a["t"]) / upm) + reach
-        independent = a is not region and a["bound_m"] < worst
+        outside = float(np.mean(np.linalg.norm(pts - a["t"], axis=1) / upm > a["bound_m"])) if len(pts) else 0.0
+        independent = a is not region and outside > 0.0
         checks.append({"side": a["side"], "dt_s": round(a["dt_s"], 3), "miss_m": round(miss, 3),
-                       "bound_m": round(a["bound_m"], 3), "worst_m": round(worst, 3), "centre": a is region,
+                       "bound_m": round(a["bound_m"], 3), "outside_share": round(outside, 3),
+                       "centre": a is region, "member": a.get("member"),
                        "independent": bool(independent), "ok": bool(miss <= a["bound_m"])})
     st["anchor_check"] = checks
     st["seconds"] = round(time.perf_counter() - t0, 3)
@@ -967,11 +1097,16 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
     """What the room's own controls show, under a prior matched to the piece's. A control is GOOD when the
     search put it back within max_control_miss_m of its own pose and the placement is pinned and unique
     (R5). The envelope is the good controls' least agreement, most seeing-through, most free space and least
-    rigidity. `usable` needs every one of control_segments controls measured, at least min_good_controls
-    (and half) of them good, a rigidity bound, and NO misplaced control (farther than max_control_miss_m)
-    that passes R3-R5: the depth tests alone must refuse every stretch of the room's own frames the search
-    would put in the wrong place (R6 is not credited: a piece can be corroborated by another piece, which no
-    control can be tested on)."""
+    rigidity. `usable` needs:
+      * every one of control_segments controls measured, at least min_good_controls (and half) of them good;
+      * at least min_outer_good good among the controls started in the OUTER half of the region (a piece's
+        own starting error may be anywhere up to the radius);
+      * a rigidity bound;
+      * the false-accept test passed and exercised: every WRONG placement -- a control's winner farther than
+        max_control_miss_m from its truth, and each control's best refined basin that far from its truth,
+        judged as if the truth were withheld (`withheld_probe`) -- is refused by R3-R5 (R6 is not credited:
+        a piece can be corroborated by another piece, which no control can be tested on), with wrong
+        placements from at least min_safety_controls different controls (safety must not rest on one)."""
     for c in controls:
         if c.t is not None:
             truth = np.asarray(c.stats.get("true_translation") or np.zeros(3), np.float64)
@@ -983,12 +1118,19 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
 
     good = [c for c in controls if c.t is not None and c.stats.get("agree_share") is not None
             and not c.refused and c.stats["miss_m"] <= params.max_control_miss_m and pinned(c)]
-    out = {"controls": len(controls), "good": len(good), "usable": False}
+    outer = [c for c in controls if (c.stats.get("start_error_m") or 0.0)
+             >= 0.5 * ((c.stats.get("region") or {}).get("radius_m") or 0.0) - 1e-6]
+    good_outer = [c for c in good if c in outer]
+    out = {"controls": len(controls), "good": len(good), "outer": len(outer), "good_outer": len(good_outer),
+           "usable": False}
     if len(controls) < params.control_segments:
         out["why"] = f"{len(controls)} of the {params.control_segments} controls could be formed"
         return out
     if len(good) < max(params.min_good_controls, (len(controls) + 1) // 2):
         out["why"] = "too few of the room's own stretches are placed back where they are"
+        return out
+    if len(good_outer) < params.min_outer_good:
+        out["why"] = "too few of the stretches started in the outer half of the region are placed back"
         return out
     rig = [c.stats["rigidity"]["through_share"] for c in good if c.stats["rigidity"]["through_share"] is not None]
     if not rig:
@@ -998,18 +1140,28 @@ def envelope(controls: list[Placement], units_per_m: float, params: PlaceParams)
                max_through_share=max(c.stats["through_share"] for c in good),
                max_free_share=max(c.stats["free_share"] for c in good),
                max_rigidity_through=max(rig))
-    bad = [c for c in controls if c.t is not None and c.stats.get("miss_m", 0.0) > params.max_control_miss_m]
+    probes = []
+    for c in controls:
+        if c.t is not None and c.stats.get("miss_m", 0.0) > params.max_control_miss_m:
+            probes.append((c.label, c.label, dict(c.stats), list(c.refused)))
+        if c.stats.get("withheld_probe"):
+            probes.append((c.label + "/withheld", c.label, dict(c.stats["withheld_probe"]), []))
     accepted = []
-    for c in bad:
-        probe = Placement(label=c.label, kids=c.kids, ratio=1.0, ci=None, t=c.t, stats=c.stats,
-                          refused=list(c.refused))
+    for label, _src, st, refused in probes:
+        probe = Placement(label=label, kids=[], ratio=1.0, ci=None, t=np.zeros(3), stats=st, refused=refused)
         certify(probe, dict(out, usable=True), params, r6=False)
         if not probe.refused:
-            accepted.append(c.label)
+            accepted.append(label)
     out["misplaced_accepted"] = accepted
-    out["usable"] = not accepted
+    out["safety_probes"] = len(probes)
+    out["safety_controls"] = len({src for _l, src, _st, _r in probes})
     if accepted:
         out["why"] = "the rule would accept a stretch of the room's own frames in the wrong place"
+    elif out["safety_controls"] < params.min_safety_controls:
+        out["why"] = (f"the false-accept test was exercised by {out['safety_controls']} control(s); "
+                      f"{params.min_safety_controls} are needed")
+    else:
+        out["usable"] = True
     return out
 
 
@@ -1040,6 +1192,17 @@ def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> N
     rig = st["rigidity"]["through_share"]
     if rig is None or rig > env["max_rigidity_through"]:
         pl.refused.append(REFUSE_RIGID)
+    st["r3_decided"] = True
+    # A group: every member on its own at the group's placement, and its views against the other members'.
+    for ms in (st.get("member_checks") or {}).values():
+        ct = ms.get("cross_through_share")
+        if (ms.get("hit_share") is None or ms["hit_share"] < params.min_hit_share
+                or ms.get("agree_share") is None or ms["agree_share"] < env["min_agree_share"]
+                or ms["through_share"] > env["max_through_share"] or ms["free_share"] > env["max_free_share"]
+                or ms.get("overlap", 0.0) < params.min_hit_share
+                or ct is None or ct > env["max_rigidity_through"]):
+            pl.refused.append(REFUSE_MEMBER)
+            break
     if st["agree_share"] < env["min_agree_share"]:
         pl.refused.append(REFUSE_AGREE)
     if st["through_share"] > env["max_through_share"]:
@@ -1055,7 +1218,8 @@ def certify(pl: Placement, env: dict, params: PlaceParams, r6: bool = True) -> N
     pl.refused = list(dict.fromkeys(pl.refused))
 
 
-def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: float) -> None:
+def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: float,
+                budget: Budget | None = None) -> None:
     """R6, corroboration: a piece that passed R0-R5 is placed when an INDEPENDENT anchor (not its region's
     centre, a check that could have failed) agrees with it, or -- chaining only from such a piece -- when its
     new geometry coincides with an already corroborated piece's (median nearest neighbour <= cross_median_m
@@ -1063,8 +1227,10 @@ def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: f
     from scipy.spatial import cKDTree  # noqa: PLC0415
 
     ok = [p for p in placements if not p.refused]
-    done = []
+    done = [p for p in ok if str(p.stats.get("corroborated_by") or "").startswith("group:")]
     for p in ok:
+        if p in done:
+            continue
         if any(a["ok"] and a.get("independent") for a in p.stats.get("anchor_check") or []):
             p.stats["corroborated_by"] = "independent-anchor"
             done.append(p)
@@ -1072,6 +1238,7 @@ def corroborate(placements: list[Placement], params: PlaceParams, units_per_m: f
     def coincides(p, q) -> dict:
         if p.new_points is None or q.new_points is None or not len(p.new_points) or not len(q.new_points):
             return {"with": q.label, "overlap_points": 0, "median_m": None, "ok": False}
+        _spend(budget, len(p.new_points) + len(q.new_points))
         d = cKDTree(q.new_points).query(p.new_points, k=1)[0] / units_per_m
         near = d[d <= params.cross_overlap_m]
         return {"with": q.label, "overlap_points": int(len(near)),
@@ -1114,27 +1281,18 @@ def _frame_scale(v: float | None, level: float, band: tuple[float, float]) -> fl
     return math.exp(min(max(v, level + band[0]), level + band[1]))
 
 
-def solve_components(solution, room_kids: set) -> np.ndarray:
-    """Per keyframe index, the id of its connected set in the solve's tracks with every room keyframe left
-    out (keyframe -- point -- keyframe), or -1 for a room keyframe: two pieces in one set are joined by
-    shared 3-D points through keyframes that are not the room's."""
-    from scipy.sparse import coo_matrix  # noqa: PLC0415
-    from scipy.sparse.csgraph import connected_components  # noqa: PLC0415
-
-    kids = list(solution.keyframe_ids)
-    nk = len(kids)
+def own_points(solution, kids: list, room_kids: set, index: dict) -> np.ndarray:
+    """The 3-D points `kids` observe that no room keyframe observes (sorted unique indices): what the piece
+    triangulates without the room."""
     obs = np.asarray(solution.observations, np.int64).reshape(-1, 3)
-    room = np.array([k in room_kids for k in kids], bool)
-    keep = (obs[:, 0] >= 0) & (obs[:, 0] < nk)
-    keep[keep] &= ~room[obs[keep, 0]]
-    rows, pts = obs[keep, 0], obs[keep, 2]
-    npts = int(np.asarray(solution.xyz).shape[0])
-    n = nk + npts
-    g = coo_matrix((np.ones(len(rows)), (rows, nk + pts)), shape=(n, n))
-    _ncomp, lab = connected_components(g, directed=False)
-    out = lab[:nk].astype(np.int64)
-    out[room] = -1
-    return out
+    nk = len(solution.keyframe_ids)
+    obs = obs[(obs[:, 0] >= 0) & (obs[:, 0] < nk)]
+    room = np.zeros(nk, bool)
+    room[[index[k] for k in room_kids if k in index]] = True
+    mine = np.zeros(nk, bool)
+    mine[[index[k] for k in kids if k in index]] = True
+    seen_by_room = np.unique(obs[room[obs[:, 0]], 2])
+    return np.setdiff1d(np.unique(obs[mine[obs[:, 0]], 2]), seen_by_room, assume_unique=True)
 
 
 def control_kids(room_frames: list[Frame], has_depth: Callable[[str], bool], params: PlaceParams
@@ -1159,8 +1317,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     bound, R2 and anchors; the measurable pieces searched over their regions and tested on R5 and R6's
     contradictions; the groups, measured the same way; only then, for the pieces and groups still standing,
     the room's controls under each one's prior error (its region's radius, starts spanning it) and R0, R3,
-    R4; last, R6's corroboration and the groups' decisions. Past max_seconds -- checked inside every
-    search, the room's evidence and before each certification -- the pieces not yet decided stay cut."""
+    R4; then the groups' decisions; last, R6's corroboration of the single pieces. Every measurement spends
+    from one deterministic work budget (max_work; the wall clock only as a backstop): past it the pieces
+    not yet decided stay cut, and when it has run out by the end nothing is placed."""
     from tower.world_builder.final_scale_guard import GuardParams  # noqa: PLC0415
 
     params = params or PlaceParams()
@@ -1181,10 +1340,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     poses = solution.poses or {}
     index = {k: i for i, k in enumerate(solution.keyframe_ids)}
 
-    deadline = started + params.max_seconds
-
-    def over_time() -> bool:
-        return time.perf_counter() > deadline
+    budget = Budget(params.max_work, params.max_seconds)
 
     def frame(kid: str, level: float) -> Frame | None:
         p = poses.get(kid)
@@ -1196,9 +1352,9 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         return Frame(kid=kid, R=R, c=c, s=_frame_scale(metric_log.get(name_of.get(kid, kid)), level, band),
                      t=times.get(kid), index=index.get(kid, -1))
 
-    def piece_of(kids, level, ratio) -> Piece:
+    def piece_of(kids, level, ratio, cap=None) -> Piece:
         frames, depths, scales = [], [], []
-        for k in [kids[i] for i in _spread(len(kids), params.max_measure_frames)]:
+        for k in [kids[i] for i in _spread(len(kids), params.max_measure_frames if cap is None else cap)]:
             f = frame(k, level)
             D = depth_of(k) if f is not None else None
             if f is None or D is None:
@@ -1231,12 +1387,14 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     room_late = False
     try:
         room = build_room([f for f in room_frames if f.kid not in left_out], depth_of, cam, upm, params,
-                          deadline=deadline)
-    except _OutOfTime:
+                          budget=budget)
+    except _OutOfWork:
         room, room_late = None, True
+    motion = walk_motion(anchor_pool, params, upm)
     rec["room"] = {"seconds": round(time.perf_counter() - t_room, 3), "frames": 0 if room is None else room.frames,
                    "voxels": 0 if room is None else len(room.points),
                    "free_voxels": 0 if room is None else len(room.free_keys),
+                   "keys": 0 if room is None else room.keys, "truncated": bool(room is not None and room.truncated),
                    "anchor_cameras": len(anchor_pool), "metres_per_unit": mpu, "control_segments": len(ctrl)}
 
     # 1. Every piece: R1 on the unrounded interval, the size bound, R2, anchors; then the search and R5/R6.
@@ -1249,7 +1407,7 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         label = f"piece-{n}"
         if not len(vals) or not len(core) or room is None:
             pl = Placement(label=label, kids=kids, ratio=float("nan"), ci=p.get("ci"))
-            pl.refused.append(REFUSE_FRAMES if not len(vals) else (REFUSE_TIME if room_late else REFUSE_ROOM))
+            pl.refused.append(REFUSE_FRAMES if not len(vals) else (REFUSE_WORK if room_late else REFUSE_ROOM))
             placements.append(pl)
             continue
         level = float(np.median(vals))
@@ -1281,20 +1439,17 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             pl.refused.append(REFUSE_FRAMES)
             pl.stats["frames_with_depth"] = len(piece.frames)
             continue
-        anc = anchors(piece, anchor_pool, params)
+        anc = anchors(piece, anchor_pool, params, motion)
         region = regions(piece, ci_rel, anc, params, upm)
         pl.stats["anchors"] = [{k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in a.items()
                                 if k not in ("piece_centre", "t")} for a in anc]
         if region is None:
             pl.refused.append(REFUSE_NO_ANCHOR)
             continue
-        if over_time():
-            pl.refused.append(REFUSE_TIME)
-            continue
         try:
-            m = measure(label, piece, p.get("ci"), room, anc, region, params, deadline=deadline)
-        except _OutOfTime:
-            pl.refused.append(REFUSE_TIME)
+            m = measure(label, piece, p.get("ci"), room, anc, region, params, budget=budget)
+        except _OutOfWork:
+            pl.refused.append(REFUSE_WORK)
             continue
         m.stats.update(ci_log=pl.stats["ci_log"], anchors=pl.stats["anchors"])
         m.kids = kids
@@ -1302,12 +1457,13 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
         placements[-1] = m
         measured.append((m, region))
 
-    # 1b. Pieces of one blow-up, measured as ONE rigid body (module docstring, GROUPS).
+    # 1b. Pieces of one blow-up, measured as ONE rigid body (module docstring, GROUPS). G1: they triangulate at
+    # least min_shared_points points together that no room camera sees; G2: their intervals overlap.
     groups = []
+    rec["group_links"] = []
     if room is not None and len(info) >= 2:
-        comp = solve_components(solution, set(assessment.get("room_keyframes") or []))
-        sets = {n: {int(comp[index[k]]) for k in d["kids"] if k in index and comp[index[k]] >= 0}
-                for n, d in info.items()}
+        room_kids = set(assessment.get("room_keyframes") or [])
+        own = {n: own_points(solution, d["kids"], room_kids, index) for n, d in info.items()}
         ns = sorted(info)
         parent = {n: n for n in ns}
 
@@ -1321,35 +1477,41 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             for j in ns:
                 if j <= i:
                     continue
-                a, b = info[i]["abs"], info[j]["abs"]
-                if sets[i] & sets[j] and max(a[0], b[0]) <= min(a[1], b[1]):
+                a_, b_ = info[i]["abs"], info[j]["abs"]
+                shared = int(len(np.intersect1d(own[i], own[j], assume_unique=True)))
+                overlap = max(a_[0], b_[0]) <= min(a_[1], b_[1])
+                if shared or overlap:
+                    rec["group_links"].append({"pieces": [f"piece-{i}", f"piece-{j}"], "shared_points": shared,
+                                               "intervals_overlap": bool(overlap)})
+                if shared >= params.min_shared_points and overlap:
                     parent[find(i)] = find(j)
         members: dict = {}
         for n in ns:
             members.setdefault(find(n), []).append(n)
+        has_depth = lambda k: depth_of(k) is not None and frame(k, ref) is not None  # noqa: E731
         for gi, mem in enumerate(m for m in members.values() if len(m) >= 2):
             g = _measure_group(f"group-{gi}", mem, info, params, ref, upm, room, anchor_pool, index, piece_of,
-                               log_values, over_time, deadline)
+                               log_values, has_depth, motion, budget)
             groups.append(g)
             if not g["placement"].refused:
                 measured.append((g["placement"], g["region"]))
 
-    # 2. The room's controls, under each standing piece's matched prior, and R0, R3, R4.
+    # 2. The room's controls, under each standing item's prior error, and R0, R3, R4 -- groups first (a placed
+    # group decides its members), each prior's radius rounded UP to 0.1 m so priors share their controls (a
+    # control then faces a region at least the item's own: never easier).
     cache: dict = {}
     rec["controls"] = {}
-    for m, region in measured:
+    for m, region in sorted(measured, key=lambda mr: not mr[0].stats.get("group")):
         if m.refused:
             continue
-        key = round(m.stats["region"]["radius_m"], 2)
+        key = math.ceil(round(m.stats["region"]["radius_m"] * 10.0, 6)) / 10.0
         if key not in cache:
             controls = []
             for i, seg in enumerate(ctrl):
-                if over_time():
-                    break
                 try:
                     c = _matched_control(f"control-{i}", i, seg, key, room, params, upm, ref, log_values, piece_of,
-                                         frame, deadline)
-                except _OutOfTime:
+                                         frame, budget)
+                except _OutOfWork:
                     break
                 if c is not None:
                     controls.append(c)
@@ -1357,23 +1519,28 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             rec["controls"][f"r{key}"] = {
                 "controls": [_jsonable({k: v for k, v in c.record().items() if k not in ("ci", "placed")})
                              for c in controls], "envelope": cache[key][1]}
-        if over_time():                                # nothing is certified past the bound
-            m.refused.append(REFUSE_TIME)
+        if budget.out():                               # nothing is certified past the bound
+            m.refused.append(REFUSE_WORK)
             continue
         m.stats["envelope"] = f"r{key}"
         certify(m, cache[key][1], params, r6=not m.stats.get("group"))
 
-    # 3. R6's corroboration: pieces (anchors, then chains); groups by an independent member anchor only.
-    if room is not None:
-        corroborate(placements, params, upm)
+    # 3. The groups' decisions (their R6: an independent member anchor), THEN R6's corroboration of the
+    # single pieces -- so a member a group refuses never vouches for another piece.
     for g in groups:
-        gp_ = g["placement"]
-        if not gp_.refused and not gp_.stats.get("anchors_disagree"):
-            if any(a["ok"] and a.get("independent") for a in gp_.stats.get("anchor_check") or []):
-                gp_.stats["corroborated_by"] = "independent-anchor"
-            else:
-                gp_.refused.append(REFUSE_CORROBORATION)
         _group_decision(g, placements, info)
+    if room is not None:
+        try:
+            corroborate(placements, params, upm, budget)
+        except _OutOfWork:
+            for pl in placements:
+                if not pl.refused and not str(pl.stats.get("corroborated_by") or "").startswith("group:"):
+                    pl.refused.append(REFUSE_WORK)
+    # The last check: nothing is placed once the budget (or its backstop) has run out.
+    if budget.out():
+        for pl in placements:
+            if not pl.refused:
+                pl.refused.append(REFUSE_WORK)
     rec["groups"] = [_jsonable(dict(g["record"], members=[f"piece-{n}" for n in g["members"]],
                                     decision=g["decision"], **{k: v for k, v in g["placement"].record().items()
                                                                if k not in ("ci", "placed")}))
@@ -1384,17 +1551,23 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
     rec["placed"] = sum(1 for pl in placements if pl.placed)
     rec["placements"] = placements
     rec["seconds"] = round(time.perf_counter() - started, 3)
+    rec["work"] = {"used": budget.used, "budget": budget.units, "fired": budget.fired}
     return rec
 
 
 def _measure_group(label, mem, info, params, ref, upm, room, anchor_pool, index, piece_of, log_values,
-                   over_time, deadline=None) -> dict:
-    """One group measured exactly as a piece: the pooled scale; as its interval (R1, the lever) the UNION of
-    its members' guard intervals -- never narrower than any member's (pooling them would need each isolation
-    round's core, which the guard's audit does not keep); the group's
-    keyframe cap, frames spread over the union (R2), every member's anchors under the group's similarity
-    (all bounds enforced; the tightest is the search's centre, the rest are checks that can fail), the
-    search, R5 and R6's contradictions on the pooled evidence."""
+                   has_depth, motion=None, budget=None) -> dict:
+    """One group measured as a piece, with every member's own evidence kept:
+      * the pooled scale; as its interval (R1, the lever) the UNION of its members' guard intervals -- never
+        narrower than any member's (pooling them would need each isolation round's core, which the guard's
+        audit does not keep); the keyframe cap on the whole group;
+      * measured frames RESERVED per member: at least min_frames with depth each (and its share of
+        max_measure_frames); a member without them refuses the group (R2);
+      * every member's anchors under the one similarity (all bounds enforced; the tightest is the search's
+        centre, the rest are checks that can fail);
+      * the search, R5 and R6's contradictions on the pooled evidence;
+      * at the group's placement, every MEMBER's counts (R4, hit share) and its views against the other
+        members' (`rigidity(member=...)`: overlap share and through share), judged in `certify`."""
     kids = sorted({k for n in mem for k in info[n]["kids"]}, key=lambda k: index.get(k, 0))
     vals = log_values(kids)
     level = float(np.median(vals))
@@ -1402,92 +1575,141 @@ def _measure_group(label, mem, info, params, ref, upm, room, anchor_pool, index,
     lo = min(info[n]["abs"][0] for n in mem)
     hi = max(info[n]["abs"][1] for n in mem)
     ci_log = (lo - level, hi - level)
-    ci_rel = ci_log
     pl = Placement(label=label, kids=kids, ratio=ratio, ci=None)
     pl.stats["ci_log"] = [round(ci_log[0], 6), round(ci_log[1], 6)]
-    out = {"members": list(mem), "placement": pl, "region": None,
-           "record": {"connected_in_solve": True, "intervals_overlap": True}}
+    out = {"members": list(mem), "placement": pl, "region": None, "record": {}}
     if ci_log[1] - ci_log[0] > math.log(params.max_ci_width):
         pl.refused.append(REFUSE_CI)
         return out
     if len(kids) > params.max_piece_keyframes:
         pl.refused.append(REFUSE_TOO_LARGE)
         return out
-    union = piece_of(kids, level, ratio)
-    if len(union.frames) < params.min_frames:
+    total = sum(len(info[n]["kids"]) for n in mem)
+    chosen = []
+    for n in mem:
+        kd = [k for k in info[n]["kids"] if has_depth(k)]
+        want = min(len(kd), max(params.min_frames,
+                                int(round(params.max_measure_frames * len(info[n]["kids"]) / total))))
+        chosen += [kd[i] for i in _spread(len(kd), want)]
+    chosen = sorted(set(chosen), key=lambda k: index.get(k, 0))
+    union = piece_of(chosen, level, ratio, cap=len(chosen))
+    member_of = {k: n for n in mem for k in info[n]["kids"]}
+    per = {n: sum(1 for f in union.frames if member_of.get(f.kid) == n) for n in mem}
+    out["record"]["measured_frames"] = {f"piece-{n}": per[n] for n in mem}
+    if any(v < params.min_frames for v in per.values()):
         pl.refused.append(REFUSE_FRAMES)
         return out
     anc = []
     for n in mem:
         member = piece_of(info[n]["kids"], level, ratio)
-        for a in anchors(member, anchor_pool, params):
+        for a in anchors(member, anchor_pool, params, motion):
             a["member"] = f"piece-{n}"
             anc.append(a)
-    region = regions(union, ci_rel, anc, params, upm)
+    region = regions(union, ci_log, anc, params, upm)
     pl.stats["anchors"] = [{k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in a.items()
                             if k not in ("piece_centre", "t")} for a in anc]
     if region is None:
         pl.refused.append(REFUSE_NO_ANCHOR)
         return out
-    if over_time():
-        pl.refused.append(REFUSE_TIME)
-        return out
     try:
-        m = measure(label, union, None, room, anc, region, params, deadline=deadline)
-    except _OutOfTime:
-        pl.refused.append(REFUSE_TIME)
+        m = measure(label, union, None, room, anc, region, params, budget=budget)
+        m.stats.update(ci_log=pl.stats["ci_log"], anchors=pl.stats["anchors"], group=True)
+        m.kids = kids
+        piece_tests(m, params)
+        if REFUSE_CORROBORATION in m.refused:
+            # A member anchor contradicts the one similarity. Whether that refuses the members depends on R3
+            # and R5, which need the controls: kept aside, and decided in _group_decision.
+            m.refused.remove(REFUSE_CORROBORATION)
+            m.stats["anchors_disagree"] = True
+        if m.t is not None and REFUSE_OVERLAP not in m.refused:
+            flist = [member_of[f.kid] for f in union.frames]
+            cross = rigidity(union, params, upm, budget, member=flist)
+            m.stats["cross_rigidity"] = {k: cross[k] for k in ("agree", "through", "through_share")}
+            mstats = {}
+            for n in mem:
+                sel = [i for i, x in enumerate(flist) if x == n]
+                sub = Piece(frames=[union.frames[i] for i in sel], depths=[union.depths[i] for i in sel],
+                            scales=[union.scales[i] for i in sel], ratio=union.ratio, cam=union.cam)
+                c = Scorer(sub, room, room.points, m.t, 0.05 * upm, params.fine_stride_px, params, prune=False,
+                           budget=budget).counts(m.t)
+                cm = (cross.get("members") or {}).get(n) or {}
+                ct = cm.get("agree", 0) + cm.get("through", 0)
+                mstats[f"piece-{n}"] = {
+                    "frames": len(sel), "hit_share": c["hit"] / c["valid"] if c["valid"] else None,
+                    "agree_share": c["agree"] / c["hit"] if c["hit"] else None,
+                    "through_share": c["through"] / c["hit"] if c["hit"] else None,
+                    "free_share": c["free"] / c["valid"] if c["valid"] else None,
+                    "overlap": cm.get("overlap", 0.0),
+                    "cross_through_share": cm.get("through", 0) / ct if ct else None}
+            m.stats["member_checks"] = mstats
+    except _OutOfWork:
+        pl.refused.append(REFUSE_WORK)
         return out
-    m.stats.update(ci_log=pl.stats["ci_log"], anchors=pl.stats["anchors"], group=True)
-    m.kids = kids
-    piece_tests(m, params)
-    if REFUSE_CORROBORATION in m.refused:
-        # A member anchor contradicts the one similarity. Whether that refuses the members depends on R3,
-        # which needs the controls: kept aside, and decided in _group_decision.
-        m.refused.remove(REFUSE_CORROBORATION)
-        m.stats["anchors_disagree"] = True
     out.update(placement=m, region=region)
     return out
 
 
+_R5 = (REFUSE_PEAK, REFUSE_AMBIGUOUS)
+
+
 def _group_decision(g: dict, placements: list[Placement], info: dict) -> None:
-    """Not one rigid body (R3 failed): the members' own decisions stand. Else an anchor of any member disagreeing
-    with the group's placement: the group AND every member refused (the cluster's placement evidence
-    contradicts itself). Else placed: every member takes the group's similarity. Any other refusal: the
-    members' own decisions stand."""
+    """In the order declared (LANE-B2 sections 12.1 and 13):
+      1. not one rigid body -- R3 on the union, or a member failing on its own at the group's placement or
+         unseen by the other members (`member-not-one-body`): the members' own decisions stand;
+      2. R3 never decided (the group stopped before its controls: R5, overlap, R0, work): the members' own
+         decisions stand -- an anchor disagreeing with an undecided or ambiguous winner says nothing;
+      3. R5 failed: the members' own decisions stand;
+      4. an anchor of any member disagreeing with the group's placement: the group AND every member refused;
+      5. any other refusal: the members' own decisions stand;
+      6. R6: an independent member anchor (it could have failed inside the region) agrees -- else the
+         members' own decisions stand; with it, every member takes the group's similarity."""
     gpl = g["placement"]
-    if REFUSE_RIGID in gpl.refused:
+    st = gpl.stats
+    alone = "refused: members decided alone"
+    if REFUSE_RIGID in gpl.refused or REFUSE_MEMBER in gpl.refused:
         g["decision"] = "not one rigid body: members decided alone"
         return
-    if gpl.stats.get("anchors_disagree"):
+    if not st.get("r3_decided") or any(r in gpl.refused for r in _R5):
+        g["decision"] = alone
+        return
+    if st.get("anchors_disagree"):
         gpl.refused.append(REFUSE_GROUP_ANCHORS)
         g["decision"] = "refused, members refused (anchors disagree)"
         for n in g["members"]:
             if REFUSE_GROUP_ANCHORS not in placements[n].refused:
                 placements[n].refused.append(REFUSE_GROUP_ANCHORS)
         return
-    if not gpl.refused:
-        g["decision"] = "placed"
-        for n in g["members"]:
-            m = Placement(label=f"piece-{n}", kids=list(info[n]["kids"]), ratio=gpl.ratio, ci=info[n].get("ci"),
-                          t=gpl.t)
-            m.stats.update(placed_with=gpl.label, ci_log=[round(x, 6) for x in info[n]["ci_log"]])
-            placements[n] = m
+    if gpl.refused:
+        g["decision"] = alone
         return
-    g["decision"] = "refused: members decided alone"
+    if not any(a["ok"] and a.get("independent") for a in st.get("anchor_check") or []):
+        gpl.refused.append(REFUSE_CORROBORATION)
+        g["decision"] = alone
+        return
+    st["corroborated_by"] = "independent-anchor"
+    g["decision"] = "placed"
+    for n in g["members"]:
+        m = Placement(label=f"piece-{n}", kids=list(info[n]["kids"]), ratio=gpl.ratio, ci=info[n].get("ci"),
+                      t=gpl.t)
+        m.stats.update(placed_with=gpl.label, corroborated_by=f"group:{gpl.label}",
+                       ci_log=[round(x, 6) for x in info[n]["ci_log"]])
+        placements[n] = m
 
 
 _START_DIRECTIONS = np.array([[1.0, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0],
                               [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
 
 
-def _matched_control(label, i, seg, radius, room, params, upm, ref, log_values, piece_of, frame, deadline=None):
+def _matched_control(label, i, seg, radius, room, params, upm, ref, log_values, piece_of, frame, budget=None):
     """Control `i` under a piece's prior error. A piece's starting error is unknown anywhere in its region
     (up to its radius), so the controls' starting errors span it: control i starts from its own true
     translation displaced by radius x (i + 1) / control_segments (a sixth of the radius to all of it), along
     the solve's six axis directions in turn, and is searched over a ball of the piece's radius about that
     start. A control carries every error a piece carries, its scale too: its level is its own frames' median
     ratio, so it is scaled by exp(level - ref) about the solve's origin and its true translation is what
-    undoes that at its own cameras. None when it has no frame with depth."""
+    undoes that at its own cameras. Its WITHHELD-TRUTH probe: its best refined basin farther than
+    max_control_miss_m from its truth, measured as the winner would be were the truth not there (counts,
+    profile, uniqueness among the other such basins). None when it has no frame with depth."""
     vals = log_values(seg)
     level = float(np.median(vals)) if len(vals) else ref
     ratio = math.exp(level - ref)
@@ -1500,10 +1722,27 @@ def _matched_control(label, i, seg, radius, room, params, upm, ref, log_values, 
     first = piece.frames[0]
     a = {"side": "start", "piece_kid": first.kid, "room_kid": None, "dt_s": 0.0, "t": truth + offset,
          "allowance_m": radius, "piece_centre": first.c / ratio, "bound_m": radius}
-    c = measure(label, piece, None, room, [a], a, params, radius_m=radius, deadline=deadline)
+    c = measure(label, piece, None, room, [a], a, params, radius_m=radius, budget=budget)
     c.stats["true_translation"] = truth.tolist()
     c.stats["ratio"] = ratio
     c.stats["start_error_m"] = round(float(np.linalg.norm(offset)) / upm, 4)
+    wrong = [(t, sc, s) for t, sc, s in c.refined
+             if math.isfinite(s) and np.linalg.norm(t - truth) / upm > params.max_control_miss_m]
+    if wrong and c.typical is not None and math.isfinite(c.typical):
+        t1, sc1, s1 = max(wrong, key=lambda r: r[2])
+        far = (params.profile_m + params.coarse_step_m) * upm
+        rival = max((s for t, _sc, s in wrong if np.linalg.norm(t - t1) > far), default=-math.inf)
+        span = s1 - c.typical
+        unique = None if not span > 0 else (1.0 if rival == -math.inf else (s1 - max(rival, c.typical)) / span)
+        full = Scorer(piece, room, room.points, t1, 0.05 * upm, params.fine_stride_px, params, prune=False,
+                      budget=budget).counts(t1)
+        probe = {"miss_m": round(float(np.linalg.norm(t1 - truth)) / upm, 4), "rigidity": c.stats.get("rigidity"),
+                 "uniqueness": None if unique is None else round(unique, 4)}
+        if full["hit"] and _score(full, params) > -math.inf:
+            probe.update(agree_share=full["agree"] / full["hit"], through_share=full["through"] / full["hit"],
+                         free_share=full["free"] / full["valid"], hit_share=full["hit"] / full["valid"],
+                         profile_drop={k: round(v, 4) for k, v in profile(sc1, t1, upm, params, c.typical).items()})
+        c.stats["withheld_probe"] = probe
     return c
 
 

@@ -828,8 +828,21 @@ def audit_document(assessment: dict | None, *, mode_: str, decision: str, soluti
            "solve_identity": solve_identity(solution) if solution is not None else None,
            "solved_at": getattr(solution, "solved_at", None),
            "inputs": inputs, "seconds": round(seconds, 3), "error": error}
-    doc["assessment"] = _jsonable(assessment)
+    doc["assessment"] = _jsonable(_audit_view(assessment))
     return doc
+
+
+# Kept on each isolated piece for the depth placement only (`place_pieces` R1): not audited unless it ran.
+_PLACEMENT_ONLY = ("ci_log", "core_log_median")
+
+
+def _audit_view(assessment: dict | None) -> dict | None:
+    """The assessment as audited: without the placement-only fields of its pieces when the placement step
+    did not run, so the switch-off audit is byte for byte what it was (elapsed time aside)."""
+    if not assessment or "place_pieces" in assessment:
+        return assessment
+    return dict(assessment, pieces=[{k: v for k, v in p.items() if k not in _PLACEMENT_ONLY}
+                                    for p in assessment.get("pieces") or []])
 
 
 def _jsonable(v):
