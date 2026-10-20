@@ -155,7 +155,11 @@ class LiveCartridges:
         """
         for consumer in self.frame_consumers:
             try:
-                consumer.stop()
+                # `close()` where a session has one: it refuses every later
+                # start before it stops, so a Start racing the shutdown
+                # cannot leave a model loading after this returns.
+                close = getattr(consumer, "close", None)
+                (close if close is not None else consumer.stop)()
             except Exception:
                 logger.exception(
                     "[Tower][Cartridge] a live session did not stop cleanly"

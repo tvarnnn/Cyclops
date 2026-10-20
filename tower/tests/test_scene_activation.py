@@ -37,6 +37,7 @@ from tower.live_session import (
     STATE_STARTING,
     STATE_STOPPED,
 )
+from tower.cartridge_runtime import LiveCartridges
 from tower.scene.live import SceneLive
 
 
@@ -91,14 +92,24 @@ def _retire_workers():
     process -- correct for the one session a Tower holds, and a thread
     per test here. Retiring them keeps the suite's thread count honest
     for the tests that assert on it.
+
+    Each stop is bounded, so a regression that leaves a lock held fails
+    the test here rather than hanging the suite.
     """
     yield
+    stuck = []
     while _MADE:
         session = _MADE.pop()
-        session.stop()
+        stopper = threading.Thread(target=session.stop, daemon=True)
+        stopper.start()
+        stopper.join(10)
+        if stopper.is_alive():
+            stuck.append(session)
+            continue
         worker = getattr(session, "_worker", None)
         if worker is not None:
             worker.retire()
+    assert not stuck, "a session's stop() never returned: a lock is still held"
 
 
 class TestAStreamAloneDoesNotStartTheScene:
@@ -316,94 +327,134 @@ class TestTheOperatorPath:
         assert session.state == STATE_STOPPED
 
 
-class TestOperatorDecisionsArriveTogether:
-    """An operator Start and Stop, or a Start and the last stream closing,
-    at the same moment.
+class _QueueWatch:
+    """A session's `_demand`, reporting when the thread named `second`
+    finds it held by another thread and has to wait for it."""
 
-    Each decision sets the hold and THEN makes its base transition. If a
-    second decision can land between the two, the hold and the session
-    disagree once both calls have returned. Each window is forced with
-    events: the first caller is parked on its way into the base call, and
-    the second is given `_WINDOW_S` to land inside it. Whether the second
-    lands there or is made to wait (and the window expires), once both
-    have returned the later decision must have won and the hold must
-    agree with the session.
+    def __init__(self, inner, queued) -> None:
+        self._inner = inner
+        self._queued = queued
+
+    def __enter__(self):
+        if not self._inner.acquire(blocking=False):
+            if threading.current_thread().name == "second":
+                self._queued.set()
+            self._inner.acquire()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._inner.release()
+
+
+class TestOperatorDecisionsArriveTogether:
+    """Operator and demand decisions arriving at the same moment.
+
+    Each verb records its decision and then makes its base transition.
+    Every test parks the FIRST caller at its base call (on the way in, or
+    once it has returned) and lets it go only when the SECOND has either
+    returned or is queued behind it on `_demand`. Both are signalled,
+    never timed, so the window is always exercised. Once both have
+    returned, the later decision must have won and the hold must agree
+    with the session. An error in either thread is raised here.
     """
 
-    _WINDOW_S = 1.0
-
     @staticmethod
-    def _park(monkeypatch, verb, thread_name):
-        """Park `thread_name` once, on its way into the base `verb`."""
+    def _park(monkeypatch, verb, *, after=False):
+        """Park the thread named `first` once at the base `verb`."""
         real = getattr(LiveSession, verb)
         arrived = threading.Event()
         release = threading.Event()
 
+        def hold_here():
+            arrived.set()
+            assert release.wait(10), "the test never released the parked call"
+
         def parked(self_, *args, **kwargs):
-            if threading.current_thread().name == thread_name and not arrived.is_set():
-                arrived.set()
-                release.wait(10)
-            return real(self_, *args, **kwargs)
+            mine = threading.current_thread().name == "first" and not arrived.is_set()
+            if mine and not after:
+                hold_here()
+            out = real(self_, *args, **kwargs)
+            if mine and after:
+                hold_here()
+            return out
 
         monkeypatch.setattr(LiveSession, verb, parked)
         return arrived, release
 
     @staticmethod
-    def _call(thread_name, function, *args):
-        returned = threading.Event()
+    def _call(name, function, *args, landed=None):
+        outcome = {}
 
         def run():
             try:
-                function(*args)
+                outcome["value"] = function(*args)
+            except BaseException as exc:  # raised again in the test thread
+                outcome["error"] = exc
             finally:
-                returned.set()
+                if landed is not None:
+                    landed.set()
 
-        thread = threading.Thread(target=run, name=thread_name, daemon=True)
+        thread = threading.Thread(target=run, name=name, daemon=True)
         thread.start()
-        return thread, returned
+        return thread, outcome
 
-    def _race(self, monkeypatch, *, park, first, second):
-        """`first` parked at the base `park`; `second` let into its window."""
-        arrived, release = self._park(monkeypatch, park, "first")
-        threads = [self._call("first", *first)[0]]
+    def _race(self, monkeypatch, session, *, park, first, second, after=False):
+        """`first` parked at the base `park`; `second` lands or queues.
+
+        Returns what `first` returned."""
+        arrived, release = self._park(monkeypatch, park, after=after)
+        landed = threading.Event()
+        monkeypatch.setattr(session, "_demand", _QueueWatch(session._demand, landed))
+        calls = [self._call("first", *first)]
         try:
             assert arrived.wait(5), "the first call never reached its base call"
-            second_thread, second_returned = self._call("second", *second)
-            threads.append(second_thread)
-            second_returned.wait(self._WINDOW_S)
+            calls.append(self._call("second", *second, landed=landed))
+            assert landed.wait(5), "the second call neither returned nor queued"
         finally:
             release.set()
-        for thread in threads:
+        for thread, outcome in calls:
             thread.join(10)
             assert not thread.is_alive(), f"{thread.name} never returned"
+            if "error" in outcome:
+                raise outcome["error"]
+        return calls[0][1].get("value")
+
+    @staticmethod
+    def _held_and_state(session):
+        status = session.status()
+        return status["demand"]["operator_hold"], status["state"]
 
     def test_a_stop_inside_a_start_leaves_it_stopped_and_unheld(self, monkeypatch):
         # hold-set / hold-clear / base-stop / base-start.
         session = _session()
         self._race(
             monkeypatch,
+            session,
             park="start",
             first=(session.start,),
             second=(session.stop,),
         )
         # The Stop is the later decision, and it wins.
-        assert session.status()["demand"]["operator_hold"] is False
-        assert session.state == STATE_STOPPED
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
 
     def test_a_start_inside_a_stop_leaves_it_running_and_held(self, monkeypatch):
         # hold-clear / hold-set / base-start / base-stop.
         session = _session()
         session.start()
         assert _await_state(session, STATE_RUNNING)
-        self._race(
+        returned = self._race(
             monkeypatch,
+            session,
             park="stop",
             first=(session.stop,),
             second=(session.start,),
         )
         # The Start is the later decision, and it wins.
-        assert session.status()["demand"]["operator_hold"] is True
-        assert session.state in (STATE_STARTING, STATE_RUNNING)
+        held, state = self._held_and_state(session)
+        assert held is True
+        assert state in (STATE_STARTING, STATE_RUNNING)
+        # And the Stop says so, rather than what its base stop left.
+        assert returned["state"] in (STATE_STARTING, STATE_RUNNING)
 
     def test_the_last_stream_closing_inside_a_start_leaves_it_stopped(
         self, monkeypatch
@@ -417,12 +468,12 @@ class TestOperatorDecisionsArriveTogether:
         session.stream_opened(owner="phone")
         self._race(
             monkeypatch,
+            session,
             park="start",
             first=(session.start,),
             second=(session.stream_closed, "phone"),
         )
-        assert session.status()["demand"]["operator_hold"] is False
-        assert session.state == STATE_STOPPED
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
 
     def test_a_start_inside_a_demand_stop_still_wins(self, monkeypatch):
         # The window `_stop_then_reconcile` already covered, now from
@@ -431,12 +482,180 @@ class TestOperatorDecisionsArriveTogether:
         session = TestTheOperatorPath._watched_then_unwatched_session()
         self._race(
             monkeypatch,
+            session,
             park="stop",
             first=(session.watcher_left, "phone:sub-1"),
             second=(session.start,),
         )
         assert session.status()["demand"]["operator_hold"] is True
         assert _await_state(session, STATE_RUNNING)
+
+    def test_a_later_stop_is_not_undone_by_an_older_one(self, monkeypatch):
+        # Stop A, Start B, Stop C: C is the latest, and A landing last
+        # must not bring B back.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+
+        def start_then_stop():
+            session.start()
+            session.stop()
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(start_then_stop,),
+        )
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
+
+    def test_a_later_stream_closing_is_not_undone_by_an_older_stop(
+        self, monkeypatch
+    ):
+        # Stop A, Start B, then the last stream closes: the closure is the
+        # latest and releases B's hold. A landing last must not restart a
+        # session nobody holds.
+        session = _session()
+        session.start()
+        session.stream_opened(owner="phone")
+        assert _await_state(session, STATE_RUNNING)
+
+        def start_then_stream_closes():
+            session.start()
+            session.stream_closed(owner="phone")
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(start_then_stream_closes,),
+        )
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
+
+    def test_a_pause_after_a_newer_start_survives_an_older_stop(self, monkeypatch):
+        # Stop A, Start B, Pause P, then A's base stop: P is the latest,
+        # so the session ends paused, not running and not stopped.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+
+        def start_then_pause():
+            session.start()
+            session.pause()
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(start_then_pause,),
+        )
+        assert self._held_and_state(session) == (True, STATE_PAUSED)
+
+    def test_a_pause_after_an_older_stops_base_stop_is_not_resumed(
+        self, monkeypatch
+    ):
+        # A's base stop lands first, then Start B and Pause P, then A goes
+        # on: settling A must leave P's pause alone.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+
+        def start_then_pause():
+            session.start()
+            assert _await_state(session, STATE_RUNNING)
+            session.pause()
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            after=True,
+            first=(session.stop,),
+            second=(start_then_pause,),
+        )
+        assert self._held_and_state(session) == (True, STATE_PAUSED)
+
+    def test_a_pause_after_an_older_stop_does_not_revive_it(self, monkeypatch):
+        # Stop A, then Pause P while A's base stop is still to land: in
+        # that order the Pause found nothing to pause.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(session.pause,),
+        )
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
+
+    def test_a_resume_after_an_older_pause_wins(self, monkeypatch):
+        # Pause A, then Resume R before A's base pause lands: R is the
+        # latest, so the session ends running, not paused.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+        self._race(
+            monkeypatch,
+            session,
+            park="pause",
+            # Late-bound: on a tree where `pause` is the base method, a
+            # bound method taken now would miss the parking patch.
+            first=(lambda: session.pause(),),
+            second=(session.resume,),
+        )
+        assert self._held_and_state(session) == (True, STATE_RUNNING)
+
+    def test_a_start_racing_shutdown_leaves_nothing_running(self, monkeypatch):
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+        before = session.status()["session_id"]
+        live = LiveCartridges(frame_consumers=[session], scene=session)
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(live.shutdown,),
+            second=(session.start,),
+        )
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
+        assert session.status()["session_id"] == before, "a session began"
+        # And nothing begins one afterwards.
+        session.start()
+        session.stream_opened(owner="phone")
+        session.watcher_joined("phone:sub-1", owner="phone")
+        session.resume()
+        assert self._held_and_state(session) == (False, STATE_STOPPED)
+        assert session.status()["session_id"] == before
+
+    def test_a_watcher_arriving_inside_an_operator_stop_is_served(
+        self, monkeypatch
+    ):
+        # Stop, then a stream and a watcher: in that order the facts say
+        # run, but their `_reconcile` found the session still running.
+        session = _session()
+        session.start()
+        assert _await_state(session, STATE_RUNNING)
+
+        def stream_and_watch():
+            session.stream_opened(owner="phone")
+            session.watcher_joined("phone:sub-1", owner="phone")
+
+        self._race(
+            monkeypatch,
+            session,
+            park="stop",
+            first=(session.stop,),
+            second=(stream_and_watch,),
+        )
+        held, state = self._held_and_state(session)
+        assert held is False
+        assert state in (STATE_STARTING, STATE_RUNNING)
 
 
 class TestDemandNeverUndoesAPause:
