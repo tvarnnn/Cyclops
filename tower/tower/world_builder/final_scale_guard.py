@@ -552,8 +552,9 @@ def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams, 
       * the plateau's median is outside the screen band (never isolate on less evidence what the long rule
         would keep and certify on more);
       * every one of its ratios lies strictly beyond the core's extreme on that side (decided in log);
-      * none of `neighbours` -- the nearest measured camera before and after it in its group, and before and
-        after it in capture order in ANY group -- is on that side of the band: such a camera is the same
+      * none of `neighbours` -- the nearest measured camera before and after it in its group, before and after
+        it in capture order in ANY group, and any other group's camera inside its capture span -- is on that
+        side of the band: such a camera is the same
         stretch, cut by the running median's window where it is truncated at a group's start or end (a gate
         group's boundary included), and isolating part of a stretch would leave the rest in the certified core;
       * fewer of its cameras are unmeasured than measured (its reach is carried by its own evidence);
@@ -587,17 +588,20 @@ def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams, 
 
 
 def _capture_neighbours(measured: list[tuple[int, float]], row: dict) -> list[float]:
-    """The log ratio of the nearest measured camera before the row's first camera and after its last, in capture
-    order and in ANY group (`measured`: (index, log ratio) of every measured camera still in the room, sorted):
-    a gate-group boundary truncates the running median's window just as a walk's end does."""
+    """The log ratios of the nearest measured camera before the row's first camera and after its last, in capture
+    order and in ANY group, and of every OTHER group's measured camera inside the row's capture span (`measured`:
+    (index, log ratio) of every measured camera still in the room, sorted): a gate-group boundary truncates the
+    running median's window just as a walk's end does, and interleaved groups can put the rest of the same
+    stretch between the row's own cameras."""
     idx = [i for i, _ in measured]
-    out = []
-    k = bisect.bisect_left(idx, row["cameras"][0].index)
-    if k > 0:
-        out.append(measured[k - 1][1])
-    k = bisect.bisect_right(idx, row["cameras"][-1].index)
-    if k < len(measured):
-        out.append(measured[k][1])
+    own = {c.index for c in row["cameras"]}
+    first = bisect.bisect_left(idx, row["cameras"][0].index)
+    last = bisect.bisect_right(idx, row["cameras"][-1].index)
+    out = [v for i, v in measured[first:last] if i not in own]
+    if first > 0:
+        out.append(measured[first - 1][1])
+    if last < len(measured):
+        out.append(measured[last][1])
     return out
 
 

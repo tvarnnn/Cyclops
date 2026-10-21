@@ -432,6 +432,34 @@ def test_the_neighbour_veto_reads_capture_order_not_the_previous_groups_last_cam
     assert piece["same_side_neighbour"] is False
 
 
+@pytest.mark.parametrize("ratio", [50.0, 0.02])
+def test_another_groups_camera_inside_the_plateaus_span_vetoes_it(ratio):
+    """R2c: interleaved groups -- A holds 95-99 and 101, B holds 100 and 102-149. A gross stretch at 95-101 is a
+    short plateau of A's six cameras whose capture span holds B's camera 100, the rest of the same stretch, kept
+    in B's certified core. That in-span camera vetoes: nothing is split, and the room is never certified with
+    it inside."""
+    group = lambda i: "B" if i == 100 or 102 <= i < 150 else "A"  # noqa: E731
+    for seed in range(40):
+        out = FSG.assess_v2(_cams(200, group=group), _levels(200, [(95, 102, ratio)], noise=0.05, seed=seed))
+        left = _ids(95, 102) & set(out["room_keyframes"])
+        assert left in (set(), _ids(95, 102)), seed
+        if left:
+            assert out["scale_status"] == FSG.SCALE_UNCERTIFIED and left & _uncert_ids(out), seed
+    # Codex's own case (seed 2): kept whole, flagged
+    out = FSG.assess_v2(_cams(200, group=group), _levels(200, [(95, 102, ratio)], noise=0.05, seed=2))
+    assert _ids(95, 102) <= set(out["room_keyframes"]) and out["scale_status"] == FSG.SCALE_UNCERTIFIED
+
+
+def test_another_groups_camera_inside_the_span_on_the_other_side_does_not_veto():
+    # the same interleaving, B's camera 100 room-like: A's six x50 cameras are isolated, 100 stays
+    group = lambda i: "B" if i == 100 or 102 <= i < 150 else "A"  # noqa: E731
+    lv = _levels(200, [(95, 100, 50.0), (101, 102, 50.0)], noise=0.05, seed=2)
+    out = FSG.assess_v2(_cams(200, group=group), lv)
+    (piece,) = out["pieces"]
+    assert set(piece["keyframe_ids"]) == _ids(95, 100) | _ids(101, 102)
+    assert piece["same_side_neighbour"] is False and _ids(100, 101) <= set(out["room_keyframes"])
+
+
 def test_a_short_plateau_mostly_unmeasured_stays_attached():
     """R1 F3: a short plateau takes every unmeasured camera inside it, so it is isolated only when fewer of its
     cameras are unmeasured than measured: 5 ratios over 12 keyframes stay attached, 7 over 12 go."""
