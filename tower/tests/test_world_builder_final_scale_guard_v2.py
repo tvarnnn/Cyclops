@@ -399,6 +399,39 @@ def test_a_gross_stretch_at_a_window_edge_is_never_split_and_never_certified(whe
                 assert out["scale_status"] == FSG.SCALE_UNCERTIFIED and left & _uncert_ids(out), (length, seed)
 
 
+@pytest.mark.parametrize("ratio", [50.0, 0.02])
+@pytest.mark.parametrize("span", [(95, 101), (99, 105)], ids=["group-end", "next-group-start"])
+def test_a_gross_stretch_straddling_two_gate_groups_is_never_split_and_never_certified(ratio, span):
+    """R2b: a gate-group boundary truncates the running median's window too. A stretch with 5 cameras at the end
+    of group A and 1 at the start of B (or 1 and 5) became a short plateau on one side and a camera kept in the
+    certified core on the other; isolating the plateau certified a room holding the rest. The veto looks across
+    the boundary (the nearest measured camera in capture order, any group): nothing is split."""
+    group = lambda i: "A" if i < 100 else "B"  # noqa: E731
+    a, b = span
+    for seed in range(40):
+        out = FSG.assess_v2(_cams(200, group=group), _levels(200, [(a, b, ratio)], noise=0.05, seed=seed))
+        left = _ids(a, b) & set(out["room_keyframes"])
+        assert left in (set(), _ids(a, b)), seed
+        if left:
+            assert out["scale_status"] == FSG.SCALE_UNCERTIFIED and left & _uncert_ids(out), seed
+    # R2b's own case (x50 at 95-100, seed 2): kept whole and flagged, as on main
+    out = FSG.assess_v2(_cams(200, group=group), _levels(200, [(95, 101, 50.0)], noise=0.05, seed=2))
+    assert _ids(95, 101) <= set(out["room_keyframes"]) and out["scale_status"] == FSG.SCALE_UNCERTIFIED
+
+
+def test_the_neighbour_veto_reads_capture_order_not_the_previous_groups_last_camera():
+    """Gate groups can interleave: rows come group by group, so the row before group B's first is group A's LAST,
+    which may stand anywhere in the walk. The veto reads the capture-order neighbour (99, room-like), not A's last
+    camera (199, a lone x1.4): a x50 stretch at B's start is isolated whole."""
+    group = lambda i: "B" if 100 <= i < 150 else "A"  # noqa: E731
+    lv = _levels(200, [(100, 106, 50.0)], noise=0.05, seed=11)
+    lv["00000199.jpg"] = math.log(1.4)
+    out = FSG.assess_v2(_cams(200, group=group), lv)
+    (piece,) = out["pieces"]
+    assert set(piece["keyframe_ids"]) == _ids(100, 106) and piece["beyond_core"] is True
+    assert piece["same_side_neighbour"] is False
+
+
 def test_a_short_plateau_mostly_unmeasured_stays_attached():
     """R1 F3: a short plateau takes every unmeasured camera inside it, so it is isolated only when fewer of its
     cameras are unmeasured than measured: 5 ratios over 12 keyframes stay attached, 7 over 12 go."""

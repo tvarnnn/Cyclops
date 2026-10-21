@@ -83,6 +83,7 @@ figure ever reaches the components record or the phone (contract §2.4 rule 6).
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import hashlib
 import json
@@ -551,10 +552,10 @@ def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams, 
       * the plateau's median is outside the screen band (never isolate on less evidence what the long rule
         would keep and certify on more);
       * every one of its ratios lies strictly beyond the core's extreme on that side (decided in log);
-      * neither `neighbours` -- the nearest measured camera before and after it in its group -- is on that
-        side of the band: such a camera is the same stretch, cut by the running median's window where it is
-        truncated at a group's start or end, and isolating part of a stretch would leave the rest in the
-        certified core;
+      * none of `neighbours` -- the nearest measured camera before and after it in its group, and before and
+        after it in capture order in ANY group -- is on that side of the band: such a camera is the same
+        stretch, cut by the running median's window where it is truncated at a group's start or end (a gate
+        group's boundary included), and isolating part of a stretch would leave the rest in the certified core;
       * fewer of its cameras are unmeasured than measured (its reach is carried by its own evidence);
       * 1 / C(|core| + n, n) <= (1 - ci_level) / 2, a NOMINAL floor on the core's size against n cameras: the
         rank chance if the cameras were exchangeable, which they are not (neighbouring ratios are correlated,
@@ -583,6 +584,21 @@ def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams, 
                same_side_neighbour=bool(same_side), beyond_core=bool(beyond and not same_side and evidenced and level))
     if row["beyond_core"]:
         row.update(decision="isolated", reason=REASON_SCALE_OUTLIER, uncertified=None)
+
+
+def _capture_neighbours(measured: list[tuple[int, float]], row: dict) -> list[float]:
+    """The log ratio of the nearest measured camera before the row's first camera and after its last, in capture
+    order and in ANY group (`measured`: (index, log ratio) of every measured camera still in the room, sorted):
+    a gate-group boundary truncates the running median's window just as a walk's end does."""
+    idx = [i for i, _ in measured]
+    out = []
+    k = bisect.bisect_left(idx, row["cameras"][0].index)
+    if k > 0:
+        out.append(measured[k - 1][1])
+    k = bisect.bisect_right(idx, row["cameras"][-1].index)
+    if k < len(measured):
+        out.append(measured[k][1])
+    return out
 
 
 def _measured_neighbours(rows: list[dict], i: int) -> list[float]:
@@ -626,9 +642,11 @@ def _v2_segment(groups: dict, values: dict, params: GuardParams):
             break
         seen.add(sig)
     core = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
+    measured_order = sorted((c.index, values[c.name]) for cams in groups.values() for c in cams if c.name in values)
     for i, r in enumerate(rows):
         if r.get("uncertified") == UNCERTIFIED_SHORT:
-            _decide_short(r, core, ref, params, neighbours=_measured_neighbours(rows, i))
+            _decide_short(r, core, ref, params,
+                          neighbours=_measured_neighbours(rows, i) + _capture_neighbours(measured_order, r))
 
     for r in rows:
         if r["decision"] != "candidate":
