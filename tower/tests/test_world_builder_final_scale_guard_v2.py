@@ -6,7 +6,8 @@ Pinned here:
     [0.8, 1.25] AND a deterministic 95 % bootstrap interval of its median excluding 1; it is bounded by its
     first and last MEASURED camera (no class carried across an unmeasured tail); a SHORT plateau (< 10
     ratios) is isolated only when its median is out of band AND every ratio is beyond the certified core's
-    own range on that side (lane D, `_decide_short`); everything else stays attached and is recorded
+    own range on that side, it is not one end of a longer same-side stretch, and most of its cameras are
+    measured (lane D, `_decide_short`); everything else stays attached and is recorded
     `uncertified`; no evidence is `uncertified`, never PASS, nothing isolated;
   * the walk-7 shapes, synthetic: x0.18 and x0.17 spans with >= 10 ratios are isolated; a 9-ratio x0.18 span
     is isolated too against a room whose cameras never scatter that far, and attached and flagged when the
@@ -246,6 +247,25 @@ def test_a_short_plateau_on_both_sides_of_the_rooms_range_stays_attached():
     assert row["ratio_range"][0] < row["core_range"][0] and row["ratio_range"][1] > row["core_range"][1]
 
 
+def test_one_ratio_inside_the_rooms_range_keeps_a_low_short_plateau_attached():
+    out = FSG.assess_v2(_cams(200, group=_own_group), _short(0.05, values=[None] * 5 + [1.0]))
+    assert out["pieces"] == []
+    (row,) = [u for u in out["uncertified"] if u["group"] == "span"]
+    assert row["class"] == FSG.LOW and row["ratio"] < 0.1 and row["beyond_core"] is False
+    assert row["core_range"][0] <= row["ratio_range"][1] <= row["core_range"][1]
+    out = FSG.assess_v2(_cams(200, group=_own_group), _short(0.05))
+    assert {k for p in out["pieces"] for k in p["keyframe_ids"]} == _ids(*SHORT)
+
+
+def test_an_excursion_beyond_the_rooms_range_is_left_to_the_excursion_rule():
+    # four x20 cameras mid-walk: the running median swallows them, so they are an excursion, not a plateau
+    out = FSG.assess_v2(_cams(200), _levels(200, [(100, 104, 20.0)], noise=0.05, seed=11))
+    assert out["pieces"] == []
+    (row,) = out["uncertified"]
+    assert set(row["keyframe_ids"]) == _ids(100, 104) and row["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert "beyond_core" not in row and "core_range" not in row
+
+
 def test_a_short_plateau_inside_the_band_is_never_isolated():
     """Every ratio beyond a tight room's range, but the median inside the screen band: the long rule would keep
     and certify such a plateau with 10 ratios, so the short rule must not isolate it with fewer."""
@@ -295,9 +315,9 @@ def test_non_finite_ratios_are_unmeasured_and_go_with_the_plateau():
     assert out["pieces"] == [] and _ids(120, 126) <= set(out["room_keyframes"])
 
 
-def _row(*logs):
+def _row(*logs, unmeasured=0):
     return {"values": np.asarray(logs, np.float64), "decision": "attached", "reason": None,
-            "uncertified": FSG.UNCERTIFIED_SHORT}
+            "uncertified": FSG.UNCERTIFIED_SHORT, "cameras": [None] * (len(logs) + unmeasured)}
 
 
 def test_the_short_rule_decides_at_the_guards_own_level_and_refuses_what_it_cannot_read():
@@ -310,11 +330,26 @@ def test_the_short_rule_decides_at_the_guards_own_level_and_refuses_what_it_cann
     row = _row(math.log(50.0), math.log(60.0))
     FSG._decide_short(row, np.linspace(-0.1, 0.1, 10), 0.0, P)
     assert row["decision"] == "isolated" and row["reason"] == FSG.REASON_SCALE_OUTLIER and row["uncertified"] is None
-    # a ratio on the end of the range is inside it
+    # a ratio on the end of the range is inside it, on either side
     for v, isolated in ((2.0, False), (2.0 + 1e-9, True)):
         row = _row(v, 3.0)
         FSG._decide_short(row, np.linspace(-0.1, 2.0, 50), 0.0, P)
         assert row["beyond_core"] is isolated, v
+    for v, isolated in ((-2.0, False), (-2.0 - 1e-9, True)):
+        row = _row(v, -3.0)
+        FSG._decide_short(row, np.linspace(-2.0, 0.1, 50), 0.0, P)
+        assert row["beyond_core"] is isolated, v
+    # a measured neighbour on the plateau's side refuses (the same stretch, cut by a truncated window); one on
+    # the other side, or inside the band, does not
+    for nb, isolated in (((0.0, math.log(3.0)), False), ((0.0, math.log(0.1)), True), ((), True)):
+        row = _row(math.log(50.0), math.log(60.0))
+        FSG._decide_short(row, np.linspace(-0.1, 0.1, 50), 0.0, P, neighbours=nb)
+        assert row["beyond_core"] is isolated and row["same_side_neighbour"] is (not isolated), nb
+    # most of its cameras must be measured: 2 ratios over 4 keyframes refuse, over 3 they do not
+    for unmeasured, isolated in ((2, False), (1, True)):
+        row = _row(math.log(50.0), math.log(60.0), unmeasured=unmeasured)
+        FSG._decide_short(row, np.linspace(-0.1, 0.1, 50), 0.0, P)
+        assert row["beyond_core"] is isolated, unmeasured
     # nothing to read: a non-finite value, a core under the floor, no value -> no decision, no record
     for row, core in ((_row(math.log(50.0), float("nan")), np.linspace(-0.1, 0.1, 50)),
                       (_row(math.log(50.0)), np.linspace(-0.1, 0.1, 9)),
@@ -330,11 +365,104 @@ def test_the_short_rule_is_gauge_free():
         return ([(p["keyframe_ids"], p["reason"], p.get("beyond_core")) for p in out["pieces"]],
                 [(u["keyframe_ids"], u["uncertified"], u.get("beyond_core")) for u in out["uncertified"]])
 
-    for n, lv in ((W7_N, _w7_levels()), (W7_N, _w7_levels_room_spikes()), (200, _short(20.3))):
+    def ranges(out):
+        return [r.get(f) for r in out["pieces"] + out["uncertified"] for f in ("core_range", "ratio_range")
+                if r.get(f) is not None]
+
+    for n, lv in ((W7_N, _w7_levels()), (W7_N, _w7_levels_room_spikes()), (200, _short(20.3)),
+                  (200, _short(0.05))):
         for shift in (math.log(10.0), -math.log(3.7)):
             a = FSG.assess_v2(_cams(n), lv)
             b = FSG.assess_v2(_cams(n), {k: v + shift for k, v in lv.items()})
             assert key(a) == key(b)
+            # the audit's ranges are ratios to the reference: the rescale does not move them either
+            assert ranges(a) and len(ranges(a)) == len(ranges(b))
+            for x, y in zip(ranges(a), ranges(b)):
+                assert x == pytest.approx(y, rel=1e-3)
+
+
+@pytest.mark.parametrize("where", ["group-start", "walk-end"])
+def test_a_gross_stretch_at_a_window_edge_is_never_split_and_never_certified(where):
+    """R1 F1: at a group's start or the walk's end the running median's window is truncated, so 3-4 gross
+    cameras can split into a short plateau and a remnant kept in the certified core. Isolating the plateau
+    would leave the remnant in the room and certify it. The stretch is taken whole or not at all, and a room
+    that keeps any of it is never `certified`; a stretch long enough for the window (5+) still goes whole."""
+    group = (lambda i: "A" if i < 100 else "B") if where == "group-start" else None
+    for length, whole in ((3, False), (4, False), (5, True), (6, True)):
+        a, b = (100, 100 + length) if where == "group-start" else (200 - length, 200)
+        for seed in range(40):
+            out = FSG.assess_v2(_cams(200, group=group), _levels(200, [(a, b, 50.0)], noise=0.05, seed=seed))
+            left = _ids(a, b) & set(out["room_keyframes"])
+            assert left in (set(), _ids(a, b)), (length, seed)
+            assert (left == set()) is whole, (length, seed)
+            if left:  # as on main: flagged where the short plateau is, so the room stays uncertified
+                assert out["scale_status"] == FSG.SCALE_UNCERTIFIED and left & _uncert_ids(out), (length, seed)
+
+
+def test_a_short_plateau_mostly_unmeasured_stays_attached():
+    """R1 F3: a short plateau takes every unmeasured camera inside it, so it is isolated only when fewer of its
+    cameras are unmeasured than measured: 5 ratios over 12 keyframes stay attached, 7 over 12 go."""
+    group = lambda i: "span" if 120 <= i < 132 else "room"  # noqa: E731
+    for measured, isolated in (((0, 3, 6, 9, 11), False), ((0, 2, 4, 6, 8, 10, 11), True)):
+        lv = _levels(200, [(120, 132, 50.0)], noise=0.05, seed=11)
+        for i in range(120, 132):
+            if i - 120 not in measured:
+                del lv[f"{i:08d}.jpg"]
+        out = FSG.assess_v2(_cams(200, group=group), lv)
+        assert bool(out["pieces"]) is isolated, measured
+        if not isolated:
+            (row,) = [u for u in out["uncertified"] if u["group"] == "span"]
+            assert row["keyframes"] == 12 and row["measured"] == 5 and row["beyond_core"] is False
+
+
+def _cascade_levels():
+    """R2 P3: a x0.33 stretch (100-107) beside a x5,000 piece (112-139). In round 0 the piece's own x0.6 camera
+    (113) pulls the room-like camera 108 into the x0.33 plateau, which then straddles the room's range and
+    stays; once the piece is isolated the rest is re-segmented, 108 rejoins the room and the 8 go in round 1."""
+    v = _levels(240, [(100, 108, 0.33), (112, 140, 5000.0)], noise=0.05, seed=5)
+    for i, r in ((108, 0.9), (109, 1.1), (110, 1.1), (111, 2.8), (113, 0.6)):
+        v[f"{i:08d}.jpg"] = math.log(r)
+    return v
+
+
+def test_a_short_plateau_isolated_in_a_later_retest_round():
+    out = FSG.assess_v2(_cams(240), _cascade_levels())
+    assert [r["isolated"] for r in out["retest"]] == [1, 1, 0]
+    long_piece, short_piece = sorted(out["pieces"], key=lambda p: p["round"])
+    assert (long_piece["round"], set(long_piece["keyframe_ids"]), long_piece["ci_excludes_one"]) == \
+        (0, _ids(112, 140), True)
+    assert (short_piece["round"], set(short_piece["keyframe_ids"]), short_piece["measured"]) == (1, _ids(100, 108), 8)
+    assert short_piece["beyond_core"] is True and "ci" not in short_piece
+    assert short_piece["ratio_range"][1] < short_piece["core_range"][0]
+    # final membership: both pieces out, the room-like 108-111 in; nothing left uncertified
+    room = set(out["room_keyframes"])
+    assert not (room & (_ids(100, 108) | _ids(112, 140))) and _ids(108, 112) <= room and len(room) == 240 - 36
+    assert out["uncertified"] == [] and out["scale_status"] == FSG.SCALE_CERTIFIED
+    assert not any(100 <= r[k] <= 107 for r in out["plateaus"] for k in ("first_index", "last_index"))
+    summ = _summary(out)
+    assert (summ["pieces_isolated"], summ["keyframes_isolated"], summ["uncertified_keyframes"]) == (2, 36, 0)
+    assert summ["reasons"] == {FSG.REASON_SCALE_OUTLIER: 2}
+
+
+def _extreme_levels(n=100):
+    """R2: finite but extreme evidence -- a core near log ratio -700 holding one camera at +700, and a
+    six-camera short plateau at -702 -- whose audit ratio exp(1400) is past the largest float."""
+    lv = {k: v - 700.0 for k, v in _levels(n, [], noise=0.05, seed=3).items()}
+    lv["00000050.jpg"] = 700.0
+    for i in range(20, 26):
+        lv[f"{i:08d}.jpg"] = -702.0 + 0.01 * (i - 20)
+    return lv
+
+
+def test_finite_extreme_evidence_never_raises_and_the_audit_stays_writable():
+    out = FSG.assess_v2(_cams(100), _extreme_levels())
+    assert out["decision"] == "publish"
+    (piece,) = out["pieces"]
+    assert set(piece["keyframe_ids"]) == _ids(20, 26) and piece["beyond_core"] is True
+    assert piece["core_range"][1] == math.inf
+    doc = FSG._jsonable(out)
+    assert doc["pieces"][0]["core_range"][1] is None
+    json.dumps(doc, allow_nan=False)
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +584,16 @@ def test_walk7_shapes_at_the_seam_isolate_the_short_span_and_every_record_agrees
     summ = meta["solve"]["final_scale_guard"]
     assert (summ["pieces_isolated"], summ["keyframes_isolated"]) == (3, 36)
     assert summ["reasons"] == {FSG.REASON_SCALE_OUTLIER: 3} and summ["scale_status"] == FSG.SCALE_CERTIFIED
+
+
+def test_finite_extreme_evidence_still_publishes_at_the_seam(tmp_path, colmap, monkeypatch):
+    _Engines(monkeypatch, n=100, levels={})
+    s = _walk(tmp_path / "w", 100, colmap, monkeypatch)
+    _live_evidence(monkeypatch, _extreme_levels())
+    assert _simple(s)["solved"] is True
+    meta, comp, audit = _published(s)
+    assert audit["decision"] == "published" and meta["solve"]["final_scale_guard"]["decision"] == "published"
+    sid = s.session_id
+    assert not ({f"{sid}:{i:08d}" for i in range(20, 26)} & _room_ids(meta))
+    (piece,) = audit["assessment"]["pieces"]
+    assert piece["core_range"][1] is None and piece["beyond_core"] is True
