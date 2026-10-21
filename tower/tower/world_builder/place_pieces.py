@@ -1575,14 +1575,14 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
             if not g["placement"].refused:
                 measured.append((g["placement"], g["region"]))
 
-    # 2. The room's controls, under each standing item's prior error, and R0, R3, R4 -- groups first (a placed
-    # group decides its members), each prior's radius rounded UP to 0.1 m so priors share their controls (a
-    # control then faces a region at least the item's own: never easier).
+    # 2. The room's controls, under each standing item's prior error, and R0, R3, R4 -- each prior's radius
+    # rounded UP to 0.1 m so priors share their controls (a control then faces a region at least the item's
+    # own: never easier). GROUPS FIRST, and decided (their R6: an independent member anchor) before any single
+    # piece is: a placed group decides its members, whose own measurements are then moot and spend no work.
     cache: dict = {}
     rec["controls"] = {}
-    for m, region in sorted(measured, key=lambda mr: not mr[0].stats.get("group")):
-        if m.refused:
-            continue
+
+    def judge(m) -> None:
         key = math.ceil(round(m.stats["region"]["radius_m"] * 10.0, 6)) / 10.0
         if key not in cache:
             controls = []
@@ -1600,14 +1600,22 @@ def plan(solution, assessment: dict, metric_log: dict, name_of: dict, times: dic
                              for c in controls], "envelope": cache[key][1]}
         if budget.out():                               # nothing is certified past the bound
             m.refused.append(budget.refusal)
-            continue
+            return
         m.stats["envelope"] = f"r{key}"
         certify(m, cache[key][1], params, r6=not m.stats.get("group"))
 
-    # 3. The groups' decisions (their R6: an independent member anchor), THEN R6's corroboration of the
-    # single pieces -- so a member a group refuses never vouches for another piece.
+    for m, _region in measured:
+        if m.stats.get("group") and not m.refused:
+            judge(m)
     for g in groups:
         _group_decision(g, placements, info)
+    for m, _region in measured:
+        # a single piece still standing, and still itself (not replaced by its group's placement)
+        if not m.stats.get("group") and not m.refused and any(pl is m for pl in placements):
+            judge(m)
+
+    # 3. R6's corroboration of the single pieces (after the groups' decisions: a member a group refuses never
+    # vouches for another piece).
     if room is not None:
         try:
             corroborate(placements, params, upm, budget)

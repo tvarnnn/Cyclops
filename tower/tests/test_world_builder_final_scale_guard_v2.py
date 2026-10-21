@@ -230,3 +230,21 @@ def test_walk7_shapes_at_the_seam_flag_the_placed_component_and_predict_no_depth
     assert {k for u in audit["assessment"]["uncertified"] for k in u["keyframe_ids"]} == ids(300, 309)
     assert {e["reason"] for e in comp["components"] if e["state"] == "unplaced"} == {FSG.REASON_SCALE_OUTLIER}
     assert eng.depth_calls == 0 and eng.metric_calls == 0
+
+
+def test_an_isolated_piece_without_a_kept_interval_does_not_break_the_assessment(monkeypatch):
+    # A rule that isolates a stretch without bootstrapping it (lane D's short plateaus) leaves no interval to
+    # keep: the piece is recorded without one, and the depth placement's R1 refuses it, nothing raises.
+    real = FSG._v2_segment
+
+    def segment(*a, **k):
+        ref, rows, rounds, core = real(*a, **k)
+        for r in rows:
+            if r["decision"] == "isolated":
+                for key in ("ci", "ci_excludes_one", "ci_log", "core_log_median"):
+                    r.pop(key, None)
+        return ref, rows, rounds, core
+
+    monkeypatch.setattr(FSG, "_v2_segment", segment)
+    out = FSG.assess_v2(_cams(W7_N), _w7_levels())
+    assert out["pieces"] and all("ci_log" not in p and "core_log_median" not in p for p in out["pieces"])

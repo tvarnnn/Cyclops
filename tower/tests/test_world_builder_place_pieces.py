@@ -558,6 +558,11 @@ def test_r1_reads_the_guards_unrounded_interval_not_its_display():
     assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
     del w.assessment["pieces"][0]["ci_log"]
     assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
+    # An isolated piece the guard never bootstrapped (no interval at all, lane D's short plateaus): refused, no
+    # crash.
+    for key in ("ci", "core_log_median"):
+        w.assessment["pieces"][0].pop(key, None)
+    assert w.plan()["pieces"][0]["refused"] == [PP.REFUSE_CI]
 
 
 def test_the_interval_is_the_guards_bootstrap_unrounded():
@@ -1445,3 +1450,72 @@ def test_a_stalled_machine_aborts_and_says_so():
     rec = World(tail_room=6).plan(dataclasses.replace(PARAMS, max_seconds=0.0))
     assert rec["pieces"][0]["refused"] == [PP.REFUSE_ABORT] and rec["placed"] == 0
     assert rec["aborted"]["by"] == "wall-clock backstop"
+
+
+def test_the_region_is_sized_by_containment_and_the_checks_by_the_quantile():
+    w = World(noise=False)
+    piece = _piece(w)
+    anc = [{"side": "before", "t": np.zeros(3), "dt_s": 0.3, "allowance_m": 0.3, "containment_m": 0.5,
+            "piece_centre": piece.frames[0].c / piece.ratio},
+           {"side": "after", "t": np.zeros(3), "dt_s": 0.6, "allowance_m": 0.4, "containment_m": 0.9,
+            "piece_centre": piece.frames[-1].c / piece.ratio}]
+    region = PP.regions(piece, (-0.01, 0.01), anc, PARAMS, UPM)
+    assert region is anc[0]
+    for a in anc:
+        arm = a["region_m"] - a["containment_m"]
+        assert arm >= 0 and a["bound_m"] == pytest.approx(a["allowance_m"] + arm)
+
+
+def test_an_unscored_wrong_placement_does_not_exercise_safety():
+    # The second control's only wrong placement met nothing (no scores): refused trivially, it shows nothing
+    # about whether the depth tests refuse a wrong placement.
+    P6 = dataclasses.replace(PARAMS, control_segments=6, min_good_controls=3, min_safety_controls=2)
+    good = [_control(0.05, withheld=None) for _ in range(5)]
+    good[0].stats["withheld_probe"] = dict(WITHHELD_REFUSED)
+    good[1].stats["withheld_probe"] = {"miss_m": 0.8, "rigidity": {"through_share": 0.01}, "uniqueness": None}
+    env = PP.envelope(good + [_control(0.06, withheld=None)], UPM, P6)
+    assert env["safety_probes"] == 2 and env["safety_controls"] == 1 and not env["usable"]
+
+
+def test_the_walks_motion_comes_from_every_certified_room_camera(monkeypatch):
+    # Holding a stretch out of the depth evidence does not hold its POSES out of the motion: the controls'
+    # cameras show how the walker moved too.
+    seen = {}
+    real = PP.walk_motion
+
+    def spy(frames, params, upm):
+        seen["kids"] = {f.kid for f in frames}
+        return real(frames, params, upm)
+
+    monkeypatch.setattr(PP, "walk_motion", spy)
+    w = World(tail_room=6)
+    rec = w.plan(WALK)
+    held = {k for c in next(iter(rec["controls"].values()))["controls"]
+            for k in w.kids[w.kids.index(c["first_keyframe_id"]):w.kids.index(c["last_keyframe_id"]) + 1]}
+    assert held and held <= seen["kids"]
+
+
+def _member(**over):
+    m = {"frames": 10, "hit_share": 0.4, "agree_share": 0.7, "through_share": 0.03, "free_share": 0.05,
+         "overlap": 0.9, "cross_agreeing": 0.85, "cross_through_share": 0.01,
+         "frame_shares": [[0.4, 0.7]] * 10}
+    m.update(over)
+    return m
+
+
+@pytest.mark.parametrize("over", [
+    # three of ten frames meet and agree with the room (the aligned doorway); the rest do not
+    {"frame_shares": [[0.4, 0.7]] * 3 + [[0.05, 0.2]] * 7},
+    # compared with the other members, but agreeing with them on few samples
+    {"cross_agreeing": 0.05},
+    {"hit_share": 0.05},
+    {"free_share": 0.3},
+    {"overlap": 0.02},
+])
+def test_each_member_is_judged_on_its_own_coverage_and_agreement(over):
+    pl = _measured(group=True, member_checks={"piece-0": _member(), "piece-1": _member(**over)})
+    PP.certify(pl, ENV_OK, PARAMS, r6=False)
+    assert pl.refused == [PP.REFUSE_MEMBER]
+    ok = _measured(group=True, member_checks={"piece-0": _member(), "piece-1": _member()})
+    PP.certify(ok, ENV_OK, PARAMS, r6=False)
+    assert ok.refused == [] and ok.stats["member_checks"]["piece-1"]["frames_covered"] == 1.0

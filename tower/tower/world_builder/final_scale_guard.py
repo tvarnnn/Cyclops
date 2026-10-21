@@ -635,8 +635,10 @@ def assess_v2(cameras: list[RoomCamera], metric_log: dict, params: GuardParams |
             break
         for r in isolated:
             pieces.append(dict(_v2_row_record(r), basis="scale", round=rnd,
-                               keyframe_ids=[c.kid for c in r["cameras"]], ci_log=r["ci_log"],
-                               core_log_median=r["core_log_median"]))
+                               keyframe_ids=[c.kid for c in r["cameras"]],
+                               # an isolated row without a bootstrap interval (none was computed) keeps none:
+                               # the depth placement's R1 then refuses it
+                               **{k: r[k] for k in ("ci_log", "core_log_median") if k in r}))
         gone = {c.kid for r in isolated for c in r["cameras"]}
         groups = {g: [c for c in cams if c.kid not in gone] for g, cams in groups.items()}
         groups = {g: cams for g, cams in groups.items() if cams}
