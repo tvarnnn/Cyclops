@@ -6,12 +6,15 @@ and returns a `GuardOutcome` that carries the summary and the audit. v2 is the r
   * DEPTH EVIDENCE IS READ, NEVER PREDICTED (`read_evidence`): the applied gate's `metric_log` first,
     else compatible live depth predictions (`live_depth.compatible_live_records`) from which
     `coherence_scale.metric_scale` computes ratios, else no ratios. No depth stage runs at publish.
-  * ISOLATE only a plateau with >= 10 finite ratios, its median outside the inclusive [0.8, 1.25] AND its
-    deterministic 95 % bootstrap interval (400 draws, seed 20261006) excluding 1. A plateau is bounded by
+  * ISOLATE a plateau with >= 10 finite ratios only when its median is outside the inclusive [0.8, 1.25] AND
+    its deterministic 95 % bootstrap interval (400 draws, seed 20261006) excludes 1. A plateau is bounded by
     its first and last MEASURED camera: no class is carried across an unmeasured tail. Re-segment after
     each removal.
+  * ISOLATE a SHORT plateau (< 10 ratios, too few for the interval) only when its median is outside the
+    band, every one of its ratios lies beyond the certified core's own per-camera range on that side, it is
+    not one end of a longer same-side stretch, and most of its cameras are measured (`_decide_short`).
   * QUALIFYING in-band plateaus with >= 10 ratios stay `certified`. The room is `SCALE_CERTIFIED` when
-    its certified core has >= 10 ratios and no attached uncertified span. Short plateaus, unmeasured
+    its certified core has >= 10 ratios and no attached uncertified span. Other short plateaus, unmeasured
     stretches, excursions and out-of-band plateaus whose interval includes 1 stay attached but are
     recorded `uncertified`, in `final_scale_guard.json` and on the placed component of
     `components.json` (`placed_scale_status`). No pose-only quarantine (pose screen recorded only).
@@ -47,10 +50,12 @@ WHAT v2 MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30
      until the decisions stop changing (a contaminated first median cannot hide a second mismatch).
   4. DECISIONS, per plateau with >= 10 ratios: its median ratio to the reference inside [0.8, 1.25] is
      kept and certified; outside it the plateau is a candidate, isolated `final-scale-outlier` only when its
-     bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios, an
-     unmeasured stretch, and a run of >= 3 consecutive measured cameras each beyond the clear boundary
-     (below 0.75 or above 1.333) on one side (an excursion, which the running median swallows) stay
-     attached and `uncertified`: the record does not certify an unmeasured piece's scale.
+     bootstrap interval excludes 1, otherwise attached and `uncertified`. A plateau with < 10 ratios is
+     isolated the same way only when the room's own scatter rules out every one of its cameras
+     (`_decide_short`). Any other plateau with < 10 ratios, an unmeasured stretch, and a run of >= 3
+     consecutive measured cameras each beyond the clear boundary (below 0.75 or above 1.333) on one side
+     (an excursion, which the running median swallows) stay attached and `uncertified`: the record does
+     not certify an unmeasured piece's scale.
   5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference), over the
      room's cameras in capture order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
      it moves more than max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m, or more
@@ -78,11 +83,13 @@ figure ever reaches the components record or the phone (contract §2.4 rule 6).
 
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import hashlib
 import json
 import logging
 import math
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -453,12 +460,12 @@ def _counts(items: list[dict]) -> dict:
 # v2: the rule the publish seam runs
 # ---------------------------------------------------------------------------
 #
-# Isolate a plateau ONLY when all three hold: >= `min_ratios` finite ratios; the median ratio to the
+# Isolate a plateau with >= `min_ratios` finite ratios ONLY when both hold: the median ratio to the
 # reference outside the inclusive [screen_low, screen_high]; and the deterministic 95 % bootstrap interval
 # of its median against the certified core (`bootstrap_draws`, `bootstrap_seed`) excludes 1. A plateau is
 # bounded by its FIRST and LAST MEASURED camera: unmeasured cameras inside it go with it, an unmeasured
-# head, tail or gap never does. Everything
-# else -- short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
+# head, tail or gap never does. A short plateau is isolated only by `_decide_short`. Everything
+# else -- other short plateaus, out-of-band plateaus whose interval includes 1, excursions, unmeasured stretches --
 # STAYS ATTACHED and is recorded `uncertified`, in the audit and on the placed component. No evidence: the
 # whole room is `uncertified`, nothing is isolated, nothing is withheld. No pose-only quarantine: the pose
 # screen is recorded for audit and applied to nothing. After each removal the rest is re-segmented.
@@ -529,10 +536,93 @@ def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> lis
     return out
 
 
+_LOG_FLOAT_MAX = math.log(sys.float_info.max)
+
+
+def _audit_ratio(d: float) -> float:
+    """A log ratio as the audit's rounded ratio; past the largest finite float it is `inf` (the audit writes
+    null), so a finite but extreme log ratio can never raise. Decisions never read this."""
+    return round(math.exp(d), 4) if d < _LOG_FLOAT_MAX else math.inf
+
+
+def _decide_short(row: dict, core: np.ndarray, ref: float, params: GuardParams, neighbours=()) -> None:
+    """A SHORT plateau (< `min_ratios` ratios, too few for the bootstrap interval) isolated
+    `final-scale-outlier` in place when the room's own evidence rules out every one of its cameras. All of:
+      * the certified core has >= `min_ratios` ratios spanning a real range (min < max);
+      * the plateau's median is outside the screen band (never isolate on less evidence what the long rule
+        would keep and certify on more);
+      * every one of its ratios lies strictly beyond the core's extreme on that side (decided in log);
+      * none of `neighbours` -- the nearest measured camera before and after it in its group, before and after
+        it in capture order in ANY group, and any other group's camera inside its capture span -- is on that
+        side of the band: such a camera is the same
+        stretch, cut by the running median's window where it is truncated at a group's start or end (a gate
+        group's boundary included), and isolating part of a stretch would leave the rest in the certified core;
+      * fewer of its cameras are unmeasured than measured (its reach is carried by its own evidence);
+      * 1 / C(|core| + n, n) <= (1 - ci_level) / 2, a NOMINAL floor on the core's size against n cameras: the
+        rank chance if the cameras were exchangeable, which they are not (neighbouring ratios are correlated,
+        and the plateau and the core are both selected from the same ratios), so it is a conservative
+        heuristic, not a confidence level; on real walks the core has hundreds of ratios and it never binds.
+    Otherwise it stays attached `short`. Every short row the test ran on records `core_range`, `ratio_range`
+    (ratios to the reference), `same_side_neighbour` and `beyond_core` (the decision) in the audit.
+
+    Mechanism: the core is this walk's record of how far one camera at room scale scatters; a stretch the
+    solve placed with a common scale error (one rigid similarity) shifts every camera's log ratio by one
+    amount, past that scatter and to one side. Gauge-free (log differences) and no new constant: the cut is
+    the core's own min and max. A ratio on an end of the range is inside; a non-finite value refuses."""
+    m = np.asarray(row["values"], np.float64)
+    c = np.asarray(core, np.float64)
+    if len(c) < params.min_ratios or not len(m) or not (np.isfinite(m).all() and np.isfinite(c).all()):
+        return
+    lo, hi = float(c.min()), float(c.max())
+    side = classify(float(np.median(m)) - ref, params)
+    beyond = ((side == HIGH and bool((m > hi).all())) or (side == LOW and bool((m < lo).all()))) and hi > lo
+    same_side = side != IN and any(classify(float(v) - ref, params) == side for v in neighbours)
+    evidenced = len(row["cameras"]) - len(m) < len(m)
+    tail = (1.0 - params.ci_level) / 2.0
+    level = tail > 0 and math.comb(len(c) + len(m), len(m)) >= 1.0 / tail  # an exact int-float compare
+    row.update(core_range=[_audit_ratio(lo - ref), _audit_ratio(hi - ref)],
+               ratio_range=[_audit_ratio(float(m.min()) - ref), _audit_ratio(float(m.max()) - ref)],
+               same_side_neighbour=bool(same_side), beyond_core=bool(beyond and not same_side and evidenced and level))
+    if row["beyond_core"]:
+        row.update(decision="isolated", reason=REASON_SCALE_OUTLIER, uncertified=None)
+
+
+def _capture_neighbours(measured: list[tuple[int, float]], row: dict) -> list[float]:
+    """The log ratios of the nearest measured camera before the row's first camera and after its last, in capture
+    order and in ANY group, and of every OTHER group's measured camera inside the row's capture span (`measured`:
+    (index, log ratio) of every measured camera still in the room, sorted): a gate-group boundary truncates the
+    running median's window just as a walk's end does, and interleaved groups can put the rest of the same
+    stretch between the row's own cameras."""
+    idx = [i for i, _ in measured]
+    own = {c.index for c in row["cameras"]}
+    first = bisect.bisect_left(idx, row["cameras"][0].index)
+    last = bisect.bisect_right(idx, row["cameras"][-1].index)
+    out = [v for i, v in measured[first:last] if i not in own]
+    if first > 0:
+        out.append(measured[first - 1][1])
+    if last < len(measured):
+        out.append(measured[last][1])
+    return out
+
+
+def _measured_neighbours(rows: list[dict], i: int) -> list[float]:
+    """The nearest measured camera's log ratio before and after row `i` in its own group (rows are in group
+    and capture order; unmeasured rows are skipped)."""
+    out = []
+    for step in (-1, 1):
+        j = i + step
+        while 0 <= j < len(rows) and rows[j]["group"] == rows[i]["group"] and not len(rows[j]["values"]):
+            j += step
+        if 0 <= j < len(rows) and rows[j]["group"] == rows[i]["group"]:
+            out.append(float(rows[j]["values"][-1 if step < 0 else 0]))
+    return out
+
+
 def _v2_segment(groups: dict, values: dict, params: GuardParams):
     """(reference log or None, rows, reference rounds, certified core values) for `groups`, the reference
     refined from the certified core until the decisions stop changing (at most `max_reference_rounds`); every
-    out-of-band >= 10-ratio plateau then decided by its bootstrap interval against that core."""
+    short plateau then decided by `_decide_short` and every out-of-band >= 10-ratio plateau by its bootstrap
+    interval, both against that core."""
     measured = np.asarray([values[c.name] for cams in groups.values() for c in cams if c.name in values],
                           np.float64)
     ref = dominant_level(measured, params)
@@ -556,6 +646,12 @@ def _v2_segment(groups: dict, values: dict, params: GuardParams):
             break
         seen.add(sig)
     core = np.concatenate([r["values"] for r in rows if r["certified"]] or [np.zeros(0)])
+    measured_order = sorted((c.index, values[c.name]) for cams in groups.values() for c in cams if c.name in values)
+    for i, r in enumerate(rows):
+        if r.get("uncertified") == UNCERTIFIED_SHORT:
+            _decide_short(r, core, ref, params,
+                          neighbours=_measured_neighbours(rows, i) + _capture_neighbours(measured_order, r))
+
     for r in rows:
         if r["decision"] != "candidate":
             continue
@@ -582,6 +678,9 @@ def _v2_row_record(r: dict) -> dict:
     if "ci" in r:
         out["ci"] = r["ci"]
         out["ci_excludes_one"] = r["ci_excludes_one"]
+    if "beyond_core" in r:
+        out.update(core_range=r["core_range"], ratio_range=r["ratio_range"],
+                   same_side_neighbour=r["same_side_neighbour"], beyond_core=r["beyond_core"])
     return out
 
 
