@@ -15,6 +15,8 @@ replay tooling of §8.3 are kept outside the repository; they are not files a re
 
 1. **Order.** Read §1 (one diagram, five hops) and §2 (a walk, stage by stage), then §5, the centre: each key function as WHAT, HOW,
    WHY, then who calls it and what it calls. The index at the top of §5 lists all 84.
+   **The two cartridges end to end:** §12 (World Builder) and §13 (CV Lab) explain each as one system, ending with a two-minute
+   summary; read them after §2 for the big picture before the function detail.
 2. **The five to know cold:** K9 `TowerClient.sendFrame` (how a frame leaves the phone), T3.2 `WorldBuilderEngine.observe` (each frame:
    reject, tracking lost, or keyframe), T4.6 `solve` (the GLOMAP final solve), T5.2 `surfacify` (the mesh), K14
    `TowerWorldBuilderClient.apply` (how a status snapshot becomes what the phone says and shows).
@@ -417,8 +419,9 @@ iOS 26.5, device family iPhone + iPad. About 59,500 lines of Swift in the app. E
   while its screen is visible (the Tower's people detector runs only while somebody streams and watches). Stop discards the reading; pause
   keeps the last-known one.
 - **Experimental CV Lab:** `experimental_cv.status/2026-08-27` on the result channel, plus a socket control plane: `cv_lab_status`,
-  `cv_lab_start`, `cv_lab_pause`, `cv_lab_resume`, `cv_lab_stop`, each with a bounded `request_id`. Its Pause is a frame hold on
-  `TowerClient` (`pauseFrameSending`), not a camera operation.
+  `cv_lab_start`, `cv_lab_pause`, `cv_lab_resume`, `cv_lab_stop`, each with a bounded `request_id`. The Lab's `cv_lab_pause` pauses the Tower-wide
+  experiment, keeps it loaded and refuses arriving frames. The camera card's separate "Pause frames" control calls
+  `TowerClient.pauseFrameSending()` to hold frames on the phone while the camera and stream bracket stay up (§13.7).
 - **Document Memory:** `document_memory.status/2026-09-07` pushed on the socket; `document_memory.library/2026-09-07` pulled over HTTP
   because it carries bulk, sensitive document text.
 - **Object Memory:** HTTP only, deliberately undeclared on the socket. `object_memory.observations/2026-08-26`: `GET
@@ -1094,8 +1097,8 @@ documents, so a stale result never nominates itself. `run_id` is `<tower_instanc
 refusal goes on to CV Lab consumers.
 **HOW:** Decode a `TowerFrameRefusal`; if the reason changed or 1 s has passed since the last publish, publish now, else hold it pending
 with a trailing flush at window end; always `cvLabControlEvents.send(.frameRefused)`.
-**WHY:** One `frame_error` per frame is in the contract whenever CV Lab is not running, so an ordinary walk gets them at the send rate;
-republishing each would redraw and log at about 15 Hz. Refusals leave the send window and reply counters alone. A refusal is cleared at
+**WHY:** When the Lab is not running, each decoded frame a connected client sends gets `frame_error`;
+republishing repeated refusals would redraw and log at about 15 Hz at the default send rate. Refusals leave the send window and reply counters alone. A refusal is cleared at
 stream start and stop, at teardown, on a run change, and after a valid result.
 **Called by:** `handleInboundMessage`, and tests.
 **Calls:** `publishFrameRefusal`, `schedulePendingFrameRefusal`.
@@ -1487,7 +1490,7 @@ The point (§9.3): a default Tower equals the demo Tower, and a plain Xcode Run 
 ### 7.3 The one Tower demo switch left: `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED`
 
 - **Reading.** `world_guidance_imagery_unredacted_setting()` (`config.py:989`) is true only for exactly `on`. `1` and `true` mean off. **When on.** The guidance imagery routes may serve a
-  session whose keyframe-set label is exactly `none`: no redactor ran, because the Tower's redactor was bypassed or unavailable when the walk was recorded, as in the privacy-deferred period around 2026-10-12 (`tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md`). The demo walks 9.3 and 10 themselves are redacted (`README.md`, Privacy and safety). Each entry it serves is marked `"redaction": "unredacted"`. **When off.**
+  session whose keyframe-set label is exactly `none`: either no redactor ran (the redactor was bypassed or unavailable when the walk was recorded, as in the privacy-deferred period around 2026-10-12; `tower/docs/contracts/WORLD-BUILDER-GUIDANCE-IMAGERY.md`), or the walk is still active, because `session.json` keeps its initial `none` label until `stop_session` persists the real one, even when the keyframes were redacted (§12.4). The demo walks 9.3 and 10 themselves are redacted (`README.md`, Privacy and safety). Each entry it serves is marked `"redaction": "unredacted"`. **When off.**
   Such a session is a 404. **Either way.** Other untrusted labels are refused, and appearance, depth and world-build trust are untouched. **Why it stays a switch.** It is a privacy decision,
   not a quality one, and must be an explicit opt-in per deploy. The live `.env` sets it; `.env.example` lists it commented out, so off (§11.B, item 3).
 
@@ -1812,7 +1815,7 @@ Marked **pre** if it existed before the campaign, **new** if the campaign introd
 - A `TowerClient` loopback flake (3 reruns of 98 clean); a `tracemalloc` memory-bound test, which turned out to be a test-only thread leak (fixed); `WorldImageryUITests/testThePhotoFloorplanHolds...`, a pixel flake; and `AccessibilityAudit/testHome`, an XCUITest snapshot error that passed on rerun.
 
 **Protocol and performance candidates**
-- `frame_error` arrives once per frame at the send rate (about 15 Hz at the 15 fps default) whenever CV Lab is not running, including during World Builder walks. Is it contractual with no experiment armed? The phone side was throttled (K11); traffic is a P4 candidate. (pre)
+- With the shipped `baseline` default successfully armed at boot (`TOWER_CV_EXPERIMENT`, read in `get_settings`, `config.py:568`; the live `.env` does not override it), ordinary World Builder walks receive `frame_result`, not a standing `frame_error` stream. While the Lab is starting, paused, stopped or failed, each decoded frame a connected client sends gets `frame_error` at that client's send rate (about 15 Hz at the iOS default). The phone throttles repeated refusals (K11); the traffic is a P4 candidate (§13.7). (pre)
 - `FramePTSProbe` runs in every DEBUG build (the demo is DEBUG): an unbounded sample array walked every 5 s under a lock on DAT's frame thread. Measure first. (pre)
 - Off-main frame encode (JPEG, base64, JSON): needs a design (window-check invariant, slot lifetime, failure release) and an on-phone measurement. Parked for hands-on device time. (pre)
 - `coverWords` computes `presentation` twice (optional, measured P4).
@@ -2102,3 +2105,591 @@ Content corrections (batch 21 recorded the first seven in `KEY-FUNCTIONS.md` v2.
     2.5 Mbit/s at 15 fps; neither is measured. Moving the encode off the main thread is parked and needs device time (also in §9.5).
 11. **Units.** Walk 10's scale is `uncertified`, so sizes like `voxel 0.0221` are in solve units, not certified metres. Say so if
     asked about absolute size.
+
+---
+
+## 12. Cartridge deep dive: World Builder
+
+This section explains World Builder as one system: who runs what, where each fact lives on disk, and how a walk turns into
+the room the phone shows. Function-level detail stays in §5 (T3-T7, K12-K22); the pipeline stages are S0-S11 (§2); the
+bug-fix phase is §9.6. Paths and `file:line` follow §0 item 5 (`tower/world_builder/engine.py` is `tower/tower/world_builder/engine.py`;
+`scripts/…` sits under `tower/`; iOS files are named bare). Every number below is quoted from the doc, a contract or a code comment.
+
+### 12.1 The shape: processes, threads, children
+
+**One rule holds it together.** The web process never builds a world and never imports the builder. It launches the builder by
+argv (T2.5) and exchanges capture and world data with it only through files: the capture directory going in, `worlds/<wid>/` coming
+out (§1, hop 4). Beyond that, the supervisor controls the child by closing its stdin (a soft stop) or terminating it
+(comment at `tower/capture_workers.py:217-220`; `_start`, `:998`).
+
+| Actor | Runs where | Started by | Its job | Labels |
+|---|---|---|---|---|
+| Tower web process | `uvicorn tower.main:app`, asyncio loop | `start_tower.ps1` | `/ws` ingest and recording, the session gate, the result channel, every HTTP read | T1, T2, T7 |
+| `ResultHub` loop | web process, a task polling every 0.5 s; snapshots built on worker threads | `create_app` | One complete status snapshot per watched world, never on the frame path | T7.2 |
+| `CoverageWorker` | web process, one daemon thread (`CoverageWorker.__init__`, `tower/world_builder/guidance_coverage.py:769`) | `WorldBuilderStatusProducer.__init__` (`tower/results/world_builder.py:372`) | Coverage receipt after each solve landing, 250 ms budget per job; owns `PhotoFloorplanWorker` (`__init__`, `photo_floorplan_worker.py:741`) | T3.8, T5.6 |
+| Builder | child process `scripts/world_build_session.py`, one per walk | the supervisor, at `stream_start` | Follow the capture, keyframes, interim builds, Stop, finalization, photographic stages | T4.3 |
+| Background solve | grandchild `scripts/world_solve.py` (`main` :45), one at a time | `BackgroundSolver` (`__init__`, `scripts/world_build_session.py:840`) | GLOMAP over the keyframes so far; due once 50 more are accepted and no solve is running | T3.7 |
+| Live surface | grandchild `scripts/world_surface.py --live --force [--appearance]` (`main` :128) | `BackgroundSurface` (`__init__`, `world_build_session.py:686`) | With background solves and surface enabled: a coarse live surface (appearance only when enabled) after a newly published solve | 12.4 |
+| Final solve | grandchild `world_solve.py --final` | `run_final` | The whole walk from scratch, then the publish seam | T4.5, T4.6 |
+| Idle finisher | child `scripts/world_finish_pending.py` | `_BackgroundChore` (`__init__`, `tower/main.py:454`) | Owed surface, appearance or re-gate, only while nothing streams | S11 |
+
+**Threads inside the builder.** The main thread runs the observe loop. Beside it: the live-depth worker thread (T3.6), the
+stdin-close watcher, a daemon thread that turns a closed pipe into a soft stop (`watch_stdin_close`, `tower/stdin_stop.py:143`),
+the relocalizer's matcher thread when it is on (it is off, T3.5), and a stdout-drain thread for the final solve. Stop requests
+are flags set from handlers and acted on by the main thread, because "a handler that took the store's lock or joined a child is
+how a shutdown deadlocks" (`StopRequest` docstring, `world_build_session.py:416-459`).
+
+**CPU or GPU.** "pycolmap has no CUDA build on Windows, so the solve is CPU work and the surface is GPU work"
+(`BackgroundSurface` docstring). The GPU users are live depth (MoGe-2 ViT-L), the depth stage, the transient detectors
+(Grounding DINO + SAM 2.1, or OneFormer; `transients.py` docstring) and the torch fusion. They share CPU with the solve, so the
+live surface child runs at below-normal priority on Windows, and the solve and frame ingestion win.
+
+### 12.2 Opening, attaching and stopping a session
+
+1. **Open.** The World Builder screen appears and posts `session/start` (K12 → T2.3). The open `CartridgeSession` is the
+   supervisor's gate: without it no builder attaches, so a CV Lab camera session never gets a solver.
+2. **Attach.** `stream_start` mints the capture id and spawns the builder (T1.4 → T2.4, argv from T2.5). The builder creates the
+   world at once, then **blocks on the first frame**: intrinsics are looked up by the resolution the pixels measure, because
+   resolving them before a frame existed once froze `unknown()` into a session and gave 0 poses (the module docstring of
+   `world_build_session.py`). Then `start_session` (`tower/world_builder/engine.py:281`) takes `LOCK` (T6.1), writes
+   `session.json`, and builds the redactor, selector, tracker, event log, live solve and live-depth worker.
+3. **Reconnect.** A new `stream_start` ends the old capture as `disconnect` and chains the new one into the same builder's
+   lineage (T1.4, T2.4); the follower retargets onto the successor (T3.1). One walk stays one world.
+4. **Stop.** Two independent signals arrive.
+   - `stream_stop` closes the capture (T4.2); the follower drains and the observe loop ends.
+   - Leaving the screen posts `session/stop`; the supervisor only closes the builder's stdin (T4.1). That is a **soft** stop:
+     on a normally closed capture the builder still reads every frame recorded up to the Stop (cut off by the recorder's
+     monotonic stamp) and still finalizes. A **hard** stop (`SIGTERM`/`SIGINT`/`SIGBREAK`: the Tower shutting down) skips the
+     final solve and writes what exists.
+5. **The phone vanishes.** On the last client's disconnect the Tower arms a deferred stop for that one walk,
+   `RESUME_GRACE_SECONDS` (90 s; constant definitions at `tower/capture.py:67-70`) plus a 15 s margin (`tower/routes/ws.py:644-649`), keyed on the session and
+   its ask (`_arm_world_builder_follow_up`, `ws.py:683`).
+6. **The label.** The session ends `stop` only if the capture was closed by a Stop (or a finished disconnect) and no recorded
+   frame was left unread; anything else is `interrupted` (T4.3: the block after the observe loop in `main`).
+
+### 12.3 Where state lives: the world tree
+
+```
+<TOWER_WORLD_ROOT>/worlds/<wid>/
+  LOCK                         single writer: {pid, created_at}; liveness = pid + process start time  (T6.1)
+  world.json
+  sessions/<sid>/
+    session.json               record: redaction label, finalization, stages               (engine, finisher)
+    keyframes.jsonl            THE authoritative input to every rebuild                      (T6.2)
+    events.jsonl, edges.jsonl  journal; edges are recomputed on every build
+    images/<seq:08d>.jpg       keyframe JPEGs, face-redacted when the redactor succeeds (original bytes when it is
+                               unavailable or fails); never rewritten (images.redacted-*/ beside it after a re-redaction)
+  derived/manifest.json, derived/<sid>/   poses, points, support, placements, manifest: rebuildable, digest-checked (T6.3, T6.4)
+  solve/<sid>/                 images/ (undistorted solver frames), database.db, sparse/, camera.json, sources.json,
+                               solution.json + .npz, components.json, final_scale_guard.json, solve.log
+  dense/<sid>/                 live_depth/ (walk-time MoGe-2), work/depth/ (fills, transient masks), align.json
+  surface/<sid>/               status.json, levels, manifest, surface.log                    (T5.2)
+  appearance/<sid>/            manifest + content-addressed chunks                           (T5.4)
+  areas/<area_id>/             an area laid out as a world of its one session + record.json  (components.py docstring)
+```
+
+Paths come from `WorldStore` (`__init__`, `tower/world_builder/store.py:255`), `workspace_for` (`global_solve.py:250`), `surface_dir`
+(`surface_pipeline.py:111`), `appearance_dir` (`appearance_pipeline.py:81`), `dense_dir` (`dense_pipeline.py:214`) and
+`components_path` (`components.py:120`). The coverage receipt, the guidance thumbnails and the floor-plan tiles
+are not in this tree: they live in the web process's memory (`CoverageWorker.latest()`; `ImageryState`,
+`ImageryState.__init__`, `guidance_imagery.py:125`, "per-root memory only").
+
+**Write rules, and why they look like this.** The `store.py` docstring names three Windows behaviours: directory fsync
+fails, replace onto an open file fails, unlinking an mmap'd file fails. So:
+- every JSON write is temp + fsync + replace with retry (T6.5); no checkpoint directories, nothing mmap'd;
+- journals are append-only and heal a torn last line (T6.2); an image is written before its journal line (T1.5, `_persist_keyframe`);
+- `derived/` is one rebuildable tree, refused when its input digest no longer matches `keyframes.jsonl` (T6.4);
+- photographic stages publish as a unit and record a terminal state even when they fail; a torn mesh buffer is refused by
+  its length and magic (`surface_pipeline.py` docstring);
+- During the locked finalization interval, `LOCK` held by a live pid plus `finalization: pending` identifies the finishing
+  builder (T4.4). After the lock is released, stage records and status files report the photographic work.
+
+### 12.4 During the walk
+
+**The per-frame path is cheap on purpose** ("observe cheaply, build expensively", `engine.py` docstring). `observe` (T3.2)
+decodes, scores (`analyse_frame`, `tower/world_builder/frontend.py:223`), tracks (`FrameTracker.__init__`, `frontend.py:325`:
+Shi-Tomasi corners, pyramidal Lucas-Kanade at level 4, 3 px forward-backward check) and asks the keyframe policy (T3.3,
+`KeyframePolicy` declaration, `keyframes.py:90-90`). The tracker reads no clock and needs no intrinsics; every threshold is pixels or ratios.
+
+**Segments.** A `tracking_lost` opens a new segment. Each segment carries one incremental `_LiveSolve` (`_LiveSolve.__init__`, `engine.py:1721`); it
+"never crosses a tracking_lost: segments do not share a coordinate frame or a unit". The global solve can place segments in a
+shared frame, through placements, so the geometry contract never changed (`global_solve.py` docstring, "How it reaches the
+phone"); if it supplied no placements, `register_session` (`world_build_session.py:1546`) can register the local segments instead.
+
+**Interim builds.** `engine.build` (T4.9) rewrites `derived/` every 4 keyframes, and at once when a background solve lands.
+Past 600 keyframes the interval doubles (8 from 601, 16 from 1,200, … capped at 64; `rebuild_interval`,
+`world_build_session.py:1485`), because measured builds took 81% of wall clock at interval 4 on 601-800 keyframes.
+
+**Background solves** (T3.7). Once at least 50 more keyframes have been accepted and no solve is running, `world_solve.py`
+re-solves from scratch. It reuses the session's prepared images, features and tested pairs, so new keyframes add most of the
+work, though a re-run of loop detection can also propose new pairs between existing images. Every solve asks for loop detection
+(`_argv`, `world_build_session.py:896`; it runs when the vocabulary tree is cached): sequential-only solves fragmented as the
+walk went on (6 → 16 components), with loop detection they converged (largest component 0.75 → 0.95).
+
+**The live surface.** With background solves and surface enabled, a newly published solve can trigger `BackgroundSurface` to
+launch `world_surface.py --live --force` (with `--appearance` only when appearance is enabled), after the next accepted frame
+and a successful interim rebuild; a solve landing while one runs is queued, and failed or unchanged solves start nothing
+(the live-surface decision block, `world_build_session.py:2493-2622`). It
+uses `SurfaceParams.live` (`tower/world_builder/surface.py:962`: voxel twice as coarse, two LOD levels, OneFormer only) and
+`AppearanceParams.live` (`appearance.py:294`), because "the live job's budget is the gap between global solves -- roughly
+18 s of walking". The evidence and privacy rules are not relaxed. An unfinished live child is terminated when the walk ends; a completed live
+artifact can serve as the preview after Stop.
+
+**Live depth** (T3.6) predicts MoGe-2 depth per accepted keyframe off the frame path; it later serves as the scale guard's
+evidence and the surface's head start. The **relocalizer** is off (T3.5).
+
+**Guidance: what the phone sees during the walk, and why.** The panel's phase is `.walking` whenever the phone is capturing
+(`WorldPanelPhase.phase`, `WorldPanelPhase.swift:29`): capture health and the dial, no 3D. The dial (K22) is drawn from the
+coverage receipt (T3.8), which counts only keyframes posed with at least 30 observations in a reliably placed component of a
+*published* solve. So it is real solve evidence, it moves once per landing, and it lags the head "by a minute or two" (K22). It
+draws twelve 30° directions per piece and never claims where the wearer is. Thumbnails (B1 live, B2 landed: at most 16, 16 KiB,
+160x90) and the photo floor plan (T5.6) come from the same web process. The Map face is off by default (§7.5).
+
+**Redaction and the trust switch.**
+- While capture is active and within its time and byte limits, the Tower writes incoming **raw** JPEGs to the capture
+  directory (T1.5). For an accepted keyframe, the builder
+  fills faces with YuNet in `_persist_keyframe` (`engine.py:1597`) before writing the session's keyframe copy (T3.4). A frame
+  the redactor cannot do is stored as is and makes the session's label `none`, sticky.
+- Readers trust only an exact allowlist of labels (`TRUSTED_REDACTION_LABELS`, `label_is_trusted`, `appearance.py:374`).
+  Anything else is re-redacted before use, or refused.
+- **During an active walk, `session.json` can keep its initial `none` label even when the keyframes were redacted.**
+  `Session.redaction` starts as `none` (declaration, `records.py:636-636`); accepted-frame redaction updates the engine's in-memory
+  session (in `observe`, `engine.py:361`), interim builds rewrite the disk record from its stored value (in `build`, `engine.py:891`),
+  and `stop_session` (`engine.py:657`) persists the real label. Hence
+  "a walk-time build that re-redacted every frame" (`appearance_revision`, `tower/results/world_builder_appearance.py:251`).
+- The guidance routes read that stored label (`ImageryState.live`, `guidance_imagery.py:132`, via `keyframe_image_set`;
+  `_tile`, `:89`).
+  Guidance treats that interim `none` as untrusted, so live tiles are served only under
+  `TOWER_WORLD_GUIDANCE_IMAGERY_UNREDACTED=on` and are marked `unredacted` (`serves_unredacted`, `:59`), although the stored
+  JPEGs did pass the redactor. (This qualifies §7.3's reading that `none` means no redactor ran.)
+
+### 12.5 At Stop: finalization
+
+The order inside the builder (T4.3), with the lock held until step 6:
+
+1. `stop_session(hold_lock=True)`: `finalization: pending` (T4.4).
+2. Wait up to 120 s for a running background solve, then **terminate** it so the final solve owns the workspace
+   (solve-wait setting, `world_build_session.py:137-145`; `BackgroundSolver.wait`, `:1115`). `TOWER_WORLD_FINAL_IMMEDIATE=on` stops it at once instead.
+3. `run_final` → `world_solve.py --final` → `solve` (T4.5, T4.6).
+4. The publish seam, `gate_and_publish` (T4.7): gate (off), scale guard (on), write, then records.
+5. `engine.build` merges the solution into `derived/` (T4.9, `merge` at `global_solve.py:2914`).
+6. `mark_finalization`, then `release_world`. Outside the lock: `register_session` (`:1546`, only when the solve did not place
+   the segments), `final_surface_stages` (T5.1), `settle_areas_nobody_will_build` (`components.py:669`), dense if asked.
+
+**The final solve** (`global_solve.py` docstring "The recipe"):
+- Each keyframe is undistorted once to a pinhole image. The source is the raw capture frame when it is on disk
+  (`sources.json`), else the redacted copy (`prepare_images`, `:532`).
+- SIFT on CPU (about 15 ms a frame, at most 4,096 features), then sequential matching 20 keyframes either side (about 75 ms a
+  frame), plus loop detection.
+- GLOMAP (rotation averaging, global positioning, bundle adjustment), with the incremental mapper as fallback (`_map_candidate`, `:1744`).
+- A camera with fewer than 30 3-D observations stays unplaced, because GLOMAP "poses EVERY image in a connected view graph" and
+  zero-support cameras sat 30-214 units from a 12-unit room (support-threshold comments and constants, `global_solve.py:124-134`). A model under 5 images is
+  not a component (same range).
+
+**The coherence gate: merged, off by default** (`TOWER_WORLD_SOLVE_GATE`, §7.4). When on, it runs depth before publish on the
+candidate, computes per-camera metric scale, decides which pieces attach to the room from verified links, and relabels; coordinates
+are never moved (`coherence_publish.py` docstring, steps 1-4). With it off, nothing of that runs, nothing is owed, and T4.10 is dormant.
+
+**The final scale guard: always on** (T4.8; rules in `final_scale_guard.py:1-82`).
+- **Evidence is read, never predicted** (`read_evidence`, `:958`): the gate's metric log, else walk-time live depth
+  (`compatible_live_records`, `live_depth.py:402`). With neither, the room is published `uncertified`.
+- **Plateaus.** Per room camera, log(z_sfm / z_metric). The walk is cut in capture order into plateaus where a centred running
+  median of 11 measured cameras stays on one side of the band [0.8, 1.25] around the room's reference.
+- **Long rule.** A plateau with 10 or more ratios is isolated when its median is outside the band and its 95% bootstrap
+  interval (400 draws, fixed seed) excludes 1.
+- **Short rule** (`_decide_short`, `:548`). Every ratio must lie beyond the certified core's own range, with no same-side
+  neighbour; the six conditions are in §9.6 bug 7.
+- **Isolating** relabels a stretch into its own unplaced component, reason `final-scale-outlier` (`relabel_solution`,
+  `coherence_publish.py:356`). Frames and coordinates stay; nothing is deleted.
+- **Fail-closed only on faults.** An exception, or a relabel that leaves no room, withholds the publish. Scale alone never does.
+
+**Components and areas.** `solve/<sid>/components.json` lists the published pieces: the room, pieces solved separately, and
+isolated stretches. The phone sees rows with `shown_as` (room, area, none) and never a ratio
+(`docs/contracts/WORLD-BUILDER-COMPONENTS.md` §2.4 rule 6). An **area** (at least 30 keyframes or 5 s) can be built in its own
+levelled frame with the room's own stages (`tower/world_builder/area_build.py` docstring). When no process will build an owed
+area (area builds are off by default, §7.4), the builder records it as declined.
+
+**Why the same walk gives different rooms.** The live product is unseeded and multithreaded (`threads=-1`). Several things move
+from run to run:
+- multithreaded matching is not reproducible: 62 of 7,450 pairs matched differently twice (`solve` docstring);
+- loop detection re-run on an existing database proposes new pairs;
+- the final solve maps the database the walk's background solves accumulated, including the pairs their loop-detection runs proposed;
+- GLOMAP's own random draws are unseeded.
+
+Seeding (`TOWER_WORLD_SOLVE_SEED`) fixes the mapping, run single-threaded at about 3.3x the mapping time (§7.4); the matching
+stays variable until a seeded final solve freezes it (§9.5). §9.4 item 3 shows the variation is code-independent.
+
+### 12.6 The photographic ladder
+
+| Rung | Built by | From | Output | Notes |
+|---|---|---|---|---|
+| Sparse | `engine.build` (T4.9) | segment estimates + global solution | `derived/<sid>/` | Bottom rung; also the diagnostic gallery (K16) |
+| Depth | `ensure_depth_stage` (T5.3), `run_depth_stage` (`dense_pipeline.py:963`) | redacted keyframes, MoGe-2, fitted to sparse points | `dense/<sid>/work/depth`, `align.json` | Shared by surface and dense; reuses live depth |
+| Surface | `surfacify` (T5.2) | depth + poses | `surface/<sid>/` mesh LODs | depth → transients → consistency → TSDF fuse → mesh (+ plane snap) → pack |
+| Appearance | `build_appearance` (T5.4) | redacted keyframes + the surface's phone level as proxy | `appearance/<sid>/` chunks | Top rung; 128 keyframes for the phone |
+| Dense | `densify` (T5.5) | depth + solve | `dense/<sid>/` points | Off (`TOWER_WORLD_DENSIFY`) |
+| Floor plan | `build_landing` (T5.6) | each landed solve's keyframes | memory, one tile per component | Web process, not the builder |
+
+**Surface gates (what keeps bad geometry out of the fusion).**
+- **Pose gate** (`robust_pose_outliers`, `tower/world_builder/surface.py:246`). A pose is dropped only when it lies beyond both
+  10x the median pose radius and 2.5x the 95th-percentile radius. The gate stands down below 8 poses, or when it would drop
+  more than 5%.
+- **Fusion bound** (`robust_fusion_bound`, `:339`). Depth is fused only inside the box of observed points and cameras,
+  scaled x2.
+- **Transient masks.** Hands, arms and the held phone get zero fusion weight (`transients.py`).
+- **Evidence.** The fused weight must reach `min_weight` (2.0 final, 1.5 live; `SurfaceParams.live` docstring).
+
+**Appearance (the phone layers).** `keyframe_source` (`appearance.py:552`) is the only function that opens a keyframe image,
+and only from `sessions/<sid>/images`. A static test enforces that it never opens the solve's raw undistorted frames. The
+pipeline then:
+- casts the proxy into each keyframe;
+- uses each frame's own redaction mask; a cross-frame redaction consensus, which would keep a face filled in one frame from
+  showing through another, exists but is off by default (`redaction_consensus`, default-setting comment, `appearance.py:207-214`);
+- votes out transients and solves exposure gains (`solve_gains`, `:1290`);
+- selects by coverage and encodes 16-slot chunks: WebP always, ASTC 6x6 too when available for the phone tier, WebP only for
+  the Tower tier.
+
+**How the phone's picture upgrades.** During the walk, no 3D is shown, although walk-time surfaces and appearances exist on
+disk. After Stop, while the stage is still changing, the panel is `.finishing(target:)`: a target means a preview exists, so the
+walk-time picture can show while the final one builds. The viewer then follows revisions (K20): an upgrade (sparse < dense <
+surface < appearance) swaps itself in; a same-rung rebuild is offered as a button. Inside the appearance page, `FOLLOW.decide`
+(`tower/world_builder/appearance_viewer.html:474`) keeps drawing the walk's textures across the Stop's label change. When the
+Tower answers `rebuilding` it holds them up to 45 minutes with nothing building, and indefinitely while a build is live.
+
+### 12.7 Serving and the viewer
+
+**Status and geometry.** The status push and the manifests are covered by T7.1-T7.5 and K13-K16. Nothing on the result channel
+is computed on demand, and missing work is owed to the finisher (§3.2).
+
+**The page.** `build_world_render` (T7.6) serves the best rung the client declares it can draw; the phone declares
+`viewer=appearance-1` (`viewer_draws_appearance`, `tower/results/world_builder_render.py:229`). For the phone it is the
+**native-chrome variant**: the web page plus five insertions (echo meta, CSS that hides the page's own controls, two read-only
+hooks, a per-frame call, the bridge script), all five or none (`compose`, `tower/world_builder/native_chrome.py:105`). It
+shares the web page's revision.
+
+**Inside `appearance_viewer.html`** (one file, about 5,200 lines; the pure parts are tested under node):
+
+| Part | Code | How it works |
+|---|---|---|
+| Transport | `fetchBytes` :399 | Every fetch goes to `CONFIG.base` (`glasses-world:` on the phone, proxied by K21), 45 s timeout, 3 attempts, `cache: 'no-store'`; texture arrays live on the GPU, reduced depth copies stay in page memory |
+| Encoding | `ENC.choose` :549, `capacity` :564 | ASTC only if the device, the manifest and an actual phone ASTC chunk all agree; else WebP. Layers = min(manifest budget 128, 192 ASTC / 48 RGBA8, device array limit) |
+| Rendering | `main` :2120, `choose` :3771, `drawBlend` :3837, `frame` :4018 | WebGL2. A depth prepass draws the proxy mesh first, so the blend shader runs once per visible pixel. Per frame the CPU picks 8 candidate keyframes from a 32x24 probe; each pixel blends up to k = 4 eligible sources, weighted by view angle together with visibility, distance, source quality and confidence (softmax). Exposure gains, a confidence fade, a flat grey haze for surface no kept frame saw, crack fill and soft edges finish it |
+| Navigation | `NAV` initializer :592-598, `NAV.step` :1186 | Looking is free (full yaw, pitch to 80°). Moving is bounded by a tube around the recorded walk (2.2 across, 1.4 vertical, x scene unit) and by the "walk collision": a standoff from the sampled proxy surface, from the nearest support-field sample (`nearest` :1116, `closeBound` :1139) |
+| Support field | `navInputSteps` :3239, `fieldJob` :793, `fieldWork` :950, `support` :1007 | 6,000 area-weighted samples on the proxy, each with the keyframes that saw it. On a 0.7-unit lattice in the tube, each cell holds a 6x8x8 cube map of coverage, distance and content per direction. Built in 14 ms slices, a 2x-coarse field first, then the fine one (`buildNav` :3378) |
+| What reads the field | `darkness` :1172, `ringProfile` :1055, `bestHeading` :1082, `findOverview` :3564 | The dark hint; the orientation ring and *Face the room*; **Best view** (button `bOverview`, `overview` :3704): raised lattice vantages scored by support, depth, content and facing what the walk looked at (`lookFocus` :917), then 128 px trial renders judged by drawn share, detail, depth range, fade and tearing. ← → glide along the recorded poses (`step` :4618) |
+| Bug 2 fix (§9.6) | `fieldJob` :793, `fieldJobWithin` :929, `lookKept` :897 | Cells are enumerated per pose cube when that is cheaper than the bounding box. Poses beyond 2^40 lattice steps are skipped. Budgets 2^25 bytes and 2^28 comparisons are checked before allocating; over budget, spacing coarsens by 2^(1/3) per step. A fault in a slice stops the build and clears "Preparing the view…". Best view's focus applies the surface gate's default outlier thresholds to the published camera list |
+
+**The native chrome bridge.**
+- **Page side.** `tower/world_builder/appearance_chrome_bridge.js` (`start` at :195) posts to the script handler `wbChromeV1` (protocol 1): `hello`,
+  then `state` and `view` (the heading, at most every 34 ms). It keeps exactly one `await` outstanding. The app runs no script
+  in the page: every command is the reply to that `await`.
+- **Phone side.** `WorldChromeBridge` (`WorldChromeBridge.swift`) carries messages; the pure state machine
+  `WorldChromeSession` (`WorldChromeProtocol.swift`, `receive` :661) decides every reply: `welcome`, `decline`,
+  `activate`, `action(best|face|previous|next|reset)`, `deactivate`, `close`.
+- **Fallback.** No `hello` or no `state` within 5 s falls back to `legacy` for the life of the screen: the page keeps its own
+  web chrome. A missing deactivate confirmation (2 s) reloads the page once (`receive`, the `.timer` case).
+
+**The iOS side, end to end.**
+- `WorldInlinePanel` (`WorldInlinePanel.swift`) is one panel for the whole walk: the dial (`captureDial` :779), then
+  finishing progress, then the inline world.
+- `WorldRenderScene` (`WorldRenderViewer.swift`) is the full screen.
+- `WorldRenderViewerModel` fetches the page and follows its revision (K19, K20). One locked-down `WKWebView` loads only its
+  own page and proxies only this world's routes (K21).
+- `WorldChromeOverlay.swift` draws the controls in SwiftUI.
+- World-stage and reconstruction wording comes from the Tower's status (K17, K18); the native viewer chrome also shows
+  page-supplied state (`hello.labels`, `state`) and a few iOS-owned labels.
+
+### 12.8 Failure modes and limits
+
+| Failure | What you see | Cause in the code | Status |
+|---|---|---|---|
+| **Capture-side gaps** (§9.6 bugs 1, 6) | Bathroom or hallway missing, or shown as a separate piece | Matching proposes only sequential (±20) and loop-detected pairs, and a pair needs 15 verified inliers. Ceiling views and plain walls give 0-7 candidate matches, so the cluster has no verified link and becomes its own component, or a rotation-only hinge places it far away | Capture guidance is next (§9.6); `fix/place-cut-pieces` parked, off |
+| **Non-reproducible solves** (§9.5) | One walk gives a main component of roughly 600-880 images, sometimes with a far span | Unseeded multithreaded matching, re-run loop detection, a timing-dependent database, unseeded GLOMAP (12.5) | Open; seeding is a switch, not the default |
+| **Far poses** (§9.6 bug 2) | Viewer stuck on "Preparing the view…" (fixed); far cameras in the list | GLOMAP placed 32 of 1,242 images over 10x the room radius. The 30-observation floor excludes cameras with fewer than 30 3-D observations, so supported far poses can remain (`global_solve.py:124-130`). The guard isolates only measured plateaus. `_camera_path` (`surface_render.py:431`) publishes far cameras while pose quarantine is off | Viewer fixed; short far plateaus now isolated (bug 7); unmeasured "riders" open |
+| **Tilted rooms** (§9.5) | Room shown 8-9° off level | A far span can survive the surface pose gate (`surface.py:246`) in two ways: it inflates the p95 radius so it is not identified, or gating the identified outliers would drop more than 5% of poses, so the gate stands down. The recorded runs do not say which path let the tilted run's span through. `_world_up` (`surface_render.py:478`) then refines a camera-based vertical against a mesh holding that misplaced geometry; when `surface_up` (`:509`) refuses, the unrefined camera estimate stands | Open (pre-existing) |
+| **Stop discards work** (§9.6 bug 3) | 7-11% of a build lost | The 120 s wait at Stop terminates a running background solve (`BackgroundSolver.wait`, `:1115`) | Noted for the optimization phase |
+| **Scale** (§11.B item 11) | Sizes in solve units | No certified core means `uncertified`; the viewer derives a solver-relative scene unit from `median_scene_depth / 4.7`, with fallback and clamping (scene-unit expression, `appearance_viewer.html:362-366`) | By design |
+
+**Cost and time per stage** (measured figures only, with their source):
+
+| Stage | Cost | Source |
+|---|---|---|
+| Per-frame observe | about 5 ms per 360x640 frame | `frontend.py` and `engine.py` docstrings |
+| Face redaction | 17.4 ms per frame at 640x360 (YuNet) | `redaction.py` docstring |
+| Interim build | 0.141 s mean at 1-200 keyframes, 1.006 s at 601-800 | comment table, `world_build_session.py:1462-1467` |
+| Background solve | about 40-80 s for a two-minute walk; loop detection 1.2-1.9x sequential | comments, `world_build_session.py:137-139`, `:928-929` |
+| Solve parts | SIFT ~15 ms/frame, matching ~75 ms/frame; GLOMAP 43 s for 438 keyframes | `global_solve.py` docstring |
+| Final solve (walk 10) | finalize 216.5 s live, 153.8 s final run; GLOMAP mapping 73.8 s (final run) | §2 S5 |
+| Depth | 68 s of GPU on the corpus | T5.3 |
+| Transients | OneFormer about 0.35 s per keyframe; the union about twice that | `transients.py` docstring |
+| Surface; appearance (walk 10) | 446.7 s; 124.4 s live, 431.9 s; 114.9 s final run | §2 S7, S8 |
+| Stop → done (walk 10) | 787.6 s live, 700.6 s final run | §2 table |
+| Viewer field (10.2) | navigation ready in about 11-13 s | §9.6 bug 2 |
+
+### 12.9 How to explain it in 2 minutes
+
+"The glasses stream to the phone, and the phone streams JPEGs to a Windows PC, the Tower. While capture is active and within its
+limits, the Tower records the raw frames. With the World Builder screen open, a separate builder process reads that capture and
+writes the world; the supervisor can ask it to stop softly through stdin or terminate it. That keeps builder work off the web
+event loop, although shared machine resources and synchronous CV Lab processing can still delay frame replies.
+
+During the walk the builder keeps a frame as a keyframe when it is sharp, tracked and has moved enough: 1,148 of 2,920 on the
+reference walk. It attempts face redaction before storing each keyframe copy; if the redactor is unavailable or fails, it stores
+the original bytes and labels the session `none`. Every 50 or so keyframes a background structure-from-motion solve, GLOMAP on SIFT features, re-solves the walk
+so far. From that the Tower computes which directions of each room piece are really covered, and the phone shows them on a dial.
+
+At Stop, one final solve runs from scratch over the whole walk. Before publication, the always-on scale guard reads compatible metric evidence from the coherence gate, when present, or
+from walk-time live depth. It isolates qualifying out-of-band stretches as their own pieces without deleting frames. With no
+usable evidence, it publishes the room as `uncertified`. Then the photographic stages run on the GPU: depth per keyframe, a TSDF mesh with the wearer's hands
+masked out, and finally the redacted keyframes themselves, projected back onto that mesh.
+
+The phone gets a WebGL page that selects candidate photos and blends up to four eligible sources per pixel using view angle,
+visibility, distance, source quality and confidence, with native controls drawn over the page. It lets you look anywhere, but only move near where you actually walked, because elsewhere there is no photograph.
+
+The honest limits: the default unseeded, multithreaded solve varies run to run; rooms joined only through ceiling or blank-wall views come apart;
+and a far-placed span can still tilt a room. The next step is capture guidance, so the walk itself gives the solver the links
+it needs."
+
+---
+
+## 13. Cartridge deep dive: CV Lab
+
+The CV Lab is the cartridge that answers every frame. Its function entries are in §5 (Tower: T1.2, T2.2, T8.7-T8.9; phone: K10, K11, K26) and its wire is in §6; this section
+shows how the parts work as one system. The contract is `tower/docs/contracts/EXPERIMENTAL-CV-LAB.md` ("contract §n" below). `docs/contracts/` has no CV Lab contract of its own
+and mentions the Lab only in `TOWER-UNIFIED-CARTRIDGES.md`. Paths follow §0 item 5.
+
+### 13.1 Purpose and shape
+
+**WHAT.** A bench for running computer-vision experiments on the live glasses stream. A person picks one of eight registered experiments on the phone; the Tower arms it with no
+restart and runs it on every frame the phone sends. A result normally carries a `cv_lab` provenance block naming its run, its experiment, and whether it was measured or
+inferred; if attribution itself fails, the Tower logs the fault and sends the result without that block (`lab.py:579-595`, `ws.py:234-236`).
+
+**WHY.** Before the Lab, `TOWER_CV_EXPERIMENT` fixed the experiment at Tower start, and nothing on the wire said which one had produced a number (contract §0). The variable now
+names only the startup default (`baseline`), armed at boot so that a client knowing nothing about the Lab still gets a `frame_result` per frame. The Lab is also where a detector
+is measured before promotion: `object_detection` exists to help choose Scene Understanding's detector (its module docstring).
+
+**Shape.** `ModuleContainer` holds one module and never swaps it (T2.2). That module, `ExperimentalCVModule` ("experimental-cv", declared to persist nothing and keep no raw
+imagery), holds one `CVLab`, and the Lab holds one armed experiment at a time. `app.state.cv_lab` is that same object, read by the command handler, `GET /cv-lab`, the preview
+routes, the result-channel producer and `ws.py`. `_build_cv_module` (`tower/main.py:133`) builds it inside T2.1, and `create_app` arms the startup default synchronously through
+`asyncio.run(container.load_and_start())`, within the container's 120 s `LOAD_TIMEOUT_S`.
+
+| Module | Role | Entry points |
+|---|---|---|
+| `tower/cv_lab/contracts.py` | The strings a phone switches on: ids, the 7 states, refusal and frame-refusal reasons, bounds | constants |
+| `tower/cv_lab/catalog.py` | The registry as the list the phone shows, sorted by id; the phone keeps no list of its own | `catalog` (`:81`), `descriptor` (`:28`) |
+| `tower/cv_lab/run.py` | One run: its id, its counters, and an O(1) aggregate per declared metric | `LabRun.record_result` (`:252`) |
+| `tower/cv_lab/loader.py` | One daemon load thread, reused for every arm and retired when a load is abandoned | `ExperimentLoader.run` (`:135`) |
+| `tower/cv_lab/preview.py` | One throttled in-memory preview slot, encoded only when a client asks | `LivePreview.capture` (`:1125`), `.render` (`:1167`) |
+| `tower/cv_lab/lab.py` | The slot: lifecycle, the frame path, the one status document | T8.7, T8.8, `CVLab.status` (`:1279`) |
+| `tower/experiments/` | `__init__.py`: `ExperimentResult`, the `Experiment` protocol (load / run / release), `MetricKind`, the `_REGISTRY` table; one file per experiment (§13.4) | `experiment_metadata` (`:1038`), `classify_metric` (`:1056`) |
+| `tower/modules/experimental_cv.py` | The module wrapper; builds the one Lab; `_do_process` (`:94`) calls T8.7 | `_do_load` (`:78`) |
+| `tower/routes/cv_lab_ws.py` | The socket control plane | T8.9 |
+| `tower/routes/cv_lab.py`, `cv_lab_preview.py` | `GET /cv-lab`: the document, plus `process` (pid, threads, RSS) beside it. `GET /cv-lab/preview` and `/preview/status`: the bytes, or the descriptor alone; plain `def` routes, so the encode runs in the thread pool | `cv_lab` (`cv_lab.py:30`); `preview` (`cv_lab_preview.py:150`), `preview_status` (`:128`) |
+| `tower/results/experimental_cv.py` | The result-channel producer, a thin wrapper over `CVLab.status()` | `ExperimentalCVStatusProducer.snapshot` (`:66`) |
+
+### 13.2 The lifecycle state machine
+
+```
+ boot: load_initial (lab.py:323) ──▶ starting ◀── cv_lab_start, from any state but unavailable (lab_busy while an arm is in flight)
+                                      │    │  _arm (lab.py:852) on the loader thread, bounded at 120 s
+                              load ok ▼    ▼ load raised or timed out
+           running ──▶ failed   when the experiment raises a non-FrameProcessingError on a frame (run ended, experiment released)
+   running ── cv_lab_pause ──▶ paused
+   paused  ── cv_lab_resume ─▶ running
+ cv_lab_stop from running, paused or starting ──▶ stopped      (figures frozen until the next start; an arm in flight is cancelled)
+ release() on module unload or module FAILED  ──▶ unavailable  (terminal; every command gets lab_unavailable)
+```
+
+Seven states (contract §3.1). `idle` is set only by the constructor (`CVLab.__init__`, `lab.py:235`); `create_app` arms before serving, so a client normally never sees it. `failed` is always
+recoverable with another `cv_lab_start`. While the module is ACTIVE, a frame reaching a Lab outside `running` is refused with `cv_lab_<state>`; an unavailable module is answered
+`module_unavailable` before the Lab is reached (§13.3).
+
+**Start returns at once** (T8.8). A model-backed `load()` blocks: it imports torch, downloads weights and moves the model to the device. Awaiting that in a receive loop would
+stop the socket reading for minutes, and iOS replaces a connection it cannot write to for 2 s (`lab.py` module docstring, item 2). So `start` validates, mints a run, drops the
+old experiment, publishes `starting`, schedules `_arm` as a task and replies `accepted`. `_arm` runs the load on the `ExperimentLoader` thread under `asyncio.wait_for`, because
+`wait_for` can cancel only at an `await` and `torch.hub.load` has none. One thread is reused because a fresh thread per arm leaked torch's OpenMP team: +19 OS threads and about
+8 MB per arm, measured (`tower/cv_lab/loader.py` docstring). The outcome arrives as **state**, with no `start_failed` reply, because the command was already answered. A load that finishes
+after a stop or a newer start fails the run-id check and is released, never installed.
+
+**The `[ml]` extra and weights.** `[ml]` is `torch` and `torchvision` (pinned `+cu132` builds from the PyTorch index) plus `timm`. Only `depth` (torch, timm) and
+`object_detection` (torch, torchvision) need it (required-modules table, `lab.py:162-167`). Availability is checked per experiment with a cached `importlib.util.find_spec`
+(`_module_is_installed`, `:169`), which imports nothing; a missing module makes the catalog row `available: false` and a start `experiment_unavailable`. The network cannot be
+checked: on first use `depth` fetches MiDaS_small through `torch.hub`, 85.8 MB of weights plus a 33.2 MB backbone, 119 MB in all. Hence the 120 s bound, enough for that download
+at about 8 Mbit/s (`tower/modules/container.py`); an offline Tower accepts the start, then goes `failed` with the reason. `run.arm_ms` times each arm. Contract §3.3 gives warm
+figures of about 230 ms for `depth` on CUDA, about 150 ms for `object_detection`, and under 1 ms for the rest. `TOWER_CV_DEVICE=auto` means CUDA when usable
+(`resolve_device`, `tower/experiments/depth.py:20`); `run.runtime` reports the device and model actually loaded.
+
+**Pause** (`pause`, `lab.py:969`) applies only to `running`. The experiment stays loaded, so a paused `depth` run resumes instantly while a stopped one pays the load again. The
+run is not over: arriving frames are refused `cv_lab_paused` and counted in `frames_refused`, which shows whether a phone is still sending. The preview is emptied. The phone has
+a second, different pause (§13.7).
+
+**A crash.** In T8.7, a `FrameProcessingError` from the experiment refuses only that frame (undecodable, too small): the run goes on, the frame counts in `frames_failed`, and the
+client gets `frame_skipped`. Any other exception goes to `_fail_run_on_frame` (`:1190`): the run ends, the state becomes `failed` with the reason, the experiment is released, the
+frame is answered `cv_lab_failed`, and the module stays ACTIVE (before 2026-09-06 it went terminally FAILED). The handler first checks that the crashed instance is still the
+installed one, so a slow frame cannot fail a successor's run. One terminal case remains, a startup load that overruns 120 s: the container marks the module FAILED, `release()`
+moves the Lab to `unavailable`, and only a restart recovers (contract §11, item 3).
+
+### 13.3 The frame path
+
+```
+K9 sendFrame ─/ws─▶ T1.1 ─▶ T1.2 _handle_frame_message (ws.py:81)                      one event loop; no await until ①
+  parse_and_decode_frame ── bad ──▶ note_frame_rejected_before_processing (lab.py:682) ▸ frame_error invalid_frame ▸ no fan-out
+  T2.2 ModuleContainer.process ── module not ACTIVE ──▶ frame_error module_unavailable
+    └ ExperimentalCVModule._do_process ─▶ T8.7 CVLab.process
+         not running ──▶ FrameProcessingError(reason=cv_lab_<state>) ─▶ FrameSkippedError ─▶ frame_error <reason>
+         _arm_preview_for_frame ▸ experiment.run(raw_bytes) ▸ LabRun.record_result ▸ _provenance ▸ _offer_preview
+  _cv_lab_provenance ─▶ CVLab.frame_provenance (lab.py:716), read before ① await sender.send(frame_result | frame_error)
+  T1.3 _fan_out_frame ─▶ T1.5 CaptureRecorder.write_frame (the World Builder hand-off) · T2.6 offer_frame for each live cartridge
+```
+
+**Alongside World Builder.** Each decoded frame goes through the Lab first, inside the reply, and is then fanned out (T1.3) on all three decoded paths: result, refusal and
+unavailable module. An undecodable frame, or a client disconnect before the reply is sent, prevents the fan-out; so the Lab's verdict never gates the recording a World Builder walk depends on. The `_fan_out_frame` docstring
+gives the reason: any connection can send `cv_lab_pause`, with no ownership check, and without this rule that pause would silently stop the recording.
+
+**Why synchronous.** `CVLab.process` contains no `await`, and `ws.py` reads the provenance between `process()` and its first `await`. Commands run on the same event loop, so
+they run only at an `await`: no experiment switch can land inside a frame, and the provenance always describes the frame just answered. `start` also drops the old experiment
+before publishing the new run id (in `start`, `lab.py:793`), so no result can carry the wrong experiment's name: the docstring's "staleness is structural, not checked". `status()` also runs
+on the result poller's worker thread: state transitions and the initial status snapshot use `_guard`, and the rest of the document is built after that lock is released.
+The synchronous frame path takes no lock; it updates both the run counters and Lab-wide frame, provenance and preview fields. The cost is
+contract §11, item 6: inference runs on the loop, so a slow frame holds every socket for its duration.
+
+| Outcome | Built by | On the wire |
+|---|---|---|
+| Result | T1.2, from the `ExperimentResult` | `frame_result`: `seq` (the phone's capture index, which skips), `processing_ms`, `result_value` + `result_label` (the headline pair), `stage_ms` (the experiment's own stage names), and when present `mean_intensity`, `metrics` (name → number) and `cv_lab` |
+| `cv_lab` block | `CVLab._provenance` (`lab.py:731`) | `experimental_cv.frame_result/2026-08-27`: `tower_instance_id`, `run_id`, `result_seq` (dense from 1 in the run), `experiment_id`, `experiment_name`, `provenance`, `backend`, `device`, `device_requested`, `result_label`, `processing_ms`, `tower_received_at`, `time_basis: tower-receipt` |
+| Lab not running | `process` raises with `reason=cv_lab_<state>` | `frame_error {seq, reason, message}`, the message explaining the state to a person. The session summary counts it under `frames_rejected`, not `frame_processing_errors`: a Lab paused for five minutes has not "failed" hundreds of times |
+| Experiment refused the frame | `FrameProcessingError` with no reason | `frame_error frame_skipped` |
+
+**Previews.** Seven experiments declare a `preview_kind`; `baseline` has none because it is the cost control. Before `run`, `_arm_preview_for_frame` (`lab.py:598`) asks the
+throttle whether to capture this frame (at most one capture per 0.05 s by default, 20 Hz) and sets one boolean on the experiment, so experiments that must derive a picture do it
+only then, in a timed `preview` stage. After `run`, `_offer_preview` (`:635`) puts the experiment's array into the `LivePreview` slot by reference, with no copy and no encode.
+Resize, colouring and encode happen only when `GET /cv-lab/preview` asks, in `LivePreview.render` on a worker thread, with ETag and 304. A preview goes stale three ways, each
+refused: another run id (409 `preview_run_changed`), an epoch bumped by every state change, and an age over 2 s. No preview contains source pixels: overlays are drawn over
+`scene_structure` (`tower/experiments/__init__.py:268`), a Canny line drawing. Every preview is `raw_ephemeral` with `Cache-Control: no-store`, the slot is emptied the moment
+the run leaves `running` (`_sync_preview_locked`, `lab.py:1096`), and the status document carries the descriptor as `run.annotation.artifact` (contract §5).
+
+**The phone-side staleness gate** (K10). `TowerClient.handleFrameResult` (`TowerClient.swift:1615`) discards a `frame_result` whose `cv_lab.run_id` differs from the watched run,
+before it is published or counted, when both ids exist; a result without provenance, or one received before any run is watched, passes through. The watched run comes only from status documents (`watchCVLabRun`, `:1198`): a `cv_lab_status`, the document inside a `cv_lab_error`, or a
+pushed `cartridge_result`. Never from a result, so a stale result cannot nominate itself; a run change also clears the held reading and refusal. It covers the one case the
+Tower cannot, a reconnect to a restarted Tower: `run_id` is `<tower_instance_id>-<n>`, so comparing it alone is enough.
+
+### 13.4 The experiments
+
+**Common shape.** Every experiment takes the raw JPEG bytes, decodes them itself, and returns an `ExperimentResult`: a mandatory headline (`result_value` + `result_label`),
+`processing_ms`, `stage_ms`, and an optional bag of float `metrics`. Seven experiments declare their metrics' `MetricKind` beside the code that produces them (depth's four live in `_DEPTH_METRIC_KINDS` in `tower/experiments/__init__.py`): `rate` (combined by mean), `count`
+(sum), `constant` (the value observed) or `unaggregated` (none); an undeclared metric is listed in `unclassified_metrics`, never folded in under a guess. `_REGISTRY` pairs
+each factory with its metadata (name, summary, provenance, units, `stateful`, `requires_model`, backend, preview kind). Costs below are only figures written in the code.
+
+| id | Computes | Headline (unit) | Runs on | Preview | Cost noted in the code |
+|---|---|---|---|---|---|
+| `baseline` | Mean grayscale intensity; proves the glasses-to-Tower path is alive | `mean_intensity` (level) | OpenCV | none | about 0.35 ms, the cost of one line drawing (registry comment) |
+| `edge_detection` | Fraction of Canny edge pixels after a 5x5 Gaussian blur | `edge_density` (fraction) | OpenCV | `edge_map`, the Canny array itself | none quoted |
+| `frame_quality` | Six usability signals from one decode (sharpness, gradient energy, entropy, contrast, edge density, clipping), as nine metrics with width and height | `sharpness_laplacian_var` (level^2) | OpenCV | `frame_quality` | sharpness stage 0.32 ms/frame; preview +0.17 ms |
+| `feature_detection` | ORB with 1,000 features: keypoint count and coverage of an 8x8 grid | `keypoint_count` | OpenCV | `keypoints`, at most 2 per cell | preview +0.74 ms |
+| `optical_flow` | Sparse Lucas-Kanade on up to 300 corners with a forward-backward check. **Stateful**: the first frame returns a zero flow result marked `has_reference: 0`; a reference older than 2 s is dropped | `median_flow_px` (px) | OpenCV | `flow_tracks` | 2.9 ms at 640x360 against 25.4 ms for dense Farneback; preview +0.27 ms |
+| `redaction_impact` | Blurs a fixed central rectangle (no face detector), re-runs ORB: keypoints surviving inside the blur, and survivors on its edge | `region_keypoint_retention` (fraction) | OpenCV | `redaction_regions` | preview +1.07 ms |
+| `object_detection` | SSDLite320/MobileNetV3: counts all COCO detections scoring at least 0.4, plus separate counts for six tracked classes. **Inferred** | `detections`, the only annotation count | torch + torchvision | `detections`, boxes over a line drawing | p50 40.1 ms CUDA, 35.9 ms CPU |
+| `depth` | MiDaS_small relative inverse depth: mean, min, max, std. **Inferred**; no unit, not metres | `mean_relative_depth` (none) | torch + timm | `relative_depth` (JPEG) | p50 11.7 ms CUDA, 48.2 ms CPU |
+
+The torch p50s come from a sweep at the default thread budget, 2 threads on CUDA and 4 on CPU (comment above `TORCH_THREADS_CUDA`, `tower/experiments/depth.py`). `auto` now
+prefers CUDA for `object_detection` too: on CPU, physical testing saw a mean of 199 ms per frame, worst 4,483 ms, while another CPU detector shared torch's thread pool
+(`ObjectDetectionExperiment.load`, `tower/experiments/object_detection.py:113`). The two model experiments and `optical_flow` are `stateful`.
+
+### 13.5 Control plane and status
+
+| Message | Fields | Lab method | Accepted from | Effect |
+|---|---|---|---|---|
+| `cv_lab_status` | `request_id?` | `status` (`lab.py:1279`) | when a Lab exists (else `cv_lab_error` `lab_unavailable`) | Reads the document; read-only, so a Release build may send it |
+| `cv_lab_start` | `experiment_id`, `request_id?` | T8.8 | any state but `unavailable`, no arm in flight | Selects **and** arms, replacing whatever ran; the new run takes the old figures out of the document |
+| `cv_lab_pause` | `run_id?`, `request_id?` | `pause` (`:969`) | `running` | Keeps the experiment loaded, refuses frames |
+| `cv_lab_resume` | `run_id?`, `request_id?` | `resume` (`:984`) | `paused` | Back to `running`, with no load cost |
+| `cv_lab_stop` | `run_id?`, `request_id?` | `stop` (`:1001`) | `running`, `paused`, `starting` | Ends the run, releases the experiment, freezes the figures; cancels an arm in flight |
+
+**Replies** (T8.9). Acceptance is a `cv_lab_status` with the whole document, `accepted_command`, and a valid supplied `request_id` echoed (absent or invalid ids are
+omitted). A refusal is a `cv_lab_error` with `reason`, `message`, `command` and the document; ordinary refusals leave the state unchanged. Reasons: `malformed_request`, `unknown_experiment` (+ `available`), `experiment_unavailable`,
+`lab_busy`, `invalid_state`, `stale_run` (+ `current_run_id` when non-null; `_check_run_id`, `lab.py:1040`), `lab_unavailable` (terminal) and `internal_error` (a handler fault; it does not by itself
+prove whether the command took effect). A
+`request_id` over 64 characters is dropped, not refused (`_request_id`, `cv_lab_ws.py:219`). `cv_lab_status` goes only to the connection that asked: an unsolicited run change started by another client reaches this
+phone on the result channel, and the phone can also request `cv_lab_status`.
+
+**Status: one builder, three surfaces.** `CVLab.status()` builds the document behind `GET /cv-lab`, `cv_lab_status`, and `experimental_cv.status/2026-08-27` on the result
+channel; `tests/test_cv_lab_protocol.py:110` asserts the three agree. It holds `lifecycle` (`state`, `reason`, `since`, `run_id`); `available` (the catalog, with availability
+per experiment); `selected` and `default_experiment`; `run` (counters starting at zero with `frames_offered = processed + refused + failed`, metric rows starting empty with
+`latest`/`observed_min`/`observed_max` for rates, `annotation` and `preview` diagnostics, `timings`, `throughput`; fields with no meaningful measurement are `null` where
+their definitions say so); and `source`, which is Tower-wide (`clients_connected`, `receiving_frames` = a
+frame within 5 s, `frames_rejected_before_lab`). The revision hash leaves out `run.elapsed_s` and the two fps figures (`VOLATILE_PATHS`), so it moves only on news; the hub polls
+every 0.5 s with a 2 s heartbeat (T7.2). `baseline`, `higher_is_better` and `confidence` are always `null`, so no client can draw a better/worse verdict.
+
+### 13.6 The iOS side
+
+| File (`Workspaces/ExperimentalCV/`) | Holds |
+|---|---|
+| `ExperimentalCVClient.swift` | The client protocol; `UnavailableExperimentalCVClient`; `TowerExperimentalCVClient`, which subscribes, sends commands and runs `apply` (`:824`) → `project` (K26); `ExperimentalCVViewModel` |
+| `ExperimentalCVContract.swift`, `ExperimentalCVModel.swift` | Identifiers and decoders (`CVLabStatus`); `ExperimentalCVState`, `CVExperimentRun`, `CVMetric`, `CVLabDiagnosis` |
+| `ExperimentalCVWorkspaceView.swift` | The screen: connection row, live preview, `CVFrameReadingPanel`, camera card, experiment list, `CVRunSummaryView` |
+| `ExperimentalCVPreview.swift`, `CVCameraCard.swift` | `CVLivePreviewLoader` and its panel; Start/Stop camera through the one `GlassesConnection`, and Pause/Resume frames |
+
+**Commands.** `run`, `pause`, `resume` and `stop` (`ExperimentalCVClient.swift:419-:459`) can throw on local availability or channel checks, before sending. They then
+send fire-and-forget requests through `TowerClient.sendCVLab*` (`TowerClient.swift:1312-:1355`) with a `cv-N` request id, and record a pending command. Pause, resume
+and stop include the `run_id` the button was drawn against; start sends an experiment id and no run id. None moves the state: only an arriving
+document does, through `apply`. `canSendCommands` (property, `:298-305`) needs a DEBUG build, an online socket and an offer under a supported contract, so a Release build, having no camera,
+is read-only. A reply missing after 10 s (reply-bound declaration, `:539-544`) clears the pending command as `timedOut`, and the controls stay disabled while one is pending. On
+disconnect the client drops the document, which describes a Tower it can no longer see; on reconnect it subscribes and re-reads.
+
+**Status to screen.** K26 maps each state to a workspace case: `stopped` becomes `.completed`, keeping the final figures, and an unknown word becomes `.failed`, never `.idle`.
+"Live" (contract §7) needs three things (`ExperimentalCVState.isLive`, `ExperimentalCVModel.swift:1090`): the state is running, this phone is streaming and not holding frames,
+and `source.receiving_frames` is true. A running run that lacks one of the live conditions is labelled "armed" (a paused run says "paused"), and a sentence names the missing part; a startup-default run is labelled "Nobody chose it from here".
+
+**Frames and results.** The workspace holds `TowerClient` as a plain reference; the small `CVFrameReadingPanel` observes it, so the 15 Hz reply rate redraws that panel rather
+than the screen. It shows a held accepted result when one exists, with the experiment's name and provenance; otherwise the latest refusal, if any. `CVRunSummaryView` draws the run document
+(headline and this run's range, processing time, result rate, frames), with `null` shown as not measured. **The refusal throttle** (K11): while the Lab is not running a
+`frame_error` arrives with every frame; a changed reason is published at once, a repeat at most once a second with a trailing flush. Each is still forwarded as `.frameRefused`,
+which the CV client ignores for the lifecycle (event-handler case, `ExperimentalCVClient.swift:713-722`), because the status document is the single source of state.
+
+**Previews on the phone.** `CVLivePreviewLoader.start` (`:459`) runs one poll loop at the Tower's `poll_interval_s` (clamped to 0.05-1 s), sends `run_id` and `If-None-Match`,
+and checks the run header on each reply. Its `URLSession` is ephemeral with no cache, and the image is dropped on pause, stop, run change, disappearance and backgrounding.
+
+### 13.7 Design choices and limits
+
+**One experiment, never a queue.** A start during another arm is refused `lab_busy`; otherwise the last start wins. The run is the unit of provenance, and queueing would let two
+clients each believe they chose what is running (contract §8). The container is a registry of one with no swap path (per the `lab.py` docstring, `04-MODULE-SYSTEM.md` forbids
+dynamic discovery before V1.0). The cost: two phones feed the same run, and a stateful `optical_flow` diffs their frames against each other, which its 2 s guard only partly
+catches (contract §11, item 1).
+
+**`import cv_lab` does not import torch.** Torch imports are deferred to function calls (load, inference, device and thread helpers, release), and the availability check uses `find_spec`, which locates a module without
+executing it: importing torch to learn whether torch exists would be "a 2 GB answer to a yes/no question" (`_module_is_installed`). `test_importing_the_lab_does_not_import_torch`
+(`tests/test_architecture_boundaries.py:602`) imports `tower.main` and `tower.experiments` in a fresh subprocess, with Scene Understanding off, and asserts `torch`, `torchvision`
+and `timm` are absent; a subprocess because an earlier test may already have imported torch. So the Tower starts on a machine without `[ml]`, with only the two model rows unavailable.
+
+**`frame_error` at the send rate** (§9.5, pre-existing). While the connection remains available, each received frame is answered with one `frame_result` or `frame_error`,
+so whenever the Lab is starting, paused, stopped or failed, every decoded frame from every connection, World Builder walks included, gets a `frame_error`: about 15 a second
+at the default rate. A Tower on the shipped default boots with `baseline` running, so this
+begins once someone stops or pauses the Lab, while a replacement start is loading, or after a failed start or a frame crash. The live Tower's `.env` does not override the default. The Tower counts these as rejections, the phone throttles them (K11), and the traffic is a P4 candidate.
+
+**Pause means two different things.** The Lab's Pause (`cv_lab_pause`) is Tower-wide and unowned: any connection can send it, it keeps the model loaded and refuses frames, and it
+stops neither recording nor the other cartridges. The camera card's "Pause frames" is `TowerClient.pauseFrameSending` (`TowerClient.swift:238`): frames are held on the phone
+while the camera, the socket and the `stream_start` bracket stay up, so no World Builder capture ends; the Tower sees silence, and with no other phone sending, `receiving_frames` turns false 5 s after this phone's last frame.
+
+**The CV Lab Scene note** (§9.6, bug 4). Bug 4 was a Scene Understanding bug, already fixed on `main`; the `fix/scene-hold` lane changed one comment in the CV Lab. In
+`CVLab._annotation` (`lab.py:1517`; docstring text at `:1539-1543`), a pointer to the nonexistent `docs/contracts/EXPERIMENTAL-CV-PREVIEW.md` now cites
+`tower/docs/contracts/EXPERIMENTAL-CV-LAB.md` §5, "Annotations and imagery": the preview contract (`raw_ephemeral`, no source pixels, fetch by path). No behaviour changed.
+The "scene" in `scene_structure` is the preview's line drawing, not that cartridge; the Lab imports no cartridge (`frame_quality` copies World Builder's sharpness code).
+
+**Smaller limits.** `source` is Tower-wide: `receiving_frames: true` may mean another phone is streaming, which is why "live" also needs this phone to stream. Contract
+§3.5 and §10 size the 5 s idle threshold and a traffic estimate for a sender of about 0.8 fps, which predates today's 15 fps (K5); the estimate has not been re-measured. The iOS client lives in `CartridgeClients`
+and stays subscribed while the socket is up, though contract §10 advises unsubscribing when the screen is hidden. Two comments are stale: `lab.py:1153-1155` says six of the
+eight experiments have no picture, and `tower/experiments/__init__.py:592-597` says two hold an `ExperimentPreview`; seven do.
+
+### 13.8 How to explain it in 2 minutes
+
+"The CV Lab is a bench for trying computer-vision ideas on the live glasses stream without restarting anything. The phone sends each frame as a JPEG over one WebSocket. On the
+Tower, a single module slot holds the Lab, and the Lab holds exactly one of eight registered experiments: cheap OpenCV measures such as edge density, sharpness, ORB coverage,
+optical flow and the cost of a privacy blur, plus two torch models, an object detector and monocular depth. Each frame runs synchronously through the armed experiment on the
+event loop. A successful reply normally carries the number and a provenance block naming its run, experiment, and measured or inferred status; if attribution fails, the
+Tower logs the fault and sends the result without that block. A switch cannot interleave within frame processing, and when both a watched run id and a result run id
+exist, the phone discards a mismatch.
+Control is five socket messages: status, start, pause, resume, stop. Start returns immediately, because a model may download 119 megabytes; the load runs on a background thread
+with a two-minute bound, and success or failure arrives as state in one status document, served the same way over HTTP, as a command reply and on the result channel. A crash
+ends the run, not the server. And the Lab never gates the frame bus: after a decoded frame's reply is sent, the Tower also offers that frame to the World Builder recorder and the other cartridges;
+a disconnect before the reply prevents that fan-out. The
+trade-offs I'd name are inference on the event loop, one shared slot where the last start wins, and a `frame_error` per frame whenever it isn't running."
