@@ -3,9 +3,10 @@
 Ray-Ban Meta glasses stream camera frames through an iPhone app to a Windows PC, the Tower, which turns a walk through a room into a
 photographic 3D world that the phone then shows. This document explains how, function by function.
 
-**Provenance.** Branch `cleanup/campaign-v1` at `66414dc1`, the final campaign tree.
-Every `file:line` was re-checked against that tree on 2026-10-18. The iOS tree and `docs/` are unchanged since `af805b36` (`README.md`, and the header comment of `tower/.env.example`, were brought up to date in the commit that added this file);
-the Tower tree and every contract are byte-identical to `cleanup/tower-v1@e20b3b2`. `main` stays pre-cleanup (§9).
+**Provenance.** `main` at `23e7fc95` (2026-10-21). This is the cleanup campaign (`cleanup/campaign-v1` at `66414dc1`, merged into `main` as `cc0208c5` on 2026-10-20) plus the five merges of the bug-fix phase (§9.6): three product fixes, one comment-only correction and one golden follow-up.
+Every `file:line` was checked against the campaign tree on 2026-10-18. On 2026-10-21 the references into the files the bug-fix merges changed were checked again (`final_scale_guard.py`, `scene/live.py`, `cartridge_runtime.py`, `cv_lab/lab.py`, `appearance_viewer.html`).
+The iOS tree is unchanged since `af805b36`. So is `docs/`, except `docs/contracts/WORLD-BUILDER-COMPONENTS.md`: its version history, reason table and §2.6 rule 2 gained the short-plateau rule (§9.6). `README.md` and the header comment of `tower/.env.example` were brought up to date in the commit that added this file, and `README.md` gained one sentence in the bug-fix phase.
+The pre-campaign `main` is kept as the branch `pre-optimization-main` (§9).
 The campaign's run records cited by name (`LEDGER.md`, `LEDGER-tower.md`, `PLAN.md`, `OWNER-NOTES.md`, `IOS-INVENTORY.md`,
 `KEY-FUNCTIONS.md`, `IOS-KEY-FUNCTIONS.md`, `GATE2-VERDICT.md`, `CROSSOVER-REPORT.md`, `REPLAY-PROCEDURE.md`, `NOISE-BAND.md`) and the
 replay tooling of §8.3 are kept outside the repository; they are not files a reader can open in it.
@@ -18,7 +19,7 @@ replay tooling of §8.3 are kept outside the repository; they are not files a re
    reject, tracking lost, or keyframe), T4.6 `solve` (the GLOMAP final solve), T5.2 `surfacify` (the mesh), K14
    `TowerWorldBuilderClient.apply` (how a status snapshot becomes what the phone says and shows).
 3. **The rest.** §3 and §4 say where code lives, §6 is the wire, §7 the switches, §8 the tests, §9 what the campaign changed and what is
-   still broken, §10 the terms, §11 the open questions.
+   still broken (§9.6: the bug-fix phase after walk 10.2), §10 the terms, §11 the open questions.
 4. **Labels.** T1.1-T8.9 are Tower functions, K1-K29 iOS functions, S0-S11 pipeline stages (§2).
 5. **`file:line`** is the line of the `def`, `func` or `init` (for an HTTP route in §6.4, its decorator). Every path resolves from the repo root
    by one rule. Tower paths are written from `tower/`: `tower/routes/ws.py` is `tower/tower/routes/ws.py`, and `scripts/…` and `tests/…`
@@ -480,7 +481,7 @@ matching code on the other end of the wire.
 | T4.5 | `BackgroundSolver.run_final` | `scripts/world_build_session.py:1149` | Runs the finalization solve as a child until it ends or a hard stop arrives. |
 | T4.6 | `solve` | `tower/world_builder/global_solve.py:1189` | Reconstructs a session's keyframes into one global solution (pycolmap/GLOMAP) and publishes it. |
 | T4.7 | `gate_and_publish` | `tower/world_builder/coherence_publish.py:1402` | The publish seam: gate the candidate (when on), scale-guard it (final solves only), write it, then write its records. |
-| T4.8 | `guard_publication` | `tower/world_builder/final_scale_guard.py:927` | Checks the room's cameras against metric-scale evidence at the publish seam; returns publish or withhold. Always on. |
+| T4.8 | `guard_publication` | `tower/world_builder/final_scale_guard.py:1026` | Checks the room's cameras against metric-scale evidence at the publish seam; returns publish or withhold. Always on. |
 | T4.9 | `WorldBuilderEngine.build` | `tower/world_builder/engine.py:891` | Rewrites a session's derived tree from its persisted journal. |
 | T4.10 | `regate_published` | `tower/world_builder/coherence_publish.py:1684` | Re-runs depth, metric scale and the gate in place on an already published solve, without redoing the solve. |
 | T5.1 | `final_surface_stages` | `scripts/world_build_session.py:1740` | The finished world's surface stages, run after Stop in the builder process. |
@@ -736,12 +737,19 @@ withhold returns `(None, record)` with `publish.written: False`. (3) Else `write
 **WHY.** The guard sits after the gate and before the write, so it judges exactly what is about to be published. Its records go first, and a failure writing either becomes a withhold, so a
 half-recorded publication never ships.
 **Called by** T4.6. **Calls** T4.8, `write_solution`, `after_publish`.
-#### T4.8 `guard_publication` · `tower/world_builder/final_scale_guard.py:927`
+#### T4.8 `guard_publication` · `tower/world_builder/final_scale_guard.py:1026`
 **WHAT.** Checks the room's cameras against metric-scale evidence at the publish seam; returns publish or withhold. Always on.
-**HOW.** (1) `read_evidence`: the gate's metric log, else the live depth cache (walk 10: `live-depth-cache`). (2) `room_cameras`, then `assess_v2` (L588). (3) `apply` relabels isolated
-plateaus as unplaced components and builds the components record. (4) `summary` and `audit_document` return as a `GuardOutcome`.
+**HOW.**
+1. `read_evidence`: the gate's metric log, else the live depth cache (walk 10: `live-depth-cache`).
+2. `room_cameras`, then `assess_v2` (L687). It splits the walk into plateaus (capture-order runs whose centred running-median scale ratio stays in one band class) and measures each against the certified core.
+   - A plateau with at least `min_ratios` (10) ratios is isolated when its median is outside the band and its bootstrap interval excludes 1.
+   - Since the bug-fix phase, a **short** plateau (fewer than 10 ratios) is also isolated, by `_decide_short` (L548). Every one of its ratios must lie strictly beyond the core's own min/max on one side.
+   - Otherwise the short plateau stays attached and `uncertified`, as before. §9.6 gives the full rule and its vetoes.
+3. `apply` relabels isolated plateaus as unplaced components and builds the components record.
+4. `summary` and `audit_document` return as a `GuardOutcome`.
+
 **WHY.** It never withholds on scale: `assess_v2` always says `publish`, and with no evidence the room is published `uncertified`. Otherwise it fails closed (an exception, or a relabel
-leaving no room, means withhold). It predicts no depth.
+leaving no room, means withhold). It predicts no depth. Isolating never deletes: the frames stay in the solution, coordinates untouched, in their own component.
 **Called by** `coherence_publish._final_scale_guard` (L1500), final solves only. **Calls** `assess_v2`, `apply`.
 #### T4.9 `WorldBuilderEngine.build` · `tower/world_builder/engine.py:891`
 **WHAT.** Rewrites a session's derived tree from its persisted journal.
@@ -852,7 +860,7 @@ snapshot "in flight" and deliver nothing.
 #### T7.3 `make_snapshot_for` · `tower/results/__init__.py:54`
 **WHAT.** Builds the callable mapping (cartridge, result type, world, session) to a `Snapshot`.
 **HOW.** Build the World Builder status producer once, when there is a world root. The returned function routes CV Lab status, World Builder status, Scene `live` (from `SceneLive.latest()`,
-`scene/live.py:162`, called at L152) and Document Memory `status`; anything else gets an explicit "no producer is wired" unavailable snapshot. Object Memory has no producer.
+`scene/live.py:214`, called at L152) and Document Memory `status`; anything else gets an explicit "no producer is wired" unavailable snapshot. Object Memory has no producer.
 **WHY.** The hub imports no cartridge, so it can be tested with a stub. Scene, Document and the CV Lab are passed in as live objects because they report work happening in this process. A
 `None` from `latest()` has four meanings (stopped, loading, failed, no frame yet); `status()` says which.
 **Called by** `build_hub` (L229, call at L240), from T2.1. **Calls** T7.4, `latest()`, `DocumentStatusProducer`.
@@ -923,7 +931,7 @@ document), sort by exact-term count then score.
 `max_misses`. (3) `_place` (left/right, with hysteresis) plus periodic `_estimate_orientation` (facing votes). (4) Drop partial people at the bottom edge, count by label, `relate`.
 **WHY.** The tracker's boxes decide what exists and the facing estimator only describes them, so two models cannot disagree on a head count. Association is within a class, so a chair cannot
 become a person.
-**Called by** `scene/live.py:311`, `scripts/scene_session.py`. **Calls** `Tracker.update`, `relate`.
+**Called by** `scene/live.py:463`, `scripts/scene_session.py`. **Calls** `Tracker.update`, `relate`.
 **Phone side:** K24, K25 (the phone watches by subscribing).
 #### T8.7 `CVLab.process` · `tower/cv_lab/lab.py:508`
 **WHAT.** Runs the armed experiment on one frame, or refuses legibly. Every `frame_result` comes from here.
@@ -1559,6 +1567,10 @@ The Tower is gated by its pytest suite and by replaying walk 10 end to end; the 
   with the guard's off arm (the scale-guard promotion, §9.3). On the way: 6,866 / 5 at integration, 6,818 / 0 at `167c50d`, 6,821 / 0 after batch 20 (which added the Scene fix's
   tests), then 6,797 / 0 after batch 21, down 24 because the v1-only final-scale-guard tests were deleted with v1 `assess` (25 deleted, 1 added; §9.3). A tracemalloc flake turned out to be a test-only
   thread leak (fixed).
+- **After the bug-fix phase** (`23e7fc95`, 2026-10-21, §9.6): **6,857 passed, 1 failed, 92 skipped, 1 xfailed**, in 37 minutes.
+  - The one failure is load-dependent. `test_world_builder_finisher_chore.py::TestTheReviewOfTheChore::test_a_finisher_that_survives_its_kill_blocks_the_next_one` needs a child process still alive under full-suite load. It passes alone 4 of 4 times and its file passes, and no bug-fix merge touched the finisher.
+  - The full suite also caught a golden the viewer fix had missed (`world_builder_raw_allowlist_ba5f138.json` pins the render page). It was re-recorded before the push, and only its 9 page digests changed.
+  - A pre-existing order dependence: running `test_world_builder_raw_allowlist_identity.py` before `test_world_builder_photos_after_stop_identity.py` fails 7 cases, on the pre-fix `main` too. Suite order passes.
 - **Architecture tests** (`tests/test_architecture_boundaries.py`): `test_shared_code_does_not_import_a_cartridge`; `test_the_result_channel_core_is_cartridge_blind`;
   `test_the_result_channel_never_writes`; `test_a_cartridge_does_not_import_another_cartridge`; `test_the_capture_worker_supervisor_is_cartridge_blind`;
   `test_importing_the_lab_does_not_import_torch`; plus `test_artifact_paths.py::test_every_cli_root_flag_routes_through_the_guard`
@@ -1698,7 +1710,7 @@ cleared the 34 real Swift 6 warnings.
 
 ## 9. What the campaign changed, and known issues
 
-Sources (run records outside the repository; see Provenance): `LEDGER.md` (iOS), `LEDGER-tower.md`, `PLAN.md`, `OWNER-NOTES.md`, `IOS-INVENTORY.md`, `GATE2-VERDICT.md`, `CROSSOVER-REPORT.md`. Baseline tag `pre-cleanup-20261015` (5fecd51); the campaign branch is `cleanup/campaign-v1`. `main` stays pre-cleanup as the interview fallback, and the rollback tag `demo-walk10-20261013` is untouched. The code itself is in §3-§5. The Tower half's own list of known limitations is merged into §9.5.
+Sources (run records outside the repository; see Provenance): `LEDGER.md` (iOS), `LEDGER-tower.md`, `PLAN.md`, `OWNER-NOTES.md`, `IOS-INVENTORY.md`, `GATE2-VERDICT.md`, `CROSSOVER-REPORT.md`. Baseline tag `pre-cleanup-20261015` (5fecd51); the campaign branch is `cleanup/campaign-v1`. It was merged into `main` on 2026-10-20 (`cc0208c5`), after the walk 10.2 field test was judged good. The pre-campaign `main` is kept as the branch `pre-optimization-main`, and the rollback tag `demo-walk10-20261013` is untouched. The bug-fix phase that followed is §9.6. The code itself is in §3-§5. The Tower half's own list of known limitations is merged into §9.5.
 
 ### 9.1 Goal and rules
 
@@ -1753,7 +1765,7 @@ Measured with `git diff 5fecd51..66414dc1` (the final campaign tree). The figure
 - **Scene subscription race (K24).** If the screen appeared, left and returned before the first ack, the people detector could run for the socket's life. Fix: `isSubscribing` survives a leave, and `adoptOrClose` adopts or closes every ack. Tests fail on base (4 failures), then pass. Existed before the campaign.
 - **Frame-refusal redraw throttle (K11).** Every `frame_error` made every TowerClient observer redraw at the send rate during walks: about 12 Hz under the old 12 fps default, about 15 Hz at today's 15 fps default (`FrameRateGate.defaultTowerTargetFPS`). Now a refusal publishes when its reason changes, plus a leading and trailing throttle of about 1 s; every refusal is still forwarded and the counters stay exact. Existed before the campaign.
 - **Document Memory error ownership (K27).** An error naming another cartridge could clear Document Memory's status. It follows the shared rule now. Defensive only: a conforming Tower never sends it.
-- **Scene operator-hold bug (Tower, p5-01, fixed).** In `scene/live.py`, a stream closing called `super().stop()` and left `_operator_hold` set, so a later watched session never stopped when its watchers left, and the people detector ran with nobody watching. Fix 1: a stream-closure (demand) stop releases the hold, in `_stop_then_reconcile`. R2's first round found that fix 1 itself introduced a race: a demand stop could clear a newer operator start. Fix 2: `_hold_epoch`, bumped by every operator `start()` and recorded under `_demand` when a demand stop is decided; a start newer than the decision wins (before the stop it cancels it; during the stop the session is restarted). 3 tests (2 of them synchronized). Existed before the campaign; landed in batch 20 with R1 and R2 approving.
+- **Scene operator-hold bug (Tower, p5-01, fixed).** In `scene/live.py`, a stream closing called `super().stop()` and left `_operator_hold` set, so a later watched session never stopped when its watchers left, and the people detector ran with nobody watching. Fix 1: a stream-closure (demand) stop releases the hold, in `_stop_then_reconcile`. R2's first round found that fix 1 itself introduced a race: a demand stop could clear a newer operator start. Fix 2: `_hold_epoch`, bumped by every operator `start()` and recorded under `_demand` when a demand stop is decided; a start newer than the decision wins (before the stop it cancels it; during the stop the session is restarted). 3 tests (2 of them synchronized). Existed before the campaign; landed in batch 20 with R1 and R2 approving. Superseded in the bug-fix phase by one decision-order rule for every path (§9.6, bug 5); `_hold_epoch` is gone.
 - Release build fixed: a DEBUG-only `stopCameraSession` call in `ContentView` meant the Release configuration did not compile at the tag.
 - Other: Object Memory's unused `idempotentNoOpLine` was deleted, since a second Start is "not an error"; the `StreamManager` placeholder and its Developer Tools row were removed.
 
@@ -1782,12 +1794,15 @@ Marked **pre** if it existed before the campaign, **new** if the campaign introd
 **High / demo-visible**
 - **AX5 capture start with the dial (pre, in the demo configuration).** At the largest text size with the capture dial on, `DeadEndsUITests/testTheLeavePromptShowsBothChoicesAtTheLargestTextSize` fails ("the capture started", `:567`); Start may be unreachable. The pre-cleanup base fails it with `IOS_FOW_DIAL=on` and passes without. Since the promotion the dial is always on, so every build has it (new exposure). Question: test geometry, or a real bug? The test stays red.
 - **Map-face thumbnail sheet (pre).** With the dial on and the default-off Map tab on, tapping a landed photo thumbnail on the Map face does not open its detail sheet (`WorldImageryUITests/testTheLandedThumbnailSitsInItsPieceAndATapSaysDirectionAndAge`). The demo and plain Run builds cannot reach it. Kept as a scoped `XCTExpectFailure`.
-- **Tilted rooms from far spans (pre).** If the solve places part of the walk far away, that geometry is fused into the surface and `surf.outliers.poses_gated` stays 0. The up refinement then fails and `_world_up` silently falls back to the camera up, so the phone shows a room tilted about 8-9 degrees, and the level-2 face budget goes on misplaced geometry (21% of faces within 3 m of the desk against 60-75% in good runs). Base code does it too; the refinement that fails is `surface_render.surface_up`.
+- **Tilted rooms from far spans (pre).** If the solve places part of the walk far away, that geometry is fused into the surface and `surf.outliers.poses_gated` stays 0. The up refinement then fails and `_world_up` silently falls back to the camera up, so the phone shows a room tilted about 8-9 degrees, and the level-2 face budget goes on misplaced geometry (21% of faces within 3 m of the desk against 60-75% in good runs). Base code does it too; the refinement that fails is `surface_render.surface_up`. The bug-fix phase took one class of guard-measured far stretches out of the room (§9.6, bug 7). It also made the viewer's navigation survive the far cameras seen on 10.2 and report a field failure instead of hanging (bug 2). Unmeasured far "riders" and this tilt fallback are unchanged.
 - **Non-reproducible final solves (pre).** Each final solve re-runs nondeterministic, multithreaded matching, even with `TOWER_WORLD_SOLVE_SEED=0`, until a seeded solve freezes the matching. One walk yields a main component of roughly 600 to 880 images, sometimes with a far-placed span. A candidate fix would be freezing matching or seeding threads; not decided. The live product runs unseeded and multi-threaded (T4.6, §7.4).
 - **WB idle buttons' contrast (pre, demo-visible).** On the World Builder idle screen, "Connect to Tower" nearly passes and "Tower settings" fails the contrast audit (ids `tower-recovery-connect`, `wb-capture-connect`, `wb-panel-connect`, `wb-panel-settings`, `tower-recovery-settings`). The headers "WHAT THE GLASSES SEE" and "WHAT THE TOWER BUILDS" clip at larger Dynamic Type (`AccessibilityAuditUITests/testWorldBuilderIdle`, also failing at baseline). Remaining `Color.secondary` text in `WorldCaptureDialView.swift` and `ShellPieces` needs the dial background checked first.
 
 **Races and correctness**
-- **Scene start/stop race (pre, fixed).** The operator-hold bug is fixed in the final tree (p5-01, §9.3): a stream-closure stop now releases the hold (`_stop_then_reconcile`, `scene/live.py:258`), and the hold epoch stops a demand stop overriding a newer operator start. It went through two rounds because the first fix raced. Still open, the related, lesser iOS items: unknown scene lifecycle states fall back to `.stopped` and show "Not observing", against the model's own rule; the first snapshot from a duplicate subscription that the client closes is still shown (low).
+- **Scene start/stop race (pre, fixed in two steps).**
+  - The operator-hold bug was fixed in the campaign (p5-01, §9.3).
+  - The remaining concurrent race was fixed in the bug-fix phase (§9.6, bug 5): an operator Start and Stop at the same moment, or a Pause during a stop. Every operator decision and stream event now settles to the newest decision: `decision_order_state` (`scene/live.py:93`), driven by `_drive` (L313), including `_stop_then_reconcile` (L407).
+  - Still open, the related, lesser iOS items: unknown scene lifecycle states fall back to `.stopped` and show "Not observing", against the model's own rule; the first snapshot from a duplicate subscription that the client closes is still shown (low).
 - **`IMURecorder.close(completion:)` (pre, latent).** On an already-closed recorder it never calls the completion.
 - **`compatible_live_records` (pre).** It does not catch `UndistortionUnavailable`. The VRAM guard is off until the 10th prediction, because the first sample is taken then.
 - **One solve-placement curiosity (pre, logged only).** Image 00003637 (8 observations) was placed in 0 of 4 base re-solves and 6 of 6 later-code re-solves of the same database. It is most likely process-level randomness: p1's solve path is byte-identical to base. It changes one weak pose.
@@ -1814,6 +1829,103 @@ Marked **pre** if it existed before the campaign, **new** if the campaign introd
 - Multi-scene: an iPad multi-window would create a second `GlassesConnection` (fix = a build setting plus a device check). Note only.
 
 **Process incident (not a product bug).** On 2026-10-16 about 08:20, a cleanup sub-agent killed the live Tower's uvicorn on :8000 with an unchecked `taskkill` while stopping its own pytest. Nothing was reconfigured or written. The owner restarted it. Every later brief carries the rule: kill only a PID your own command launched, never by name, never :8000.
+
+### 9.6 The bug-fix phase after walk 10.2 (2026-10-20/21)
+
+**Context.** Walk 10.2 field-tested the campaign branch before its promotion to `main`. It was judged good, the campaign was merged, and the walk's bugs became a backlog. `main` went `cc0208c5` -> `a1ce3033` -> **`23e7fc95`**.
+
+**How it ran.** Each bug got its own lane. The code fixes used separate worktrees and fix-named branches; the build-time and kitchen investigations, and the first bathroom diagnosis, were read-only.
+- **World-changing lanes** (placement, scale guard). The scale-guard rule was declared before any walk was measured. The placement rule was declared after its DEV measurements but before held-out scoring and end-to-end runs. Each was measured on DEV walks (10.2, 10.1) and checked on held-out walks (10, 9.3, kitchen) it had not been tuned on. It ran only on copies of worlds, and a visual-QA agent reviewed render packs of every changed world.
+- **Other lanes** used methods that fit the bug: a read-only log analysis (build time), a read-only database diagnosis (kitchen), and forced-interleaving plus exhaustive tests (the Scene race).
+- **Reviewers.** The three product fixes and the placement branch each had two independent reviewers: R1 (Claude) and R2 (Codex). The comment-only correction passed a targeted Scene test slice; the golden follow-up was re-recorded twice and passed 276 targeted tests.
+- **Merging.** Merges needed the owner's go. Gates: a full Tower suite on `7c226ce6` (8 failures, all one missed golden, fixed); 276 targeted tests before pushing `a1ce3033`; a full suite on `23e7fc95` (1 load-dependent failure, §8.1).
+- **Results.** Three product fixes and one comment-only correction merged, plus a golden follow-up. One placement fix is parked on a branch. Two "bugs" turned out not to be bugs.
+
+Run records (outside the repository): `Glasses-scratch/bugfix-2026-10-20/`, which holds `MORNING-REPORT.md`, `BASELINE.md` (the per-walk numbers for this `main`), `LANE-*.md` and `reviews/`.
+
+**Bug 1: the bathroom behind the doorway is missing (10.2). Not merged; a branch is ready for a supervised trial.**
+- **Symptom.** The far half of the bathroom is absent, and the doorway shows black.
+- **Cause.** That half was seen in frames with almost no verified links to the bedroom: the walker turned around by looking at the ceiling. Most of the cluster has none; one piece has a few rotation-dominated links at the hinge. GLOMAP placed that cluster about ×4,400 too far, about a rotation-only hinge (frames 1090-1091). The final scale guard (T4.8) correctly cut it as three pieces.
+  - More pair proposals with the current features are unlikely to recover it: most tested cross-room pairs have 0 raw matches, and COLMAP needs 15 inliers to verify a pair.
+  - The pattern is general. In every bedroom walk, the bathroom interior, shower or tub ends up outside the room. Every separate component across five walks has 0 verified links to its room.
+- **Fix tried.** Branch `fix/place-cut-pieces` (`5313b59c`), switch `TOWER_WORLD_PLACE_PIECES`, default off. It places cut pieces back by the cameras' own live depth:
+  - pieces from one blow-up are placed together as one rigid body;
+  - each is divided by its measured scale ratio;
+  - the translation is searched only inside the region the walker could have moved in that time gap. The region is measured from the walk's own camera motion.
+  - A placement is certified against six stretches of the room's own frames, put through the same search from comparable starting errors. Only room-camera checks that could have refused the placement count as corroboration.
+- **Result.**
+  - 10.2: walk-view void 13.29 -> 6.28 %, pack void 11.35 -> 4.40 %, 0.18 % of the surface beyond 2 m from the original cameras and none beyond 4 m, visual QA SAFE+BETTER.
+  - The other four walks are byte-identical.
+- **Why it is not merged.** After five review rounds, R1 approves and R2 asks for changes. Both say a supervised trial is fine but unattended use is not:
+  - on 10.2 the one independent check rules out only a small part of the search region (3 % of its lattice points by R2's count, 6.7 % of its volume by R1's);
+  - one piece covers the room in 53 % of its frames, against a 50 % floor;
+  - a narrow better spot between search-lattice points is not excluded;
+  - it adds up to about 15 min at publish.
+
+**Bug 2: wild cameras break the viewer's navigation (10.2). Fixed and merged, `fix/far-poses`. Viewer only.**
+- **Symptom.** Best view, overview, the support ring, the dark hint and walk collision were dead, and the page stayed on "Preparing the view".
+- **Cause.**
+  - GLOMAP placed 32 of 1,242 room images absurdly far: more than 10× the room's median radius, the farthest about 239,000 solve units out (on the order of 100 km).
+  - 6 of them reached the viewer's camera list (`surface_render._camera_path`, with pose quarantine off).
+  - `NAV.fieldJob` sized its voxel grid from the bounding box of all path points: 4.7e14 cells.
+  - `new Int32Array` threw `RangeError` inside a `setTimeout` slice that nothing caught, so `navReady` never became true.
+- **Fix** (`appearance_viewer.html`):
+  - When the box has more cells than the summed cubes around the poses, cells are enumerated through those cubes on the box's own lattice. For poses the lattice can hold this keeps the same cells; poses too far for the lattice are skipped.
+  - Budgets are checked during cell collection, before the three field arrays are allocated: `MAX_FIELD_BYTES` 2^25 (32 MiB) and `MAX_FIELD_WORK` 2^28 comparisons (L792).
+  - The fine spacing coarsens by 2^(1/3) per step until the field fits, never past the coarse spacing (`fieldJobWithin`, L929).
+  - `buildNav` (L3378) catches faults in its scheduled work slices and clears the status.
+  - Best view's focus applies the surface gate's default outlier thresholds to the published camera list. On decimated lists it can differ from the gate's own decision on the original poses; this is an accepted limitation.
+- **Evidence.**
+  - 10.2's navigation is ready in about 11-13 s.
+  - The other four walks build the identical field; 9.3's fine field went from 4,685 to about 1,600 ms.
+  - 6 new tests fail on the old `main`. There were 3 review rounds.
+  - Optional: `TOWER_WORLD_POSE_QUARANTINE=path` also drops far poses from the camera list (§7.4).
+
+**Bug 3: 10.2 built in 29.6 min against 17.5 for 10.1. Not a regression.**
+- 10.2 gave about 20 % more of the expensive frames (room 1,242 vs 1,042 images).
+- Several stages grow faster than linearly: the GLOMAP map step took 2.3× and the whole final solve about 2.1× for +19 % images.
+- Noted for the optimization phase: a fixed 120 s wait kills the background solve at Stop and discards its work, 7-11 % of a build.
+
+**Bug 4: the scene detector is left running. Already fixed on `main`** (p5-01, §9.3). Only a doc pointer was wrong: `fix/scene-hold` corrects a comment in `cv_lab/lab.py`, which now cites `tower/docs/contracts/EXPERIMENTAL-CV-LAB.md` §5.
+
+**Bug 5: Scene Start and Stop at the same moment. Fixed and merged, `fix/scene-start-stop-race`.**
+- **Symptom.** A session could end running with nobody holding it, or stopped while claiming a hold. A newer Pause could be undone. A session could restart during app shutdown.
+- **Cause.** The hold flag changed under `_demand`, but the base start and stop ran outside it. Each reconcile path decided from a different subset of the events.
+- **Fix** (`scene/live.py`):
+  - Every operator decision and demand event goes through one pure rule, `decision_order_state` (L93), into `_target` as it is decided.
+  - After any base stop or pause, one `_drive` (L313) moves the session to `_target`.
+  - `refuse_starts` (L298) closes every start path. `LiveCartridges.shutdown` (`cartridge_runtime.py:148`) calls it before any stop.
+  - Nothing blocks while `_demand` is held, and the lock pairs are unchanged, with no cycle.
+  - One deliberate behaviour change: a stream or watcher arriving never restarts a session the operator paused, even after a failed load ("a Pause is a person's decision; a socket connecting is not").
+- **Evidence.** An exhaustive test parks each of 6 stop and pause kinds at its base call, then runs every ordering of up to 3 of 9 events inside that window: 4,920 cases. The old `main` fails 984 of them, the fix 0. A random stress run gave 0 violations in 4,000 trials.
+- **The lesson.** Rounds 1-4 each patched one interleaving, and each review found another of the same shape. Only one rule plus an exhaustive small-scope check converged.
+
+**Bug 6: the kitchen hallway (97 images) never linked to the kitchen. Not a bug** (a Codex diagnosis).
+- The right pairs were matched: all 103 hallway-room pairs within 2 s of each other were tested, and every one had **0** raw matches.
+- No setup difference explains it: the camera and resolution match and no masks were used. The database insertion order differs from capture order, but capture-order matching covered every relevant pair.
+- The hallway frames have about half the room's features (median 343 vs 756 keypoints). An independent SIFT check found at most 7 candidate correspondences, against the 15-inlier floor.
+- It is the same kind of cause as bug 1: too few cross-room matches with the current features. The bathroom turn passed through ceiling views; the kitchen turn offered mostly plain walls and narrow doorway edges. **Bugs 1 and 6 are capture-side gaps.** The proposed next fix is capture guidance in the app, for example keeping the door frame in view and turning slowly in small rooms.
+
+**Bug 7: the scale guard kept ×5,000-scaled stretches in the room. Fixed and merged, `fix/scale-guard-short-plateaus`.**
+- **Symptom.** A 6-keyframe plateau at ×5,169 stayed attached to the published room: the `short` rule keeps any plateau with fewer than 10 ratios. This is part of bug 2's far cameras.
+- **Fix** (`_decide_short`, `final_scale_guard.py:548`; no new constants). A short plateau is isolated only when all of these hold:
+  1. its median is outside the guard's band [0.8, 1.25];
+  2. **every** ratio lies strictly beyond the certified core's own min/max on that side;
+  3. the core has at least 10 ratios and nonzero width;
+  4. 1/C(N+n, n) <= (1 - ci_level)/2. This is a nominal heuristic floor, not a confidence level, because neighbouring cameras are correlated and selected;
+  5. more of its cameras are measured than unmeasured;
+  6. no neighbour vetoes it. If the nearest measured camera before or after it in capture order, in any gate group, or any measured camera inside its span, is on the same side, nothing is isolated. A stretch is taken whole or not at all. It is never split with a gross camera left in a room marked certified.
+- **Evidence.**
+  - 10.2: the 6 keyframes leave the room, and supported far poses go from 7 to 1.
+  - 9.3: a misplaced 8-keyframe ×0.345 stretch leaves.
+  - Rebuilt visuals are unchanged. 10.1, walk 10 and kitchen are byte-identical.
+  - There were 4 review rounds; the reviewers' split probes went from 222/800 to 0.
+- **Still open, both pre-existing.** A long plateau ending at a gate-group edge can leave one gross camera in a certified room (the long rule). `math.exp` overflows at log ratios of about ±709, which no physical walk reaches.
+
+**What it means.**
+- The bathroom and kitchen disconnections trace to capture gaps. Other pipeline limitations remain (§9.5).
+- The next phase is UX, starting with capture guidance.
+- The parked placement branch is the solver-side option, for a supervised trial.
 
 ---
 
@@ -1846,7 +1958,7 @@ Terms in the order a reader meets them, grouped by area.
 - **Object Memory**: the cartridge that remembers objects seen.
 - **Document Memory**: the cartridge that remembers documents and snippets; title and snippet caps are fixed Tower constants (60 and 48 characters).
 - **Scene Understanding (Scene)**: the cartridge running live scene analysis such as a people detector, with a lifecycle and an operator start and stop.
-- **Operator hold**: a Scene state set by an operator `POST /scene/start`, keeping the session running with nobody watching; an operator stop or, since p5-01, the stream-closure stop releases it (§9.3).
+- **Operator hold**: a Scene state set by an operator `POST /scene/start`, keeping the session running with nobody watching; an operator stop or, since p5-01, the stream-closure stop releases it (§9.3). Since the bug-fix phase, every operator decision and stream event settles to the newest decision (`decision_order_state`, §9.6 bug 5).
 - **World**: a stored result for one walk (database, solve output, surface, imagery).
 - **WorldStore**: the Tower storage layer for worlds, with writer locks and atomic writes (T6.1-T6.5).
 - **Mock Device Kit**: DAT's simulated glasses used by the mock-device tests.
@@ -1867,6 +1979,9 @@ Terms in the order a reader meets them, grouped by area.
 - **Main component**: the largest connected set of images the solve places together (c0); about 600-880 images on walk 10.
 - **Seeded solve**: a solve with `TOWER_WORLD_SOLVE_SEED`; only reproducible once its matching is frozen.
 - **Final scale guard (FSG)**: the check at publish that vets the solved room's scale and components (T4.8); v2 is the only assessor, since v1 `assess` was deleted (§9.3).
+- **Plateau / short plateau**: a capture-order run of cameras whose centred running-median scale ratio stays in one band class (low, in band, high). A short one has fewer than 10 ratios, too few for a bootstrap interval. Since the bug-fix phase, a short one is isolated only when every ratio lies beyond the room's own range and no neighbour vetoes it (§9.6 bug 7).
+- **Isolated piece**: a plateau the guard relabels into its own unplaced component. Its frames stay in the solution, coordinates untouched; it is never deleted.
+- **Capture-side gap**: part of a room seen by frames with too few verified cross-room links for the current reconstruction (bathroom, hallway). Proposed remedies: capture guidance, or supervised depth placement (§9.6 bugs 1, 6).
 - **Up estimate / `_world_up`**: the room's up direction; it falls back to the camera up if the refinement fails, giving tilted rooms.
 - **Surface pipeline**: the stages that turn depth and poses into the room surface (`surfacify`, T5.2).
 - **Photographic pipeline / ladder (Tower)**: the stage sequence that produces a photographic room (depth, surface, appearance, dense).
