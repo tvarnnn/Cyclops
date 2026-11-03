@@ -1019,6 +1019,19 @@ def world_finish_stages_setting() -> bool:
     return _flag(WORLD_FINISH_STAGES_ENV, default=False)
 
 
+# TRANSIENT MASKS AT STOP (`world_builder/masks_at_stop.py`): the final build's hand and phone
+# masks, staged by a child of the builder while the final solve runs (CPU work: the GPU is idle),
+# and moved into the mask cache by the final surface stage only where its own inputs match. Read
+# at call time by the builder (whether to start the child) and by the surface stage (whether to
+# promote). Off: no child, no staging, and every output is byte for byte as before.
+WORLD_MASKS_AT_STOP_ENV = "TOWER_WORLD_MASKS_AT_STOP"
+
+
+def world_masks_at_stop_setting() -> bool:
+    """`TOWER_WORLD_MASKS_AT_STOP`: stage the final build's transient masks after Stop. Off."""
+    return _flag(WORLD_MASKS_AT_STOP_ENV, default=False)
+
+
 # The PREVIEW (WORLD-BUILDER-WORLDS.md §4a `basis`, rule 8). Read per request by the render revision
 # route. Off: the revision body is byte for byte as before (no `basis` key).
 WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"

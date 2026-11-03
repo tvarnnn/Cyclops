@@ -19,6 +19,8 @@ from tests.test_world_builder_surface_pipeline import _synthetic_world, WORLD, S
 
 
 LABEL = "faces-detected-and-filled/yunet-2023mar@0.30+plausibility1"
+# The `walk` fixture swaps in identity maps; a test that needs the real refusal puts this back.
+_REAL_UNDISTORT_MAPS = GS._undistort_maps
 
 
 class FakeMoGe:
@@ -139,6 +141,23 @@ def test_final_solve_index_is_mapped_from_kid(walk):
         imagery_source="redacted", trust=f"trusted:{LABEL}")
     assert offers == {1: (keyframe.keyframe_id, hashlib.sha1(walk[3]).hexdigest())}
     assert (root / "work" / "depth" / "00001_pred.npy").is_file()
+
+
+def test_a_session_that_cannot_undistort_has_no_compatible_live_record(walk, monkeypatch):
+    # The real `_undistort_maps` refuses a session without a calibration with `UndistortionUnavailable`
+    # (a RuntimeError): the cache's identity cannot be checked, so nothing matches -- never an exception.
+    store, session, _, _ = walk
+    worker = _predict_one(walk)
+    solution = load_solution(store, WORLD, SESSION)
+    root = worker.root.parent
+    kw = dict(imagery_source="redacted", trust=f"trusted:{LABEL}")
+    assert len(LD.compatible_live_records(store, WORLD, SESSION, solution, session.intrinsics, root, **kw)) == 1
+    monkeypatch.setattr(GS, "_undistort_maps", _REAL_UNDISTORT_MAPS)
+    with pytest.raises(GS.UndistortionUnavailable):
+        GS._undistort_maps(None, 64, 48)
+    assert LD.compatible_live_records(store, WORLD, SESSION, solution, None, root, **kw) == {}
+    assert LD.offer_live_predictions(store, WORLD, SESSION, solution, None, root, **kw) == {}
+    assert not (root / "work").exists()
 
 
 def test_active_hook_submits_confirmed_keyframe(walk, monkeypatch):

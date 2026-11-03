@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 
 import numpy as np
 import pytest
@@ -42,6 +43,7 @@ from tests.test_world_builder_live_depth import LABEL, _predict_one, walk  # noq
 from tests.test_world_builder_surface_pipeline import SESSION, WORLD
 from tower.world_builder import coherence_scale as CS
 from tower.world_builder import final_scale_guard as FSG
+from tower.world_builder import global_solve as GS
 from tower.world_builder.components import read_components_record
 from tower.world_builder.global_solve import load_solution
 
@@ -526,6 +528,81 @@ def test_finite_extreme_evidence_never_raises_and_the_audit_stays_writable():
     json.dumps(doc, allow_nan=False)
 
 
+def _overflow_levels(shape, n=100):
+    """A clean room with finite log ratios whose ratio, exp, is past the largest float, each met at one of the
+    other conversions (on main each raised OverflowError inside the guard, which then withheld the final
+    solve): `short`, six cameras at log +720 (the plateau's ratio, `_v2_rows`); `long`, twelve (its ratio and
+    its bootstrap interval); `excursion`, three in a row inside the room (the excursion's ratio,
+    `_split_excursions`); `room`, the whole room at log -1000 (metres per unit exp(1000), the pose screen)."""
+    lv = _levels(n, [], noise=0.05, seed=3)
+    if shape == "room":
+        return {k: v - 1000.0 for k, v in lv.items()}
+    first, count = {"short": (20, 6), "long": (20, 12), "excursion": (40, 3)}[shape]
+    for i in range(first, first + count):
+        lv[f"{i:08d}.jpg"] = 720.0 + 0.01 * (i - first)
+    return lv
+
+
+def test_a_ratio_is_exp_and_only_an_overflow_becomes_inf():
+    edge = FSG._LOG_FLOAT_MAX
+    for d in (-1000.0, -745.2, 0.0, 1.0, 709.0, edge, math.nextafter(edge, 1e3), 720.0, 1e300):
+        try:
+            want = math.exp(d)
+        except OverflowError:
+            want = math.inf
+        assert FSG._ratio(d) == want, d
+    assert FSG._ratio(720.0) == math.inf and math.isfinite(FSG._ratio(edge))
+
+
+def test_a_bootstrap_interval_past_the_largest_float_is_inf_on_that_side():
+    core = np.random.default_rng(1).normal(0.0, 0.05, 50)
+    assert FSG.bootstrap_interval(np.full(12, 720.0), core, P, salt=0) == [math.inf, math.inf]
+    lo, hi = FSG.bootstrap_interval(np.array([-1.0] * 6 + [720.0] * 6), core, P, salt=0)
+    assert lo < 1.0 and hi == math.inf
+    assert FSG.bootstrap_interval(np.full(12, -720.0), core, P, salt=0) == [0.0, 0.0]
+
+
+def test_a_short_plateau_past_the_largest_float_is_isolated_and_its_ratio_recorded_null():
+    out = FSG.assess_v2(_cams(100), _overflow_levels("short"))
+    assert out["decision"] == "publish" and out["scale_status"] == FSG.SCALE_CERTIFIED
+    (piece,) = out["pieces"]
+    assert set(piece["keyframe_ids"]) == _ids(20, 26) and piece["beyond_core"] is True and "ci" not in piece
+    assert piece["ratio"] == math.inf and piece["ratio_range"] == [math.inf, math.inf]
+    doc = FSG._jsonable(out)
+    assert doc["pieces"][0]["ratio"] is None
+    json.dumps(doc, allow_nan=False)
+
+
+def test_a_long_plateau_past_the_largest_float_is_isolated_its_interval_excluding_one():
+    out = FSG.assess_v2(_cams(100), _overflow_levels("long"))
+    assert out["decision"] == "publish" and out["scale_status"] == FSG.SCALE_CERTIFIED
+    (piece,) = out["pieces"]
+    assert set(piece["keyframe_ids"]) == _ids(20, 32) and piece["reason"] == FSG.REASON_SCALE_OUTLIER
+    assert piece["ci"] == [math.inf, math.inf] and piece["ci_excludes_one"] is True
+    assert piece["ratio"] == math.inf
+    doc = FSG._jsonable(out)
+    assert doc["pieces"][0]["ci"] == [None, None] and doc["pieces"][0]["ratio"] is None
+    json.dumps(doc, allow_nan=False)
+
+
+def test_an_excursion_past_the_largest_float_stays_attached_and_flagged():
+    out = FSG.assess_v2(_cams(100), _overflow_levels("excursion"))
+    assert out["decision"] == "publish" and out["pieces"] == []
+    assert out["scale_status"] == FSG.SCALE_UNCERTIFIED
+    (row,) = out["uncertified"]
+    assert set(row["keyframe_ids"]) == _ids(40, 43) and row["uncertified"] == FSG.UNCERTIFIED_EXCURSION
+    assert row["ratio"] == math.inf
+    json.dumps(FSG._jsonable(out), allow_nan=False)
+
+
+def test_a_room_whose_metres_per_unit_is_past_the_largest_float_has_no_pose_screen():
+    out = FSG.assess_v2(_cams(100), _overflow_levels("room"))
+    assert out["decision"] == "publish" and out["pieces"] == []
+    assert out["scale_status"] == FSG.SCALE_CERTIFIED
+    assert -out["reference"]["log"] > FSG._LOG_FLOAT_MAX and out["pose"] is None
+    json.dumps(FSG._jsonable(out), allow_nan=False)
+
+
 # ---------------------------------------------------------------------------
 # the live depth cache, read in place
 # ---------------------------------------------------------------------------
@@ -565,6 +642,19 @@ def test_a_live_cache_of_another_fov_is_no_evidence(walk, monkeypatch):  # noqa:
     doc = json.loads((worker.root / "align.json").read_text(encoding="utf-8"))
     doc["known_fov"] += 0.01
     (worker.root / "align.json").write_text(json.dumps(doc), encoding="utf-8")
+    called = []
+    log, record = _read_live(walk, live_metric_fn=lambda *a: called.append(a))
+    assert log == {} and record["state"] == "incompatible" and called == []
+
+
+def test_a_live_cache_whose_session_cannot_undistort_is_no_evidence(walk, monkeypatch):  # noqa: F811
+    # R5: on main the reader let `UndistortionUnavailable` out, and the guard then withheld the final solve.
+    _predict_one(walk)
+
+    def unavailable(intrinsics, width, height):
+        raise GS.UndistortionUnavailable("session has no intrinsics")
+
+    monkeypatch.setattr(GS, "_undistort_maps", unavailable)
     called = []
     log, record = _read_live(walk, live_metric_fn=lambda *a: called.append(a))
     assert log == {} and record["state"] == "incompatible" and called == []
@@ -658,3 +748,60 @@ def test_finite_extreme_evidence_still_publishes_at_the_seam(tmp_path, colmap, m
     assert not ({f"{sid}:{i:08d}" for i in range(20, 26)} & _room_ids(meta))
     (piece,) = audit["assessment"]["pieces"]
     assert piece["core_range"][1] is None and piece["beyond_core"] is True
+
+
+@pytest.mark.parametrize("shape", ["short", "long", "excursion", "room"])
+def test_a_ratio_past_the_largest_float_still_publishes_at_the_seam(tmp_path, colmap, monkeypatch, shape):
+    _Engines(monkeypatch, n=100, levels={})
+    s = _walk(tmp_path / "w", 100, colmap, monkeypatch)
+    _live_evidence(monkeypatch, _overflow_levels(shape))
+    assert _simple(s)["solved"] is True
+    meta, comp, audit = _published(s)
+    assert audit["decision"] == "published" and audit["error"] is None
+    assert meta["solve"]["final_scale_guard"]["decision"] == "published"
+    json.dumps(audit, allow_nan=False)
+    isolated = {"short": range(20, 26), "long": range(20, 32)}.get(shape, range(0))
+    assert len(audit["assessment"]["pieces"]) == (1 if isolated else 0)
+    sid = s.session_id
+    assert not ({f"{sid}:{i:08d}" for i in isolated} & _room_ids(meta))
+    assert len(_room_ids(meta)) == 100 - len(isolated)
+
+
+def test_a_live_cache_whose_session_cannot_undistort_publishes_uncertified_at_the_seam(tmp_path, colmap, monkeypatch):
+    """R5 at the seam: the session's calibration is unusable by the time the guard reads the live cache (the
+    final solve undistorted its images before). On main the reader's `UndistortionUnavailable` reached the guard,
+    which withheld the final solve; now the cache is no evidence and the room is published `uncertified`."""
+    from tower.world_builder.coherence_publish import _depth_params
+    from tower.world_builder.dense_pipeline import dense_dir, depth_trust_now
+
+    eng = _Engines(monkeypatch, n=60, levels={f"{i:08d}.jpg": 0.0 for i in range(60)})
+    s = _walk(tmp_path / "w", 60, colmap, monkeypatch)
+    # The walk's live cache, made to match this session in everything before the calibration check (its
+    # redaction trust), so the reader gets as far as undistorting.
+    align = dense_dir(s.store, s.world_id, s.session_id) / "live_depth" / "align.json"
+    doc = json.loads(align.read_text(encoding="utf-8"))
+    imagery = _depth_params().imagery_source
+    doc["redaction_trust"] = depth_trust_now(s.store, s.world_id, s.session_id, imagery_source=imagery)
+    align.write_text(json.dumps(doc), encoding="utf-8")
+    real = GS._undistort_maps
+    refused = []
+
+    def unusable_for_the_live_reader(intrinsics, width, height):
+        if sys._getframe(1).f_code.co_name == "compatible_live_records":
+            refused.append((width, height))
+            raise GS.UndistortionUnavailable("session has no intrinsics")
+        return real(intrinsics, width, height)
+
+    monkeypatch.setattr(GS, "_undistort_maps", unusable_for_the_live_reader)
+    out = _simple(s)
+    assert refused, "the live cache reader never reached its calibration check"
+    assert out["solved"] is True
+    meta, comp, audit = _published(s)
+    assert len(_room_ids(meta)) == 60 and eng.depth_calls == 0 and eng.metric_calls == 0
+    assert audit["decision"] == "published" and audit["error"] is None
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "incompatible"
+    assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED and audit["assessment"]["pieces"] == []
+    status = _placed(comp)["final_scale_guard"]
+    assert status["scale_status"] == FSG.SCALE_UNCERTIFIED and status["evidence"] == FSG.EVIDENCE_NONE
+    assert meta["solve"]["final_scale_guard"]["decision"] == "published"
+    assert meta["solve"]["final_scale_guard"]["scale_status"] == FSG.SCALE_UNCERTIFIED
