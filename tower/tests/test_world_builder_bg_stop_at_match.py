@@ -1070,13 +1070,15 @@ def test_a_deferred_child_that_claimed_first_is_not_reported_until_it_is_gone(tm
                                   should_stop=lambda: (root / "deferred_started").exists())
         outcome = report["deferred_background_map"]
         assert "already claimed" in outcome["why"] and "revoked" not in outcome
-        (claim,) = list(root.glob("bg_deferred_map.*.claim"))
-        assert "deferred-map" in claim.read_text()
+        claims = list(root.glob("bg_deferred_map.*.claim"))
         if os.name == "nt":
             assert outcome["published"] is False and outcome["confirmed_gone"] is True
+            assert claims == []                                  # confirmed gone: its claim swept
             time.sleep(5)
             assert not (root / "solution.json").exists()
         else:
+            (claim,) = claims
+            assert "deferred-map" in claim.read_text()
             assert outcome["published"] is None and outcome["confirmed_gone"] is False
             assert claim.exists()
     finally:
@@ -1146,11 +1148,14 @@ def test_an_untrusted_enumeration_is_never_gone(tmp_path, monkeypatch):
     import psutil
 
     from scripts.world_build_session import BackgroundSolver as BS
+    from scripts.world_build_session import python_executable
 
-    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    # The production interpreter (one process; a Windows venv's `sys.executable` is a launcher pair).
+    env = child_environment()
+    done = subprocess.Popen([python_executable(), "-c", "pass"], env=env)
     done.wait(timeout=20)
     assert BS._family(done) == ([], False)                       # exited: its orphans are unknown
-    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    live = subprocess.Popen([python_executable(), "-c", "import time; time.sleep(30)"], env=env)
     try:
         assert BS._family(live) == ([], True)
         monkeypatch.setattr(psutil, "Process",
@@ -1171,6 +1176,9 @@ def test_an_untrusted_enumeration_fails_closed_to_todays_wait(tmp_path, monkeypa
 
     solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
     monkeypatch.setattr(builder.BackgroundSolver, "_family", staticmethod(lambda child: ([], False)))
+    # On Windows the Job Object answers first (and would confirm it gone); a job that cannot be
+    # asked leaves the untrusted enumeration as the only answer.
+    monkeypatch.setattr("tower.process_ownership.JobHandle.active_processes", lambda self: None)
     try:
         _wait_for(MM.marker_path(root))
         started = time.monotonic()
@@ -1189,16 +1197,20 @@ def test_the_job_confirms_a_grandchild_nobody_enumerated_is_gone(tmp_path):
     from scripts.world_build_session import BackgroundSolver as BS
     from tower.process_ownership import assign_to_job
 
-    child = subprocess.Popen([sys.executable, "-c",
+    from scripts.world_build_session import python_executable
+
+    child = subprocess.Popen([python_executable(), "-c",
                               "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', "
-                              "'import time; time.sleep(60)']); time.sleep(60)"])
+                              "'import time; time.sleep(60)']); time.sleep(60)"],
+                             env=child_environment())
     job = assign_to_job(child)
     assert job is not None
     try:
         deadline = time.monotonic() + 20
         while (job.active_processes() or 0) < 2 and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert job.active_processes() == 2
+        # The child is one process; anything more is its grandchild (a venv launcher pair counts 2).
+        assert job.active_processes() >= 2
         job.terminate()
         solver = BS(root=tmp_path, world_id="w", session_id="s", every=1, capture_dirs=[],
                     stop_at_match=True)
@@ -1271,7 +1283,9 @@ def test_a_suspended_launch_leaves_no_process_outside_the_job(tmp_path, monkeypa
         deadline = time.monotonic() + 20
         while (job.active_processes() or 0) < 2 and time.monotonic() < deadline:
             time.sleep(0.05)
-        assert job.active_processes() == 2                       # it ran, and its grandchild is in
+        # It ran (resumed), and its grandchild -- spawned on its first line -- is in the job: the
+        # child is one process, so anything more is the grandchild (a venv launcher pair counts 2).
+        assert job.active_processes() >= 2
         assert solver._terminate_child_verified() is True
         assert job.active_processes() == 0
     finally:
