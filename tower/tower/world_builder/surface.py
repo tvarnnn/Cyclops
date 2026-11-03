@@ -45,6 +45,7 @@ constant voxel size would shatter one world and collapse another.
 
 from __future__ import annotations
 
+import logging
 import math
 import struct
 import time
@@ -53,6 +54,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from tower.world_builder.raw_imagery import IMAGERY_REDACTED
+
+logger = logging.getLogger(__name__)
 
 
 def torch_full_like(t, value):
@@ -2311,10 +2314,15 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
     # Bounds on the same float32 centroids the vote below projects
     # (`_frustum_face_runs`); only proven for IEEE float32 matrix products.
     group_centres = group_radii = None
-    if (world_mesh_evidence_cull_setting() and fx > 0 and fy > 0
-            and np.isfinite((fx, fy, cx, cy)).all()
-            and torch.get_float32_matmul_precision() == "highest"):
-        group_centres, group_radii = _face_group_bounds(P, CULL_GROUP_FACES)
+    if world_mesh_evidence_cull_setting():
+        precision = torch.get_float32_matmul_precision()
+        if (fx > 0 and fy > 0 and np.isfinite((fx, fy, cx, cy)).all()
+                and precision == "highest"):
+            group_centres, group_radii = _face_group_bounds(P, CULL_GROUP_FACES)
+        else:
+            logger.info("[Tower][WorldBuilder][surface] evidence cull stands down "
+                        "(float32 matmul precision %r, fx %s, fy %s)", precision, fx, fy)
+    projected = 0       # face x frame projections the cull let through (log only)
     weak_idx = None
     if weak is not None:
         weak_idx = torch.as_tensor(np.nonzero(np.asarray(weak, bool))[0], device=dev)
@@ -2342,6 +2350,7 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
                      [(max(a, c0), min(b, c1)) for a, b in runs if a < c1 and b > c0])
             if not parts:
                 continue
+            projected += sum(s1 - s0 for s0, s1 in parts)
             # The matrix product and the facing reduction always see the very
             # chunk they see with the cull off, so no kernel choice that hangs
             # on an operand's shape or offset can move a bit; what the cull
@@ -2395,6 +2404,11 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
                 cam_hi[sl] = torch.where(s_[:, None], torch.maximum(cam_hi[sl], centre[None]),
                                          cam_hi[sl])
                 wsup[sl] |= s_
+    if group_centres is not None:
+        total = nF * stats["frames"]
+        logger.info("[Tower][WorldBuilder][surface] evidence cull: %d of %d face x frame "
+                    "projections skipped (%.1f%%)", total - projected, total,
+                    100.0 * (total - projected) / max(total, 1))
     ok_support = sup >= int(params.min_support_frames)
     keep = ok_support.clone()
     if params.contradiction_ratio > 0:
