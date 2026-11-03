@@ -611,6 +611,57 @@ class SurfaceParams:
     excluding a point at 10^6 is not inventing geometry, and nothing here
     fills what it excludes (`WORLD-BUILDER-SURFACE.md` section 3)."""
 
+    bound_from_fused_component: bool = False
+    """Build the fusion bound's point envelope from the sparse points of the
+    component being fused (`component`) only. Off (the default, and what every
+    world before `TOWER_WORLD_SURFACE_BOUND_FIX` was built with): every point of
+    the solution, all components. On by that switch (`surface_pipeline.surfacify`).
+
+    WHY. The depth stage fuses only the frames of `component`
+    (`dense_pipeline`, `pose["component"] != params.component`), and every
+    other component is a piece the solver could not place relative to it -- the
+    scale guard isolated it, or it never joined -- so its points say nothing
+    about where the fused frames' surfaces are. Measured on walk 10.2's replay
+    int4-w102-2 (13 solver components, 5,148 of 32,546 points outside component
+    0): the bound's half-width was 89.3 with every point and 73.8 with
+    component 0's; on main122-w102-1 77.3 against 66.3, on int1-w102-1 66.5
+    against 62.6; on replays whose other components happened to sit inside the
+    envelope it is unchanged (57.2, 63.8, 64.2)."""
+
+    budget_spares_the_room: bool = False
+    """What the block budget gives up first when a walk needs more blocks than
+    `max_blocks`. Off (the default, and every world built before
+    `TOWER_WORLD_SURFACE_BOUND_FIX`): the voxel of the WHOLE scene is coarsened
+    until the blocks fit. On (`surface_pipeline._spare_the_room`), in order of
+    what each answer costs the room, and only while the budget still binds:
+
+      1. blocks fewer than `min_support_frames` frames key. Nothing is lost:
+         a frame keys every block within its truncation band of its depth
+         (`SurfaceVolume.blocks_for_depth`), a frame supports a face only
+         within that same band (`evidence_filter`), and a face fewer than
+         `min_support_frames` distinct frames support is removed. So no face
+         such a block could hold would ship.
+      2. blocks farther than the scene-relative far bound (`max_depth_frac` x
+         the scene scale, the same reach `_fusion_bound` grows every camera
+         by) from EVERY fused camera: the far periphery, which no place the
+         wearer stood saw at a normal range.
+      3. only then, a coarser voxel, exactly as before, on what is left.
+
+    WHY. Block count is a SUM over frames of their footprints, and a frame's
+    footprint grows with the square of its depth. On replay int4-w102-2 of walk
+    10.2 seven of 959 frames -- four whose every sparse anchor the solver put
+    17-99 units out (median fused depth 54 units, in a room of radius ~6) and
+    three cameras placed 19-24 units out -- keyed 0.36-1.06 M blocks each,
+    against a median of 8.7 K; the walk needed 4.09 M blocks against the
+    budget's 360 K, and the old answer coarsened every voxel of the room 3.54x
+    (0.069 against 0.020-0.024 on every other replay of the walk): 618 K faces
+    instead of 4.1-4.7 M and the worst haze of any run. Of those 4.10 M blocks
+    (measured on the Mac with 797 of the frames), 2.74 M were keyed by one
+    frame, and of the 1.36 M keyed by two or more, 1.12 M lay beyond the far
+    bound of every camera: 0.24 M remain, inside the budget at the room's own
+    voxel. A walk that is genuinely big -- its supported, near-path blocks alone
+    over the budget -- is still coarsened, as before."""
+
     depth_falloff: bool = True
     """Weight falls as 1/z^2: a far pixel's depth is less certain and covers
     more volume."""
@@ -1058,6 +1109,12 @@ class SurfaceParams:
                            self.fill_sealed_only)
         if self.depth_known_fov:
             base = base + (("depth-fov", "known"),)
+        # Appended only when on, as the fill fields are: a surface built
+        # without them keeps its digest, and one built with them rebuilds.
+        if self.bound_from_fused_component:
+            base = base + (("bound-points", "fused-component"),)
+        if self.budget_spares_the_room:
+            base = base + (("budget", "unsupported-then-periphery-then-voxel"),)
         return base
 
     def _consistency_digest(self):
