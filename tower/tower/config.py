@@ -1143,6 +1143,20 @@ def world_frame_quality_log_setting() -> bool:
 WORLD_STAGE_TIMING_ENV = "TOWER_WORLD_STAGE_TIMING"
 _world_stage_timing_warned_values: set[str] = set()
 
+# Independent mesh-stage experiments; neither changes a stock Tower.
+WORLD_MESH_EVIDENCE_CULL_ENV = "TOWER_WORLD_MESH_EVIDENCE_CULL"
+WORLD_MESH_MC_POOL_ENV = "TOWER_WORLD_MESH_MC_POOL"
+
+
+def world_mesh_evidence_cull_setting() -> bool:
+    """Skip face groups provably outside a frame's image. Off by default."""
+    return _flag(WORLD_MESH_EVIDENCE_CULL_ENV, default=False)
+
+
+def world_mesh_mc_pool_setting() -> bool:
+    """Run independent tile marching cubes jobs on a bounded CPU pool. Off."""
+    return _flag(WORLD_MESH_MC_POOL_ENV, default=False)
+
 
 def world_stage_timing_setting() -> bool:
     """Whether to write bounded finish-stage timing (off by default)."""

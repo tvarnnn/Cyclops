@@ -22,6 +22,33 @@ import pytest
 from tower.world_builder import surface as S
 
 
+def test_marching_cubes_pool_keeps_tile_order_and_mesh_bytes(monkeypatch):
+    import threading
+    from skimage import measure
+
+    vol = _fuse([(np.array([0., 0., -1.5]), np.array([0., 0., 5.]), None)])
+    calls = []
+    original = measure.marching_cubes
+
+    def observed(*args, **kwargs):
+        calls.append(threading.current_thread().name)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(measure, "marching_cubes", observed)
+    monkeypatch.delenv("TOWER_WORLD_MESH_MC_POOL", raising=False)
+    old = vol.extract_mesh(.5, tile_blocks=2)
+    old_bytes = S.write_mesh_bytes(*old)
+    assert calls and set(calls) == {threading.current_thread().name}
+    calls.clear()
+    monkeypatch.setenv("TOWER_WORLD_MESH_MC_POOL", "off")
+    assert S.write_mesh_bytes(*vol.extract_mesh(.5, tile_blocks=2)) == old_bytes
+    calls.clear()
+    monkeypatch.setenv("TOWER_WORLD_MESH_MC_POOL", "on")
+    new = vol.extract_mesh(.5, tile_blocks=2)
+    assert S.write_mesh_bytes(*new) == old_bytes
+    assert len(calls) > 1 and all(name != threading.current_thread().name for name in calls)
+
+
 # ---------------------------------------------------------------------------
 # a synthetic room, and cameras that look at it
 # ---------------------------------------------------------------------------

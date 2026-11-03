@@ -26,6 +26,58 @@ from tower.world_builder import surface as S
 from tower.world_builder import surface_pipeline as SP
 
 
+def test_evidence_cull_preserves_every_counter_and_decision(monkeypatch):
+    import torch
+
+    # Contiguous face groups: visible, beyond the right edge, and behind.
+    V = np.array([[-0.1, -0.1, 5], [0.1, -0.1, 5], [0, 0.1, 5],
+                  [20, -0.1, 5], [20.2, -0.1, 5], [20.1, 0.1, 5],
+                  [-0.1, -0.1, -5], [0.1, -0.1, -5], [0, 0.1, -5]], np.float32)
+    F = np.concatenate([np.tile([[i, i + 1, i + 2]], (65_536, 1))
+                        for i in (0, 3, 6)]).astype(np.int64)
+    K = np.array([[40., 0., 8.], [0., 40., 8.], [0., 0., 1.]])
+    depth = torch.full((16, 16), 5.)
+    views = [(d, torch.ones_like(d, dtype=torch.bool), torch.eye(3),
+              torch.zeros(3)) for d in (depth, depth + 1)]
+    views.append((depth, torch.ones_like(depth, dtype=torch.bool),
+                  torch.diag(torch.tensor([-1., 1., -1.])), torch.zeros(3)))
+    params = S.SurfaceParams(min_support_frames=1)
+    weak = np.zeros(len(F), bool)
+    weak[::65_536] = True
+    projected = []
+    original_matmul = torch.Tensor.__matmul__
+
+    def observed_matmul(a, b):
+        if a.ndim == 2 and a.shape[1] == 3 and len(a) >= 65_536:
+            projected.append(len(a))
+        return original_matmul(a, b)
+
+    monkeypatch.setattr(torch.Tensor, "__matmul__", observed_matmul)
+    run = lambda: S.evidence_filter(V, F, views, K, lambda d: torch.full_like(d, .1),
+                                    params, torch.device("cpu"), chunk=65_536,
+                                    weak=weak, return_counters=True)
+    monkeypatch.delenv("TOWER_WORLD_MESH_EVIDENCE_CULL", raising=False)
+    old = run()
+    old_projected = sum(projected)
+    projected.clear()
+    monkeypatch.setenv("TOWER_WORLD_MESH_EVIDENCE_CULL", "off")
+    off = run()
+    assert np.array_equal(old[0], off[0]) and old[1] == off[1]
+    assert all(old[2][key].tobytes() == off[2][key].tobytes() for key in old[2])
+    projected.clear()
+    monkeypatch.setenv("TOWER_WORLD_MESH_EVIDENCE_CULL", "on")
+    new = run()
+    assert sum(projected) < old_projected
+    assert np.array_equal(old[0], new[0])
+    assert old[1] == new[1]
+    for name in old[2]:
+        assert old[2][name].tobytes() == new[2][name].tobytes(), name
+    assert old[2]["support"][0] == 1
+    assert old[2]["through"][0] == 1
+    assert old[2]["support"][65_536] == 0
+    assert old[2]["support"][-1] == 1
+
+
 def _views_tensors(views, device="cpu"):
     import torch
 

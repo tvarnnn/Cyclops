@@ -1541,6 +1541,7 @@ class SurfaceVolume:
         """
         import torch
         from skimage import measure
+        from tower.config import world_mesh_mc_pool_setting
 
         empty = (np.zeros((0, 3), np.float32), np.zeros((0, 3), np.int64),
                  np.zeros((0, 3), np.uint8))
@@ -1584,27 +1585,63 @@ class SurfaceVolume:
         slot_base = (slot_off[:, 0] * n * n + slot_off[:, 1] * n
                      + slot_off[:, 2]) * BLOCK
 
-        for ti, (bx, by, bz) in enumerate(tiles):
-            origin = torch.tensor([bx, by, bz], dtype=torch.int64, device=self.dev)
-            idx = self.lookup(block_key(slot_off + origin))
-            present = torch.nonzero(idx >= 0, as_tuple=False).squeeze(1)
-            if present.numel() == 0:
-                continue
-            bidx = idx[present]
-            dest = (slot_base[present].unsqueeze(1)
-                    + voxel_off.unsqueeze(0)).reshape(-1)
+        def tile_fields():
+            for ti, (bx, by, bz) in enumerate(tiles):
+                origin = torch.tensor([bx, by, bz], dtype=torch.int64, device=self.dev)
+                idx = self.lookup(block_key(slot_off + origin))
+                present = torch.nonzero(idx >= 0, as_tuple=False).squeeze(1)
+                if present.numel() == 0:
+                    continue
+                bidx = idx[present]
+                dest = (slot_base[present].unsqueeze(1)
+                        + voxel_off.unsqueeze(0)).reshape(-1)
 
-            dt = torch.ones(n * n * n, dtype=torch.float32, device=self.dev)
-            dt[dest] = self.tsdf[bidx].reshape(-1)
-            a = dt.reshape(n, n, n).cpu().numpy()
-            if not (a.min() < 0 < a.max()):
-                continue
+                dt = torch.ones(n * n * n, dtype=torch.float32, device=self.dev)
+                dt[dest] = self.tsdf[bidx].reshape(-1)
+                a = dt.reshape(n, n, n).cpu().numpy()
+                if a.min() < 0 < a.max():
+                    yield ti, bx, by, bz, bidx, dest, a
+
+        def march(a):
             try:
                 verts, faces, _, _ = measure.marching_cubes(a, level=0.0)
             except (ValueError, RuntimeError):
-                continue
-            if not len(faces):
-                continue
+                return None
+            return (verts, faces) if len(faces) else None
+
+        def marched_tiles():
+            if not world_mesh_mc_pool_setting():
+                for tile in tile_fields():
+                    result = march(tile[-1])
+                    if result is not None:
+                        yield (*tile[:-1], *result)
+                return
+
+            from collections import deque
+            from concurrent.futures import ThreadPoolExecutor
+            import os
+
+            # On the 20-core Tower four workers leave cores for field
+            # preparation and other finish work; at most two batches of tile
+            # arrays are in flight.
+            workers = min(4, max(1, (os.cpu_count() or 1) // 4))
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                pending = deque()
+                for tile in tile_fields():
+                    pending.append((tile, pool.submit(march, tile[-1])))
+                    if len(pending) < 2 * workers:
+                        continue
+                    first, future = pending.popleft()
+                    result = future.result()
+                    if result is not None:
+                        yield (*first[:-1], *result)
+                while pending:
+                    first, future = pending.popleft()
+                    result = future.result()
+                    if result is not None:
+                        yield (*first[:-1], *result)
+
+        for ti, bx, by, bz, bidx, dest, verts, faces in marched_tiles():
 
             # Colour is only wanted AT the vertices, so it is sampled on the
             # device and only the sampled values cross the bus.
@@ -2184,6 +2221,7 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
     Returns (keep mask over faces, stats), or (keep, stats, counters).
     """
     import torch
+    from tower.config import world_mesh_evidence_cull_setting
 
     F = np.asarray(F, np.int64)
     nF = len(F)
@@ -2211,6 +2249,20 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
     P = torch.cat(cents)
     N = torch.cat(norms)
     del Vt, cents, norms, tri
+    # Bounds are on the same float32 centroids used by the vote below. A
+    # group's sphere contains every centroid, including across tile seams.
+    group_size = 65_536  # ~171 bounds at 11.2M faces, without tiny GPU launches
+    group_centres = group_radii = None
+    if (world_mesh_evidence_cull_setting() and fx > 0 and fy > 0
+            and np.isfinite((fx, fy, cx, cy)).all()):
+        bounds = torch.stack([
+            torch.stack((P[i:i + group_size].amin(0),
+                         P[i:i + group_size].amax(0)))
+            for i in range(0, nF, group_size)]).cpu().numpy().astype(np.float64)
+        group_centres = (bounds[:, 0] + bounds[:, 1]) * 0.5
+        group_radii = np.linalg.norm(bounds[:, 1] - group_centres, axis=1)
+        # Float32 matrix multiplication and pixel rounding get ample slack.
+        group_radii += 1e-4 * (1 + np.abs(group_centres).max(axis=1))
     weak_idx = None
     if weak is not None:
         weak_idx = torch.as_tensor(np.nonzero(np.asarray(weak, bool))[0], device=dev)
@@ -2230,8 +2282,40 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
         H, W = depth.shape
         centre = -(R.T @ t)
         stats["frames"] += 1
-        for s0 in range(0, nF, chunk):
-            pc = P[s0:s0 + chunk] @ R.T + t
+        if group_centres is None:
+            ranges = ((s, min(s + chunk, nF)) for s in range(0, nF, chunk))
+        else:
+            rc = R.cpu().numpy().astype(np.float64)
+            tc = t.cpu().numpy().astype(np.float64)
+            pcg = group_centres @ rc.T + tc
+            visible = np.isfinite(pcg).all(axis=1) & np.isfinite(group_radii)
+            # A pixel rounded into [0, W) / [0, H) must lie inside these
+            # half-pixel-expanded planes. A sphere wholly outside any plane
+            # cannot contribute support, through, front, or residual votes.
+            planes = ((0., 0., 1., -1e-4),
+                      (fx, 0., cx + .5, 0.),
+                      (-fx, 0., W - .5 - cx, 0.),
+                      (0., fy, cy + .5, 0.),
+                      (0., -fy, H - .5 - cy, 0.))
+            if not (np.isfinite(rc).all() and np.isfinite(tc).all()):
+                visible[:] = True
+            else:
+                for ax, ay, az, offset in planes:
+                    normal = np.array((ax, ay, az))
+                    val = pcg @ normal + offset
+                    margin = 1e-4 * (1 + np.abs(val))
+                    # Bound the world-space sphere after the actual R, even
+                    # if a caller supplies a slightly non-orthogonal pose.
+                    visible &= val + group_radii * np.linalg.norm(rc.T @ normal) >= -margin
+            # Nonfinite bounds must take the original path, never be culled.
+            visible |= ~(np.isfinite(pcg).all(axis=1) & np.isfinite(group_radii))
+            edges = np.flatnonzero(np.diff(np.r_[False, visible, False]))
+            ranges = ((s, min(s + chunk, end))
+                      for first, last in zip(edges[::2], edges[1::2])
+                      for end in (min(last * group_size, nF),)
+                      for s in range(first * group_size, end, chunk))
+        for s0, s1 in ranges:
+            pc = P[s0:s1] @ R.T + t
             z = pc[:, 2]
             zc = z.clamp(min=1e-6)
             u = torch.round(pc[:, 0] / zc * fx + cx).long()
@@ -2243,12 +2327,12 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
             r = d - z
             tr = trunc_at(d)
             s_ = m & (r.abs() <= tr)
-            sup[s0:s0 + chunk] += s_.to(torch.int16)
-            facing = ((centre - P[s0:s0 + chunk]) * N[s0:s0 + chunk]).sum(1) > 0
-            front[s0:s0 + chunk] += (s_ & facing).to(torch.int16)
-            thru[s0:s0 + chunk] += (m & (r > tr)).to(torch.int16)
+            sup[s0:s1] += s_.to(torch.int16)
+            facing = ((centre - P[s0:s1]) * N[s0:s1]).sum(1) > 0
+            front[s0:s1] += (s_ & facing).to(torch.int16)
+            thru[s0:s1] += (m & (r > tr)).to(torch.int16)
             if return_counters:
-                sl = slice(s0, s0 + chunk)
+                sl = slice(s0, s1)
                 rn = torch.where(s_, r / tr.clamp(min=1e-9), torch.zeros_like(r))
                 r2[sl] += rn * rn
                 cam_all_lo[sl] = torch.where(s_[:, None],
