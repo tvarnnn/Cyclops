@@ -134,7 +134,8 @@ def _deferred_map(store, args) -> int:
             keyframe_ids=list(order.get("keyframe_ids") or []),
             num_threads=args.threads if args.threads is not None else background_threads(),
             context=order.get("solve") or {},
-            expect_standing_solved_at=order["standing_solved_at"])
+            expect_standing_solved_at=order["standing_solved_at"],
+            publish_claim=Path(order["claim"]) if order.get("claim") else None)
     print(json.dumps(summary, indent=2))
     return 0
 

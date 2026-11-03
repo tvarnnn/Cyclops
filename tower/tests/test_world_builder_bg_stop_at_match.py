@@ -776,6 +776,24 @@ FINAL_STUB = textwrap.dedent(r'''
         with (root / "deferred_calls.jsonl").open("a") as fh:
             fh.write(json.dumps({"order": order, "argv": argv,
                                  "snapshot_exists": Path(order["database"]).is_file()}) + "\n")
+        dmode = os.environ.get("WB_L2_DEFERRED_MODE", "")
+        if dmode in ("survive", "claim-early"):
+            # Publish only through the real claim, as map_committed_horizon does.
+            sys.path.insert(0, os.environ["WB_L2_TOWER"])
+            from tower.world_builder import matching_marker as MM
+            if dmode == "claim-early":
+                assert MM.claim_publish(order["claim"], "deferred-map")
+                (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "deferred"}))
+                (root / "deferred_started").write_text("1")
+                time.sleep(60)
+            (root / "deferred_started").write_text("1")
+            deadline = time.time() + 30
+            while not (root / "go").exists() and time.time() < deadline:
+                time.sleep(0.05)
+            if MM.claim_publish(order["claim"], "deferred-map"):
+                (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "deferred"}))
+            (root / "deferred_done").write_text("1")
+            sys.exit(0)
         time.sleep(float(os.environ.get("WB_L2_DEFERRED_SLEEP", "0")))
         print(json.dumps({"solved": True, "solver": "glomap", "keyframes": len(order["keyframe_ids"]),
                           "keyframes_posed": 2, "components": [{"id": 0}]}))
@@ -914,7 +932,7 @@ def test_a_surviving_descendant_fails_closed_to_todays_wait(tmp_path, monkeypatc
     snapshot, no deferred map, and the final does not start early -- the wait goes on to the cap."""
     caplog.set_level(logging.INFO, logger="tower.world_build_session")
     solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
-    monkeypatch.setattr(solver, "_await_gone", lambda child, family: False)
+    monkeypatch.setattr(solver, "_await_gone", lambda child, family, **kw: False)
     try:
         _wait_for(MM.marker_path(root))
         started = time.monotonic()
@@ -928,7 +946,7 @@ def test_a_surviving_descendant_fails_closed_to_todays_wait(tmp_path, monkeypatc
 
 def test_a_surviving_descendant_still_honours_a_stop(tmp_path, monkeypatch):
     solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
-    monkeypatch.setattr(solver, "_await_gone", lambda child, family: False)
+    monkeypatch.setattr(solver, "_await_gone", lambda child, family, **kw: False)
     try:
         _wait_for(MM.marker_path(root))
         started = time.monotonic()
@@ -969,6 +987,161 @@ def test_a_deferred_map_past_the_default_paths_time_is_ended(tmp_path, monkeypat
         assert time.monotonic() - started < 20.0 and not solver.running
     finally:
         solver.close()
+
+
+def test_a_deferred_child_that_survives_the_stop_cannot_publish(tmp_path, monkeypatch):
+    """R2 round 3, #2: the builder ends the deferred map (a stop) and cannot confirm the child gone.
+    It revokes the publication by taking the claim first; the surviving child, carrying on, cannot
+    claim it and publishes nothing. The revocation stays on disk while the child may live."""
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    monkeypatch.setenv("WB_L2_DEFERRED_MODE", "survive")
+    monkeypatch.setattr(solver, "_terminate_child_verified", lambda: False)   # it survives
+    survivor = []
+    real_spawn = solver._spawn
+
+    def spawn(argv, **kwargs):
+        child = real_spawn(argv, **kwargs)
+        if "--deferred-map" in argv:
+            survivor.append(child)
+        return child
+
+    solver._spawn = spawn
+    try:
+        report = solver.run_final(_Store(tmp_path), {},
+                                  should_stop=lambda: (root / "deferred_started").exists())
+        outcome = report["deferred_background_map"]
+        assert outcome["published"] is False and outcome["revoked"] is True
+        assert outcome["confirmed_gone"] is False
+        claim = root / MM.PUBLISH_CLAIM_FILENAME
+        assert "builder-revoked" in claim.read_text()
+        (root / "go").write_text("1")                                   # the survivor carries on
+        survivor[0].wait(timeout=30)
+        assert (root / "deferred_done").exists()
+        assert not (root / "solution.json").exists()                    # and published nothing
+        assert "builder-revoked" in claim.read_text()
+    finally:
+        for child in survivor:
+            if child.poll() is None:
+                child.kill()
+        solver.close()
+
+
+def test_a_deferred_child_that_claimed_first_is_reported_as_published(tmp_path, monkeypatch):
+    """The other side of the claim: a child that had claimed (and written) before the stop was
+    publishing; the builder cannot revoke it and reports what `solution.json` says."""
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    monkeypatch.setenv("WB_L2_DEFERRED_MODE", "claim-early")
+    monkeypatch.setattr(solver, "_terminate_child_verified", lambda: False)
+    try:
+        report = solver.run_final(_Store(tmp_path), {},
+                                  should_stop=lambda: (root / "deferred_started").exists())
+        outcome = report["deferred_background_map"]
+        assert outcome["published"] is True and "already claimed" in outcome["why"]
+        assert json.loads((root / "solution.json").read_text())["who"] == "deferred"
+    finally:
+        solver.close()
+
+
+def test_the_claim_is_taken_once(tmp_path):
+    claim = tmp_path / MM.PUBLISH_CLAIM_FILENAME
+    assert MM.claim_publish(claim, "deferred-map") is True
+    assert MM.claim_publish(claim, "builder-revoked") is False
+    assert "deferred-map" in claim.read_text()
+    assert MM.claim_publish(tmp_path / "no-such-dir" / "c", "x") is False   # cannot: no claim
+
+
+def test_a_revoked_deferred_map_publishes_nothing(session, monkeypatch):
+    """`map_committed_horizon(publish_claim=...)`: the builder's revocation already there -> no write."""
+    _bg_solve(session, _FakeColmap(), monkeypatch)
+    ws = session.workspace
+    standing = json.loads(ws.solution_path.read_text(encoding="utf-8"))["solved_at"]
+    before = ws.solution_path.read_bytes()
+    claim = ws.root / MM.PUBLISH_CLAIM_FILENAME
+    assert MM.claim_publish(claim, "builder-revoked")
+    monkeypatch.setitem(sys.modules, "pycolmap", _FakeColmap())
+    ids = [k.keyframe_id for k in session.store.read_keyframes(session.world_id,
+                                                                session.session_id)[:3]]
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id, database_path=ws.database_path,
+        keyframe_ids=ids, expect_standing_solved_at=standing, publish_claim=claim)
+    assert summary["solved"] is False and summary["revoked"] is True
+    assert ws.solution_path.read_bytes() == before
+    claim.unlink()
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id, database_path=ws.database_path,
+        keyframe_ids=ids, expect_standing_solved_at=standing, publish_claim=claim)
+    assert summary["solved"] is True and "deferred-map" in claim.read_text()
+
+
+def test_an_untrusted_enumeration_is_never_gone(tmp_path, monkeypatch):
+    """R2 round 3, #1: a family that could not be enumerated (psutil failing, the parent exiting
+    first or mid-way) is never "confirmed gone"."""
+    import psutil
+
+    from scripts.world_build_session import BackgroundSolver as BS
+
+    done = subprocess.Popen([sys.executable, "-c", "pass"])
+    done.wait(timeout=20)
+    assert BS._family(done) == ([], False)                       # exited: its orphans are unknown
+    live = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        assert BS._family(live) == ([], True)
+        monkeypatch.setattr(psutil, "Process",
+                            lambda pid: (_ for _ in ()).throw(psutil.AccessDenied(pid)))
+        assert BS._family(live) == ([], False)
+    finally:
+        live.kill()
+        live.wait(timeout=20)
+    solver = BS(root=tmp_path, world_id="w", session_id="s", every=1, capture_dirs=[],
+                stop_at_match=True)
+    assert solver._await_gone(live, [], enumerated=False) is False
+    assert solver._await_gone(live, [], enumerated=True) is True
+
+
+def test_an_untrusted_enumeration_fails_closed_to_todays_wait(tmp_path, monkeypatch, caplog):
+    caplog.set_level(logging.INFO, logger="tower.world_build_session")
+    import scripts.world_build_session as builder
+
+    solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
+    monkeypatch.setattr(builder.BackgroundSolver, "_family", staticmethod(lambda child: ([], False)))
+    try:
+        _wait_for(MM.marker_path(root))
+        started = time.monotonic()
+        assert solver.wait(2.0) is False
+        assert time.monotonic() - started >= 2.0
+        assert solver._deferred is None and not MM.snapshot_path(root).exists()
+        assert "could not be enumerated" in caplog.text
+    finally:
+        solver.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows Job Objects")
+def test_the_job_confirms_a_grandchild_nobody_enumerated_is_gone(tmp_path):
+    """Windows: the kernel's `ActiveProcesses` answers for the whole tree, so a grandchild that was
+    never enumerated is still waited for -- and an untrusted enumeration does not matter."""
+    from scripts.world_build_session import BackgroundSolver as BS
+    from tower.process_ownership import assign_to_job
+
+    child = subprocess.Popen([sys.executable, "-c",
+                              "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', "
+                              "'import time; time.sleep(60)']); time.sleep(60)"])
+    job = assign_to_job(child)
+    assert job is not None
+    try:
+        deadline = time.monotonic() + 20
+        while (job.active_processes() or 0) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert job.active_processes() == 2
+        job.terminate()
+        solver = BS(root=tmp_path, world_id="w", session_id="s", every=1, capture_dirs=[],
+                    stop_at_match=True)
+        child.wait(timeout=20)
+        assert solver._await_gone(child, [], enumerated=False, job=job) is True
+        assert job.active_processes() == 0
+    finally:
+        job.close()
+        if child.poll() is None:
+            child.kill()
 
 
 def test_the_switch_off_never_owes_a_deferred_map(tmp_path, monkeypatch):

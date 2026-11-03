@@ -1892,7 +1892,7 @@ _ANY_STANDING = object()
 
 def map_committed_horizon(store, world_id: str, session_id: str, *, database_path, keyframe_ids,
                           num_threads: int | None = None, context: dict | None = None,
-                          expect_standing_solved_at=_ANY_STANDING,
+                          expect_standing_solved_at=_ANY_STANDING, publish_claim=None,
                           min_image_observations: int = MIN_IMAGE_OBSERVATIONS) -> dict:
     """THE MAP A BACKGROUND SOLVE WAS ENDED BEFORE (`TOWER_WORLD_BG_STOP_AT_MATCH`), and its publication.
 
@@ -1917,7 +1917,12 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
     solution's `solved_at` when the builder took the snapshot (None: none). Right before publishing it
     is read again, and anything else -- a final that published and then failed, any newer solution, or
     one that cannot be read -- means nothing is published (`moot: True`): a deferred map never
-    replaces a newer world. Not given (a direct caller), it publishes as a background solve would."""
+    replaces a newer world. Not given (a direct caller), it publishes as a background solve would.
+
+    `publish_claim` (the builder's order always names one): the publication is claimed by creating
+    that file exclusively (`matching_marker.claim_publish`) right before writing; when the builder has
+    created it first -- it revokes a deferred map it ended without confirming the child gone -- nothing
+    is published (`revoked: True`)."""
     available, reason = solver_available()
     if not available:
         return {"solved": False, "reason": reason}
@@ -1973,6 +1978,12 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
             return {"solved": False, "moot": True,
                     "reason": "deferred map: a newer solution was published since the snapshot "
                               f"(solved_at {standing!r}, expected {expect_standing_solved_at!r})"}
+    if publish_claim is not None:
+        from tower.world_builder.matching_marker import claim_publish  # noqa: PLC0415
+
+        if not claim_publish(publish_claim, "deferred-map"):
+            return {"solved": False, "revoked": True,
+                    "reason": "deferred map: the builder revoked its publication"}
     solution, _record = coherence_publish.gate_and_publish(
         store, world_id, session_id, workspace, solution, final=False, gate=None,
         database_path=Path(database_path), keyframes=keyframes, write=write_solution,
