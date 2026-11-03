@@ -131,6 +131,7 @@ from tower.process_ownership import (  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 from tower.world_builder import stage_timing  # noqa: E402
 from tower.world_builder import finish_phase  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 
 DEFAULT_ROOT = Path("data/world_builder")
 TOWER_ROOT = Path(__file__).resolve().parents[1]
@@ -2205,6 +2206,9 @@ def main(argv=None) -> int:
         help=argparse.SUPPRESS,  # a test seam: run this instead of world_solve.py
     )
     args = parser.parse_args(argv)
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Outputs are unchanged.
+    apply_world_build_power_policy("builder")
 
     # Configured here rather than at import, so importing this module for
     # a test does not reconfigure the test runner's logging. Only added

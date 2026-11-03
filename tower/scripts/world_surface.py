@@ -37,6 +37,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 from tower.world_builder.global_solve import load_solution  # noqa: E402
 from tower.world_builder.raw_imagery import (  # noqa: E402
     IMAGERY_REDACTED,
@@ -180,6 +181,9 @@ def main() -> int:
     ap.add_argument("--min-component-frac", dest="min_component_frac", type=float)
     ap.add_argument("--smooth", dest="smooth_iterations", type=int)
     args = ap.parse_args()
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Outputs are unchanged.
+    apply_world_build_power_policy("surface")
 
     store = WorldStore(Path(args.root))
 

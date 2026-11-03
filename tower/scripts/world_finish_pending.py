@@ -145,6 +145,7 @@ from tower.world_builder.records import (  # noqa: E402
 )
 from tower.world_builder.store import WorldStore, WorldStoreError  # noqa: E402
 from tower.world_builder import stage_timing  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -2267,6 +2268,9 @@ def main(argv=None, *, stop_request=None) -> int:
     )
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Outputs are unchanged.
+    apply_world_build_power_policy("finisher")
 
     store = WorldStore(Path(args.root))
     verdicts = survey(store, max_attempts=args.max_attempts)
