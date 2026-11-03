@@ -635,6 +635,10 @@ DEFERRED_MAP_START_ALLOWANCE_S = 10.0
 # Windows `CREATE_SUSPENDED`: a switch-on solve child starts with its main thread suspended, is put in
 # its Job Object, and only then resumed -- so no process of it can ever exist outside the job.
 CREATE_SUSPENDED = 0x00000004
+# A deferred map reaching its bound while it holds its publication claim is mid-publish: it gets this
+# long to finish before it is ended (`write_solution` of a 10.2-size solution is well under a second).
+# A hard stop gets no grace.
+DEFERRED_PUBLISH_GRACE_S = 10.0
 
 
 def _suspended_launch() -> bool:
@@ -1573,8 +1577,20 @@ class BackgroundSolver:
                 time.sleep(CHILD_POLL_S)
             if why is not None:
                 logger.warning("[Tower][WorldBuilder] deferred map pid %s ended: %s", child.pid, why)
-                gone = self._terminate_child_verified()
-                if matching_marker.claim_publish(claim, "builder-revoked"):
+                if why == "hard stop":
+                    # Out at once: end it, then revoke whatever the kill achieved.
+                    gone = self._terminate_child_verified()
+                    revoked = matching_marker.claim_publish(claim, "builder-revoked")
+                else:
+                    # The bound: revoke first; a child that already holds the claim is publishing and
+                    # gets a short grace to finish, so the kill does not land inside its write.
+                    revoked = matching_marker.claim_publish(claim, "builder-revoked")
+                    if not revoked:
+                        grace_end = time.monotonic() + DEFERRED_PUBLISH_GRACE_S
+                        while child.poll() is None and time.monotonic() < grace_end:
+                            time.sleep(0.05)
+                    gone = self._terminate_child_verified()
+                if revoked:
                     outcome = {"published": False, "revoked": True}
                 else:
                     # The child had claimed first: it is, or was, publishing. Nothing is reported
@@ -1613,16 +1629,17 @@ class BackgroundSolver:
             summary = json.loads(b"".join(chunks).decode("utf-8", errors="replace").strip() or "{}")
         except ValueError:
             summary = {}
-        published = bool(summary.get("solved"))
+        # Ended on its own but not confirmed gone (no Job Object: POSIX, the dev platform): unknown.
+        published = bool(summary.get("solved")) if gone else None
         logger.warning(
             "[Tower][WorldBuilder] deferred map of background solve pid %s: published=%s "
             "solver=%s posed=%s/%s components=%s in %.1fs%s", deferred["pid"], published,
             summary.get("solver"), summary.get("keyframes_posed"), summary.get("keyframes"),
             len(summary.get("components") or []), seconds,
             "" if published else f" ({summary.get('reason') or 'no summary'})")
-        return {"ran": True, "published": published, "seconds": seconds,
-                "summary": {k: summary.get(k) for k in ("solver", "keyframes", "keyframes_posed",
-                                                         "reason")}}
+        return {"ran": True, "published": published, "seconds": seconds, "confirmed_gone": gone,
+                "summary": {k: summary.get(k) for k in ("solved", "solver", "keyframes",
+                                                         "keyframes_posed", "reason")}}
 
     def _run_final(self, store: WorldStore, sources: dict, *, should_stop=None,
                    phase_env: dict | None = None) -> dict:

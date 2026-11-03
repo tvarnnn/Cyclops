@@ -777,6 +777,15 @@ FINAL_STUB = textwrap.dedent(r'''
             fh.write(json.dumps({"order": order, "argv": argv,
                                  "snapshot_exists": Path(order["database"]).is_file()}) + "\n")
         dmode = os.environ.get("WB_L2_DEFERRED_MODE", "")
+        if dmode == "claim-gap-exit":
+            # Claims, then takes a while to write, then exits: a publication in flight at the bound.
+            sys.path.insert(0, os.environ["WB_L2_TOWER"])
+            from tower.world_builder import matching_marker as MM
+            assert MM.claim_publish(order["claim"], "deferred-map")
+            time.sleep(3)
+            (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "deferred"}))
+            print(json.dumps({"solved": True}))
+            sys.exit(0)
         if dmode in ("survive", "claim-early"):
             # Publish only through the real claim, as map_committed_horizon does.
             sys.path.insert(0, os.environ["WB_L2_TOWER"])
@@ -870,7 +879,10 @@ def test_a_final_that_publishes_nothing_gets_the_ended_childs_map(tmp_path, monk
         assert re.fullmatch(r"bg_deferred_map\.[0-9a-f]{32}\.claim", Path(call["order"]["claim"]).name)
         assert "--deferred-map" in call["argv"] and "--final" not in call["argv"]
         outcome = report["deferred_background_map"]
-        assert outcome["ran"] is True and outcome["published"] is True
+        # Published per its summary; reported as such only once confirmed gone -- its Job Object on
+        # Windows; on POSIX (no job) the status is unknown (None), as an unconfirmed outcome must be.
+        assert outcome["ran"] is True and outcome["summary"]["solved"] is True
+        assert outcome["published"] is (True if os.name == "nt" else None)
         assert outcome["summary"]["keyframes"] == 3
         # Afterwards nothing is left of it but what it published.
         assert not MM.snapshot_path(root).exists()
@@ -1072,6 +1084,27 @@ def test_a_deferred_child_that_claimed_first_is_not_reported_until_it_is_gone(tm
             if child.poll() is None:
                 child.kill()
         solver._terminate_child_verified = real_verified
+        solver.close()
+
+
+def test_a_publication_in_flight_at_the_bound_gets_its_grace(tmp_path, monkeypatch):
+    """Round 5 nit: at the bound (not a hard stop) the builder tries to revoke first; a child that
+    already holds the claim is publishing and gets `DEFERRED_PUBLISH_GRACE_S` to finish before it is
+    ended, so the kill does not land inside its write."""
+    import scripts.world_build_session as builder
+
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    monkeypatch.setenv("WB_L2_DEFERRED_MODE", "claim-gap-exit")
+    monkeypatch.setattr(builder, "DEFERRED_MAP_START_ALLOWANCE_S", 0.0)
+    monkeypatch.setattr(builder, "DEFERRED_PUBLISH_GRACE_S", 15.0)
+    solver._deferred["budget_s"] = 2.0          # the bound falls between its claim and its write
+    try:
+        report = solver.run_final(_Store(tmp_path), {})
+        outcome = report["deferred_background_map"]
+        assert "not mapped within 2.0 s" in outcome["why"] and "already claimed" in outcome["why"]
+        assert json.loads((root / "solution.json").read_text())["who"] == "deferred"
+        assert outcome["published"] is (True if os.name == "nt" else None)
+    finally:
         solver.close()
 
 
