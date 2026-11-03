@@ -2174,6 +2174,65 @@ def extract_sealed(vol: SurfaceVolume, min_weight: float, fill: EnclosedFill, *,
 # ---------------------------------------------------------------------------
 
 
+# `TOWER_WORLD_MESH_EVIDENCE_CULL` bounds faces in index groups of this many:
+# ~171 bounds at 11.2 M faces, so the per-frame test is a few numpy rows, while
+# a group stays one marching-cubes tile's run of faces or the seam of two.
+CULL_GROUP_FACES = 65_536
+
+
+def _face_group_bounds(P, group):
+    """Per run of `group` face centroids in `P` ((n, 3) float32 tensor): the
+    float64 centre and radius of a sphere holding every centroid of the run."""
+    import torch
+
+    lohi = torch.stack([torch.stack((P[i:i + group].amin(0), P[i:i + group].amax(0)))
+                        for i in range(0, len(P), group)]).cpu().numpy().astype(np.float64)
+    centres = (lohi[:, 0] + lohi[:, 1]) * 0.5
+    return centres, np.linalg.norm(lohi[:, 1] - centres, axis=1)
+
+
+def _frustum_face_runs(centres, radii, group, n_faces, R, t, K, H, W):
+    """The face-index runs [a, b) whose groups MAY vote in the frame posed
+    (R, t), or None for "test every face".
+
+    `evidence_filter` lets a centroid vote only if, in float32, z > 1e-4 and its
+    pixel rounds into [0, W) x [0, H). For z > 0 that requires, exactly,
+    fx*x + (cx + .5)*z >= 0 and -fx*x + (W - .5 - cx)*z >= 0, the same pair in
+    y, and z - 1e-4 >= 0: five planes in camera space. A group is skipped only
+    when its whole sphere lies on the negative side of one of them by more than
+    `pad`, a bound on how far the float32 arithmetic can move a point: each
+    float32 operation errs by at most 2**-24 relatively, so the product, the
+    translation and the pixel arithmetic together move a camera point by under
+    ~1.3e-6 * (|R| |p| + |t|), and `pad` is 1e-4 of that scale (a ~75x
+    margin, for any scene scale). Matrix products rounded through TF32 or
+    bfloat16 err by ~1e-3 and are NOT covered: the caller does not cull then.
+    """
+    rc = R.detach().cpu().numpy().astype(np.float64)
+    tc = t.detach().cpu().numpy().astype(np.float64)
+    if not (np.isfinite(rc).all() and np.isfinite(tc).all()):
+        return None
+    fx, fy, cx, cy = float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])
+    pcg = centres @ rc.T + tc
+    pad = 1e-4 * (1.0 + np.linalg.norm(rc) * (np.linalg.norm(centres, axis=1) + radii)
+                  + np.linalg.norm(tc))
+    visible = np.ones(len(centres), bool)
+    for normal, offset in (((0., 0., 1.), -1e-4),
+                           ((fx, 0., cx + .5), 0.),
+                           ((-fx, 0., W - .5 - cx), 0.),
+                           ((0., fy, cy + .5), 0.),
+                           ((0., -fy, H - .5 - cy), 0.)):
+        normal = np.asarray(normal)
+        # The sphere's farthest reach along the plane normal after the actual
+        # R (orthonormal or not), plus the arithmetic's.
+        reach = radii * np.linalg.norm(rc.T @ normal) + pad * np.linalg.norm(normal)
+        visible &= pcg @ normal + offset + reach >= 0
+    # A bound that is not a number proves nothing: those faces are tested.
+    visible |= ~(np.isfinite(pcg).all(axis=1) & np.isfinite(pad) & np.isfinite(radii))
+    edges = np.flatnonzero(np.diff(np.r_[False, visible, False]))
+    return [(int(a) * group, min(int(b) * group, n_faces))
+            for a, b in zip(edges[::2], edges[1::2])]
+
+
 def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None,
                     *, chunk: int = 2_000_000, weak=None,
                     return_counters: bool = False):
@@ -2249,20 +2308,13 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
     P = torch.cat(cents)
     N = torch.cat(norms)
     del Vt, cents, norms, tri
-    # Bounds are on the same float32 centroids used by the vote below. A
-    # group's sphere contains every centroid, including across tile seams.
-    group_size = 65_536  # ~171 bounds at 11.2M faces, without tiny GPU launches
+    # Bounds on the same float32 centroids the vote below projects
+    # (`_frustum_face_runs`); only proven for IEEE float32 matrix products.
     group_centres = group_radii = None
     if (world_mesh_evidence_cull_setting() and fx > 0 and fy > 0
-            and np.isfinite((fx, fy, cx, cy)).all()):
-        bounds = torch.stack([
-            torch.stack((P[i:i + group_size].amin(0),
-                         P[i:i + group_size].amax(0)))
-            for i in range(0, nF, group_size)]).cpu().numpy().astype(np.float64)
-        group_centres = (bounds[:, 0] + bounds[:, 1]) * 0.5
-        group_radii = np.linalg.norm(bounds[:, 1] - group_centres, axis=1)
-        # Float32 matrix multiplication and pixel rounding get ample slack.
-        group_radii += 1e-4 * (1 + np.abs(group_centres).max(axis=1))
+            and np.isfinite((fx, fy, cx, cy)).all()
+            and torch.get_float32_matmul_precision() == "highest"):
+        group_centres, group_radii = _face_group_bounds(P, CULL_GROUP_FACES)
     weak_idx = None
     if weak is not None:
         weak_idx = torch.as_tensor(np.nonzero(np.asarray(weak, bool))[0], device=dev)
@@ -2282,65 +2334,47 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
         H, W = depth.shape
         centre = -(R.T @ t)
         stats["frames"] += 1
-        if group_centres is None:
-            ranges = ((s, min(s + chunk, nF)) for s in range(0, nF, chunk))
-        else:
-            rc = R.cpu().numpy().astype(np.float64)
-            tc = t.cpu().numpy().astype(np.float64)
-            pcg = group_centres @ rc.T + tc
-            visible = np.isfinite(pcg).all(axis=1) & np.isfinite(group_radii)
-            # A pixel rounded into [0, W) / [0, H) must lie inside these
-            # half-pixel-expanded planes. A sphere wholly outside any plane
-            # cannot contribute support, through, front, or residual votes.
-            planes = ((0., 0., 1., -1e-4),
-                      (fx, 0., cx + .5, 0.),
-                      (-fx, 0., W - .5 - cx, 0.),
-                      (0., fy, cy + .5, 0.),
-                      (0., -fy, H - .5 - cy, 0.))
-            if not (np.isfinite(rc).all() and np.isfinite(tc).all()):
-                visible[:] = True
-            else:
-                for ax, ay, az, offset in planes:
-                    normal = np.array((ax, ay, az))
-                    val = pcg @ normal + offset
-                    margin = 1e-4 * (1 + np.abs(val))
-                    # Bound the world-space sphere after the actual R, even
-                    # if a caller supplies a slightly non-orthogonal pose.
-                    visible &= val + group_radii * np.linalg.norm(rc.T @ normal) >= -margin
-            # Nonfinite bounds must take the original path, never be culled.
-            visible |= ~(np.isfinite(pcg).all(axis=1) & np.isfinite(group_radii))
-            edges = np.flatnonzero(np.diff(np.r_[False, visible, False]))
-            ranges = ((s, min(s + chunk, end))
-                      for first, last in zip(edges[::2], edges[1::2])
-                      for end in (min(last * group_size, nF),)
-                      for s in range(first * group_size, end, chunk))
-        for s0, s1 in ranges:
-            pc = P[s0:s1] @ R.T + t
-            z = pc[:, 2]
-            zc = z.clamp(min=1e-6)
-            u = torch.round(pc[:, 0] / zc * fx + cx).long()
-            v = torch.round(pc[:, 1] / zc * fy + cy).long()
-            m = (z > 1e-4) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
-            flat = v.clamp(0, H - 1) * W + u.clamp(0, W - 1)
-            d = depth.reshape(-1)[flat]
-            m &= valid.reshape(-1)[flat] & torch.isfinite(d)
-            r = d - z
-            tr = trunc_at(d)
-            s_ = m & (r.abs() <= tr)
-            sup[s0:s1] += s_.to(torch.int16)
-            facing = ((centre - P[s0:s1]) * N[s0:s1]).sum(1) > 0
-            front[s0:s1] += (s_ & facing).to(torch.int16)
-            thru[s0:s1] += (m & (r > tr)).to(torch.int16)
-            if return_counters:
-                sl = slice(s0, s1)
-                rn = torch.where(s_, r / tr.clamp(min=1e-9), torch.zeros_like(r))
-                r2[sl] += rn * rn
-                cam_all_lo[sl] = torch.where(s_[:, None],
-                                             torch.minimum(cam_all_lo[sl], centre[None]),
-                                             cam_all_lo[sl])
-                cam_all_hi[sl] = torch.where(s_[:, None],
-                                             torch.maximum(cam_all_hi[sl], centre[None]),
-                                             cam_all_hi[sl])
+        runs = None if group_centres is None else _frustum_face_runs(
+            group_centres, group_radii, CULL_GROUP_FACES, nF, R, t, K, H, W)
+        for c0 in range(0, nF, chunk):
+            c1 = min(c0 + chunk, nF)
+            parts = ([(c0, c1)] if runs is None else
+                     [(max(a, c0), min(b, c1)) for a, b in runs if a < c1 and b > c0])
+            if not parts:
+                continue
+            # The matrix product and the facing reduction always see the very
+            # chunk they see with the cull off, so no kernel choice that hangs
+            # on an operand's shape or offset can move a bit; what the cull
+            # then narrows is elementwise or indexing only.
+            pcc = P[c0:c1] @ R.T + t
+            facc = ((centre - P[c0:c1]) * N[c0:c1]).sum(1) > 0
+            for s0, s1 in parts:
+                pc = pcc[s0 - c0:s1 - c0]
+                z = pc[:, 2]
+                zc = z.clamp(min=1e-6)
+                u = torch.round(pc[:, 0] / zc * fx + cx).long()
+                v = torch.round(pc[:, 1] / zc * fy + cy).long()
+                m = (z > 1e-4) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+                flat = v.clamp(0, H - 1) * W + u.clamp(0, W - 1)
+                d = depth.reshape(-1)[flat]
+                m &= valid.reshape(-1)[flat] & torch.isfinite(d)
+                r = d - z
+                tr = trunc_at(d)
+                s_ = m & (r.abs() <= tr)
+                sup[s0:s1] += s_.to(torch.int16)
+                facing = facc[s0 - c0:s1 - c0]
+                front[s0:s1] += (s_ & facing).to(torch.int16)
+                thru[s0:s1] += (m & (r > tr)).to(torch.int16)
+                if return_counters:
+                    sl = slice(s0, s1)
+                    rn = torch.where(s_, r / tr.clamp(min=1e-9), torch.zeros_like(r))
+                    r2[sl] += rn * rn
+                    cam_all_lo[sl] = torch.where(s_[:, None],
+                                                 torch.minimum(cam_all_lo[sl], centre[None]),
+                                                 cam_all_lo[sl])
+                    cam_all_hi[sl] = torch.where(s_[:, None],
+                                                 torch.maximum(cam_all_hi[sl], centre[None]),
+                                                 cam_all_hi[sl])
         if weak_idx is not None:
             # The supporting cameras of the low-weight faces: the same test as
             # above, repeated on that subset, keeping the centres' bounds.

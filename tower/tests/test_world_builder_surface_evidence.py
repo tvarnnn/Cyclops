@@ -78,6 +78,107 @@ def test_evidence_cull_preserves_every_counter_and_decision(monkeypatch):
     assert old[2]["support"][-1] == 1
 
 
+def _cull_run(monkeypatch, setting, *args, **kwargs):
+    """`evidence_filter` with the cull switch set, and every (storage offset,
+    shape) a 2-D matrix product saw: the cull may skip products, never change
+    one, since a product's kernel may depend on both."""
+    import torch
+
+    seen = []
+    original_matmul = torch.Tensor.__matmul__
+
+    def observed_matmul(a, b):
+        if a.ndim == 2:
+            seen.append((a.storage_offset(), tuple(a.shape)))
+        return original_matmul(a, b)
+
+    monkeypatch.setattr(torch.Tensor, "__matmul__", observed_matmul)
+    monkeypatch.setenv("TOWER_WORLD_MESH_EVIDENCE_CULL", setting)
+    try:
+        return S.evidence_filter(*args, **kwargs), seen
+    finally:
+        monkeypatch.setattr(torch.Tensor, "__matmul__", original_matmul)
+
+
+def test_evidence_cull_keeps_the_uncut_chunks_and_every_counter(monkeypatch):
+    """Chunk edges that fall inside face groups (the build's 2 M chunk is no
+    multiple of the 65,536-face group), a group straddling the image edge, and
+    groups wholly off-image or behind: every counter bit-identical, and every
+    matrix product the cull still runs is one the uncut loop runs."""
+    import torch
+
+    g = S.CULL_GROUP_FACES
+    V = np.array([[-0.1, -0.1, 5], [0.1, -0.1, 5], [0, 0.1, 5],          # in view
+                  [20, -0.1, 5], [20.2, -0.1, 5], [20.1, 0.1, 5],        # off the right edge
+                  [-0.1, -0.1, -5], [0.1, -0.1, -5], [0, 0.1, -5]],      # behind
+                 np.float32)
+    inside, right, behind = [0, 1, 2], [3, 4, 5], [6, 7, 8]
+    straddle = np.tile([inside, right], (g // 2, 1))
+    F = np.concatenate([np.tile([inside], (g, 1)), straddle, np.tile([right], (g, 1)),
+                        np.tile([behind], (g, 1))]).astype(np.int64)
+    K = np.array([[40., 0., 8.], [0., 40., 8.], [0., 0., 1.]])
+    depth = torch.full((16, 16), 5.)
+    ok = torch.ones_like(depth, dtype=torch.bool)
+    views = [(depth, ok, torch.eye(3), torch.zeros(3)),
+             (depth + 1, ok, torch.eye(3), torch.zeros(3)),
+             (depth, ok, torch.diag(torch.tensor([-1., 1., -1.])), torch.zeros(3))]
+    weak = np.zeros(len(F), bool)
+    weak[::4099] = True
+    args = (V, F, views, K, lambda d: torch.full_like(d, .1),
+            S.SurfaceParams(min_support_frames=1), torch.device("cpu"))
+    kw = dict(chunk=100_000, weak=weak, return_counters=True)
+
+    off, off_seen = _cull_run(monkeypatch, "off", *args, **kw)
+    on, on_seen = _cull_run(monkeypatch, "on", *args, **kw)
+    assert set(on_seen) <= set(off_seen)
+    assert len(on_seen) < len(off_seen), "nothing was culled"
+    assert np.array_equal(off[0], on[0]) and off[1] == on[1]
+    for name in off[2]:
+        assert off[2][name].tobytes() == on[2][name].tobytes(), name
+    # the premise: the straddling group holds faces that did vote
+    assert off[2]["support"][g] > 0 and off[2]["support"][g + 1] == 0
+
+
+def test_evidence_cull_bound_holds_far_from_the_origin(monkeypatch):
+    """A float32 pixel that rounds INTO the image although the exact one lies
+    half a pixel outside it, 10^6 units from the origin (R2's case on L5): a
+    fixed 1e-4 slack culled the face and lost its support."""
+    import torch
+
+    V = np.array([[-1e-3, 0, 0], [1e-3, 0, 0], [0, 1e-3, 0]], np.float32)
+    F = np.array([[0, 1, 2]], np.int64)
+    K = np.array([[40., 0., 8.], [0., 40., 8.], [0., 0., 1.]])
+    depth = torch.full((16, 17), 1e6)
+    t = torch.tensor([212500.015625, 0., 1e6])
+    views = [(depth, torch.ones_like(depth, dtype=torch.bool), torch.eye(3), t)]
+    args = (V, F, views, K, lambda d: torch.full_like(d, 1.),
+            S.SurfaceParams(min_support_frames=1), torch.device("cpu"))
+    off, _ = _cull_run(monkeypatch, "off", *args, return_counters=True)
+    on, _ = _cull_run(monkeypatch, "on", *args, return_counters=True)
+    assert off[2]["support"][0] == 1, "the premise: float32 puts the centroid in the image"
+    for name in off[2]:
+        assert off[2][name].tobytes() == on[2][name].tobytes(), name
+
+
+def test_evidence_cull_stands_down_under_reduced_precision_products(monkeypatch):
+    """The bound covers IEEE float32 products only; TF32/bfloat16 err ~1e-3."""
+    import torch
+
+    g = S.CULL_GROUP_FACES
+    V = np.array([[-0.1, -0.1, 5], [0.1, -0.1, 5], [0, 0.1, 5],
+                  [20, -0.1, 5], [20.2, -0.1, 5], [20.1, 0.1, 5]], np.float32)
+    F = np.concatenate([np.tile([[0, 1, 2]], (g, 1)), np.tile([[3, 4, 5]], (g, 1))])
+    K = np.array([[40., 0., 8.], [0., 40., 8.], [0., 0., 1.]])
+    depth = torch.full((16, 16), 5.)
+    views = [(depth, torch.ones_like(depth, dtype=torch.bool), torch.eye(3), torch.zeros(3))]
+    args = (V, F, views, K, lambda d: torch.full_like(d, .1),
+            S.SurfaceParams(min_support_frames=1), torch.device("cpu"))
+    _, culled = _cull_run(monkeypatch, "on", *args, chunk=g)
+    monkeypatch.setattr(torch, "get_float32_matmul_precision", lambda: "high")
+    _, uncut = _cull_run(monkeypatch, "on", *args, chunk=g)
+    assert len(culled) < len(uncut)
+
+
 def _views_tensors(views, device="cpu"):
     import torch
 
