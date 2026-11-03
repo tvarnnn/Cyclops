@@ -878,7 +878,8 @@ class MasksAtStop:
             masks_at_stop.write_sources(staging, sources)
             self._log = open(masks_at_stop.log_path(store, self.world_id, self.session_id), "ab")
             argv = [python_executable(), str(self.script), "--root", str(self.root),
-                    "--world", self.world_id, "--session", self.session_id]
+                    "--world", self.world_id, "--session", self.session_id,
+                    "--parent-pid", str(os.getpid())]
             extra = {}
             if os.name == "nt":
                 extra["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS

@@ -41,6 +41,16 @@ def _with_keyframes(world):
     return world
 
 
+CUDA = {"device": "cuda", "fp16": True, "torch": "2.x", "transformers": "4.x"}
+
+
+@pytest.fixture(autouse=True)
+def _cuda(monkeypatch):
+    """The worker runs only on a CUDA device and promote compares execution modes: this suite
+    has no GPU, so both halves see the same CUDA mode unless a test says otherwise."""
+    monkeypatch.setattr(M, "execution_mode", lambda: dict(CUDA))
+
+
 @pytest.fixture
 def world(tmp_path):
     return _with_keyframes(World(tmp_path / "a"))
@@ -78,6 +88,41 @@ def _masks(report):
 
 def _same_masks(a, b):
     return a.keys() == b.keys() and all(np.array_equal(a[k], b[k]) for k in a)
+
+
+def _promote(world, *, records=None, solution=None, params=None, policy=None, mode=None):
+    return M.promote(world.store, WORLD, SESSION, depth_dir=world.dense / "work" / "depth",
+                     align_records=records if records is not None else {r["ki"]: r for r in world.records},
+                     solution=solution or _solution(world), intrinsics=world.intrinsics,
+                     params=params or T.TransientParams(),
+                     policy=policy or A.resolve_label_policy(world.store, WORLD, SESSION,
+                                                             redactor_factory=_never_redact),
+                     mode=mode)
+
+
+class FillStub(Stub):
+    """A FILL-DEPENDENT detector: the hand rectangle minus the unobserved (fill) pixels, as
+    Grounding DINO + SAM's `filter_instance_masks` makes a mask depend on the fill."""
+
+    def __call__(self, component):
+        stub = self
+
+        class Backend(T.ComponentBackend):
+            def probe(self):
+                return None
+
+            def run(self, items, params, emit, should_stop=None):
+                for ki, rgb, unobserved in items:
+                    stub.calls.append((component, ki))
+                    hand = np.zeros(rgb.shape[:2], bool)
+                    if ki in stub.hands:
+                        y0, y1, x0, x1 = stub.hands[ki]
+                        hand[y0:y1, x0:x1] = True
+                    emit(ki, hand & ~unobserved, np.zeros_like(hand), 0.001)
+                return {}
+
+        Backend.component = component
+        return Backend()
 
 
 def _builder_module(name):
@@ -274,7 +319,7 @@ def test_another_calibration_refuses_every_staged_mask(world):
                     align_records={r["ki"]: r for r in world.records}, solution=solution,
                     intrinsics=other, params=T.TransientParams(),
                     policy=A.resolve_label_policy(world.store, WORLD, SESSION, redactor_factory=_never_redact))
-    assert out["promoted"] == 0 and out["refused"] == {"camera": 2 * len(world.kids)}
+    assert out["promoted"] == 0 and out["refused"] == {"calibration": 2 * len(world.kids)}
 
 
 def test_a_hit_already_in_the_cache_is_never_replaced(world):
@@ -285,6 +330,149 @@ def test_a_hit_already_in_the_cache_is_never_replaced(world):
     assert promoted["promoted"] == 0 and promoted["already"] == 2 * len(world.kids)
     after = {p.name: p.read_bytes() for p in (world.dense / "work" / "depth").glob("*_transient.*.npz")}
     assert after == before
+
+
+# ---------------------------------------------------------------------------
+# one run's files, never two (review L1 R1 F1, R2 1)
+# ---------------------------------------------------------------------------
+
+
+def test_a_second_run_never_promotes_a_mask_made_from_the_first_runs_fill(tmp_path, world):
+    """R1's reproduction: run 1 computes its fills fresh; the final depth stage's fill for
+    HAND_KI then differs and run 2 reuses it. Run 1's mask must not survive into run 2."""
+    M.prefill(world.store, WORLD, SESSION, backend_factory=FillStub())
+    fill = np.zeros_like(np.load(world.dense / "work" / "depth" / f"{HAND_KI:05d}_fill.npy"))
+    y0, y1, x0, x1 = Stub().hands[HAND_KI]
+    fill[y0:y1, x0:(x0 + x1) // 2] = True
+    world.set_fill(HAND_KI, fill)
+    undist = world.dense / "work" / "undist"
+    undist.mkdir(parents=True, exist_ok=True)
+    for i in range(len(world.kids)):
+        (undist / f"{i:05d}.jpg").write_bytes(b"jpg")        # run 2 now reuses the prior fills
+    M.prefill(world.store, WORLD, SESSION, backend_factory=FillStub())
+    warm, promoted = _final(world, FillStub(), promote=True)
+
+    cold_world = _with_keyframes(World(tmp_path / "cold"))
+    cold_world.set_fill(HAND_KI, fill)
+    cold, _ = _final(cold_world, FillStub(), promote=False)
+    assert promoted["promoted"] == 2 * len(world.kids)
+    assert np.array_equal(warm.mask(HAND_KI), cold.mask(HAND_KI))
+    assert _same_masks(_masks(warm), _masks(cold))
+
+
+def test_every_run_starts_from_an_empty_staging_directory(world):
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    staging = M.staging_dir(world.store, WORLD, SESSION)
+    M.write_sources(staging, {"k": "p"})
+    (staging / "00003_transient.gdsam.npz.p99.tmp").write_bytes(b"debris")
+    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub(), should_stop=lambda: True)
+    assert summary["state"] == "stopped"
+    assert sorted(p.name for p in staging.iterdir()) == [M.INDEX_FILENAME, M.SOURCES_FILENAME]
+    stub = Stub()
+    report, promoted = _final(world, stub, promote=True)
+    assert promoted["staged"] == 0 and report.computed == len(world.kids)
+
+
+def test_a_staging_directory_that_cannot_be_emptied_leaves_no_index(monkeypatch, world):
+    import pathlib
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    staging = M.staging_dir(world.store, WORLD, SESSION)
+    real_unlink = pathlib.Path.unlink
+
+    def unlink(self, *a, **k):
+        if self.name.endswith("_transient.gdsam.npz"):
+            raise PermissionError("held by another process")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
+    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    monkeypatch.setattr(pathlib.Path, "unlink", real_unlink)
+    assert summary["state"] == "declined"
+    assert not (staging / M.INDEX_FILENAME).exists()
+    assert list(staging.glob("*_transient.gdsam.npz"))       # the old masks are still there ...
+    assert _promote(world) is None                            # ... and nothing takes them
+
+
+# ---------------------------------------------------------------------------
+# the execution mode (review L1 R1 F2, R2 2)
+# ---------------------------------------------------------------------------
+
+
+def test_without_cuda_the_worker_declines(monkeypatch, world):
+    monkeypatch.setattr(M, "execution_mode", lambda: dict(CUDA, device="cpu", fp16=False))
+    stub = Stub()
+    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=stub)
+    assert summary["state"] == "declined" and stub.calls == []
+    assert not list(M.staging_dir(world.store, WORLD, SESSION).glob("*_transient.*.npz"))
+
+
+@pytest.mark.parametrize("change", [{"device": "cpu", "fp16": False}, {"fp16": False},
+                                    {"torch": "2.y"}, {"transformers": "5.0"}])
+def test_a_stage_in_another_execution_mode_takes_nothing(world, change):
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    out = _promote(world, mode=dict(CUDA, **change))
+    assert out["promoted"] == 0 and out["refused"] == {"execution-mode": 2 * len(world.kids)}
+    assert not list((world.dense / "work" / "depth").glob("*_transient.*.npz"))
+
+
+def test_the_recorded_execution_mode_is_the_backends_choice(monkeypatch):
+    """`execution_mode` mirrors the backends: CUDA when available (fp16 forward calls), else
+    CPU (no autocast)."""
+    import torch
+
+    monkeypatch.undo()                                         # the real function
+    for available, want in ((True, ("cuda", True)), (False, ("cpu", False))):
+        monkeypatch.setattr(torch.cuda, "is_available", lambda a=available: a)
+        got = M.execution_mode()
+        assert (got["device"], got["fp16"]) == want and got["torch"] == torch.__version__
+
+
+# ---------------------------------------------------------------------------
+# each promotion gate, alone (review L1 R1: these four survived mutation)
+# ---------------------------------------------------------------------------
+
+
+def test_no_final_depth_record_for_the_same_image_no_promotion(world):
+    """The final depth stage did not record keyframe 4 at all, and recorded keyframe 6 for
+    other image bytes: both are refused, although their fill files are equal to the staged
+    ones (the stage would refuse those frames, or read other bytes)."""
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    records = {r["ki"]: dict(r) for r in world.records}
+    del records[4]
+    records[6]["image_sha1"] = "0" * 40
+    out = _promote(world, records=records)
+    assert out["refused"] == {"image": 4} and out["promoted"] == 2 * (len(world.kids) - 2)
+    depth = world.dense / "work" / "depth"
+    assert not list(depth.glob("00004_transient.*.npz")) and not list(depth.glob("00006_transient.*.npz"))
+
+
+def test_another_camera_size_refuses_every_staged_mask(world):
+    import dataclasses
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    solution = _solution(world)
+    wider = dataclasses.replace(solution, camera=dict(solution.camera, width=solution.camera["width"] + 1))
+    out = _promote(world, solution=wider)
+    assert out["promoted"] == 0 and out["refused"] == {"camera": 2 * len(world.kids)}
+
+
+def test_a_research_build_takes_no_staged_mask(world):
+    from tower.world_builder.raw_imagery import IMAGERY_RAW
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    trusted = A.resolve_label_policy(world.store, WORLD, SESSION, redactor_factory=_never_redact)
+    raw = A.LabelPolicy(session_redaction=trusted.session_redaction, trusted=False,
+                        image_set=trusted.image_set, imagery_source=IMAGERY_RAW)
+    out = _promote(world, policy=raw)
+    assert out["promoted"] == 0 and out["refused"] == {"imagery": 2 * len(world.kids)}
+
+
+def test_a_component_this_build_does_not_run_is_not_promoted(world):
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    out = _promote(world, params=T.TransientParams(mode=T.MODE_ONEFORMER))
+    assert out["refused"] == {"not-this-build": len(world.kids)} and out["promoted"] == len(world.kids)
+    assert not list((world.dense / "work" / "depth").glob("*_transient.gdsam.npz"))
 
 
 # ---------------------------------------------------------------------------
@@ -381,3 +569,22 @@ def test_the_order_puts_the_likely_frames_first():
     # main component, then newer than the solve, then other components, then unposed
     assert M.keyframe_order(ids, solution) == [1, 3, 6, 7, 0, 5, 2, 4]
     assert M.keyframe_order(ids, None) == list(range(8))
+
+
+def test_the_worker_stops_when_its_builder_is_gone():
+    """Outside the supervisor's Job Object (a builder run by hand or by a replay harness) a
+    killed builder must not leave the worker on the GPU: it watches its parent."""
+    import importlib.util
+    import os
+    import pathlib
+
+    import psutil
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "world_masks_at_stop.py"
+    spec = importlib.util.spec_from_file_location("wmas_test", path)
+    cli = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(cli)
+    assert cli.parent_gone(None)() is False
+    assert cli.parent_gone(os.getpid())() is False
+    unused = max(psutil.pids()) + 100_000
+    assert cli.parent_gone(unused)() is True

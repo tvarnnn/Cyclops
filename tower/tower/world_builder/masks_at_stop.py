@@ -25,9 +25,17 @@ TWO HALVES, AND THE CACHE IS NEVER WRITTEN BY THE FIRST.
    transient step. A staged mask moves into the real cache ONLY when the final's own inputs
    are the staged ones: the same key (the keyframe at this index of the FINAL solve, the
    SHA-1 of its stored JPEG, the label, the rule, the models); the same calibration and
-   camera size; the final depth record naming the same image bytes under `FILL_RULE`; and
-   the final `_fill.npy` equal to the staged one. Anything else stays staged and the stage
-   computes it exactly as it does today. Then `ensure_transient_masks` finds hits.
+   camera size; the same execution mode (CUDA, fp16 forward calls, torch and transformers
+   versions: the key has none of these); the final depth record naming the same image bytes
+   under `FILL_RULE`; and the final `_fill.npy` equal to the staged one. Anything else stays
+   staged and the stage computes it exactly as it does today. Then `ensure_transient_masks`
+   finds hits.
+
+ONE RUN'S FILES, NEVER TWO. The index describes ONE prefill run (its calibration, camera,
+execution mode), and a staged mask's key does not carry its fill or its calibration. So every
+run first empties the staging directory (all but the builder's `sources.json`), index first:
+a run that cannot empty it writes no index, and `promote` promotes nothing without one. A mask
+left by an earlier run can therefore never be checked against a later run's index or fill.
 
 THE ONE INPUT NOT FIXED AT STOP IS THE FILL MASK. Grounding DINO + SAM drops a mask that
 lies mostly inside redaction fill (`filter_instance_masks`), so the cached gdsam masks depend
@@ -41,8 +49,12 @@ never a different mask.
 
 WHAT IS LEFT TO THE STAGE, AS TODAY: every keyframe the worker did not reach, every staged
 mask the checks refuse, and every case the worker declines -- a label that is not trusted at
-Stop (the re-redaction path's fill is not the stored one), the research bypass
-(`raw-local-research`), a detector that is unavailable. Mode `off` stages nothing.
+Stop (the re-redaction path's fill is not the stored one), no CUDA device (the worker exists
+for the idle GPU, and a CPU run would be fp32 and load the cores the final solve needs), a
+detector that is unavailable; mode `off` stages nothing. The worker stages for the imagery
+the builder's final stages use, `SurfaceParams().imagery_source`, which is always `redacted`:
+the research bypass (`raw-local-research`) is only reachable from the standalone stage CLIs,
+which start no worker, and `promote` refuses every staged mask for such a build.
 
 GPU. One child, models loaded one at a time inside `ensure_transient_masks` as in the stage
 (at most ~2.6 GB on the card). Chunks of `CHUNK_FRAMES`: each chunk reloads the three models
@@ -55,6 +67,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import shutil
 import json
 import logging
 import os
@@ -201,6 +214,48 @@ def _fresh_fill(store, world_id, session_id, kid, source_path, image_set, intrin
     return fill_u, hashlib.sha1(data).hexdigest()
 
 
+def execution_mode() -> dict:
+    """How the detector backends of THIS process would run: the device they pick
+    (`transients` backends: CUDA when available, else CPU), whether their forward calls are
+    fp16 (`transients._fp16_enabled`), and the library versions. Not part of the cache key,
+    so the worker records it and `promote` requires the stage's own to be equal."""
+    import importlib.metadata  # noqa: PLC0415
+
+    try:
+        import torch  # noqa: PLC0415
+
+        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        torch_version = torch.__version__
+    except ImportError:
+        dev, torch_version = None, None
+    try:
+        transformers_version = importlib.metadata.version("transformers")
+    except importlib.metadata.PackageNotFoundError:
+        transformers_version = None
+    return {"device": dev, "fp16": bool(dev and T._fp16_enabled(dev)), "torch": torch_version,
+            "transformers": transformers_version}
+
+
+def _clear_staging(staging: Path) -> bool:
+    """Empty `staging` of everything an earlier run left -- masks, fills, the index, temp
+    debris -- keeping only the builder's `sources.json`. The index goes first, so a clear that
+    fails part-way leaves no index and `promote` takes nothing. False when anything stayed."""
+    try:
+        (staging / INDEX_FILENAME).unlink(missing_ok=True)
+        for path in staging.iterdir():
+            if path.name == SOURCES_FILENAME:
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    except OSError as exc:
+        logger.warning("%s could not clear the staging directory %s (%s: %s); nothing is staged",
+                       LOG, staging, type(exc).__name__, exc)
+        return False
+    return True
+
+
 def _save_atomic(path: Path, array) -> None:
     tmp = path.with_name(f"{path.name}.p{os.getpid()}.tmp")
     with open(tmp, "wb") as fh:
@@ -227,8 +282,9 @@ def write_sources(staging: Path, sources: dict) -> None:
 def prefill(store, world_id: str, session_id: str, *, sources: dict | None = None,
             should_stop=None, backend_factory=None, chunk: int = CHUNK_FRAMES) -> dict:
     """Stage the final build's transient masks in `staging_dir`, most-likely-needed first,
-    until done or `should_stop()`. Never writes the real cache. Returns a summary dict
-    (also the staging index). Raises nothing a caller must handle: a failure is recorded."""
+    until done or `should_stop()`. Empties the staging directory first (all but
+    `sources.json`). Never writes the real cache. Returns a summary dict (also the staging
+    index, except when the directory could not be emptied: then there is no index)."""
     from tower.world_builder import appearance as A  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import FILL_RULE  # noqa: PLC0415
     from tower.world_builder.global_solve import _undistort_maps, load_solution  # noqa: PLC0415
@@ -237,11 +293,14 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
     t0 = time.time()
     staging = staging_dir(store, world_id, session_id)
     staging.mkdir(parents=True, exist_ok=True)
+    if not _clear_staging(staging):
+        return {"schema": SCHEMA, "state": "declined", "detail": "the staging directory could not be emptied"}
     surface_params = SurfaceParams()
     params = T.TransientParams(mode=surface_params.transient_detector)
     imagery_source = surface_params.imagery_source
+    mode = execution_mode()
     summary = {"schema": SCHEMA, "world_id": world_id, "session_id": session_id,
-               "rule": params.rule_id(), "started_at": t0, "state": "running"}
+               "rule": params.rule_id(), "execution": mode, "started_at": t0, "state": "running"}
 
     def done(state, detail=None, **more):
         summary.update(state=state, detail=detail, seconds=round(time.time() - t0, 3), **more)
@@ -252,6 +311,8 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
 
     if params.mode == T.MODE_OFF:
         return done("declined", "transient detection is off for the final build")
+    if mode["device"] != "cuda":
+        return done("declined", f"no CUDA device ({mode['device']}): the worker is for the idle GPU")
     session = store.read_session(world_id, session_id)
     intrinsics = session.intrinsics
     keyframes = store.read_keyframes(world_id, session_id)
@@ -259,6 +320,8 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
         return done("declined", "no keyframes or no calibration")
     policy = A.resolve_label_policy(store, world_id, session_id, imagery_source=imagery_source)
     if policy.raw or not policy.trusted:
+        # `policy.raw` is unreachable from the builder (its final imagery is always redacted);
+        # kept so a future caller with another imagery source declines rather than stages.
         return done("declined", f"label {policy.effective!r}: only a trusted, redacted build is staged")
     first = keyframes[0]
     _m1, _m2, (_x, _y, rw, rh), cam = _undistort_maps(intrinsics, first.width, first.height)
@@ -332,12 +395,13 @@ def _same_array(a: Path, b: Path) -> bool:
 
 
 def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: dict, solution,
-            intrinsics, params: T.TransientParams, policy) -> dict | None:
+            intrinsics, params: T.TransientParams, policy, mode: dict | None = None) -> dict | None:
     """Move every staged mask whose inputs are the final's own into the real cache.
 
     None when nothing was staged. Otherwise a record of what happened, also logged:
     `promoted`, `already` (the cache held it under the final key), `refused` by reason. A
-    refused mask stays where it is and the transient stage computes it as it always has."""
+    refused mask stays where it is and the transient stage computes it as it always has.
+    `mode`: this process's `execution_mode()` (None reads it)."""
     from tower.world_builder import appearance as A  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import FILL_RULE  # noqa: PLC0415
 
@@ -357,10 +421,21 @@ def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: 
     camera = solution.camera or {}
     H, W = int(camera.get("height", 0)), int(camera.get("width", 0))
     staged_camera = index.get("camera") or {}
-    if (policy.raw or index.get("intrinsics") != intrinsics_record(intrinsics)
-            or (staged_camera.get("width"), staged_camera.get("height")) != (W, H)):
+    mode = mode if mode is not None else execution_mode()
+    # Whole-run gates: each refuses every staged file, under its own reason.
+    if policy.raw:
+        why = "imagery"                       # a research build never takes a redacted build's mask
+    elif index.get("execution") != mode:
+        why = "execution-mode"                # device / fp16 / versions are not in the key
+    elif index.get("intrinsics") != intrinsics_record(intrinsics):
+        why = "calibration"
+    elif (staged_camera.get("width"), staged_camera.get("height")) != (W, H):
+        why = "camera"
+    else:
+        why = None
+    if why is not None:
         for _ in files:
-            refuse("camera" if not policy.raw else "imagery")
+            refuse(why)
         _log_promote(world_id, session_id, out)
         return out
     undistorter = A.Undistorter(intrinsics, camera)

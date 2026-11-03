@@ -8,11 +8,14 @@ solve has returned. Everything it writes goes to
 final surface stage moves a staged mask into the cache only after checking it
 against its own inputs (`world_builder/masks_at_stop.py`).
 
-    .venv\\Scripts\\python.exe scripts/world_masks_at_stop.py --root <root> --world <id> --session <id>
+    .venv\\Scripts\\python.exe scripts/world_masks_at_stop.py --root <root> --world <id> --session <id> [--parent-pid N]
 
 Reads the raw-frame paths the builder handed it from `sources.json` in the
 staging directory (the same dict the final solve's `sources.json` is written
-from). Exit 0 whatever it managed to stage; 1 only when it crashed.
+from). `--parent-pid`: stop at the next keyframe once that process is gone (the
+builder passes its own; under the Tower's supervisor its Job Object ends this
+child anyway, but a builder run by hand or by a harness has no such job). Exit 0
+whatever it managed to stage; 1 only when it crashed.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ import argparse
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,11 +34,38 @@ from tower.world_builder import masks_at_stop  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 
 
+def parent_gone(pid: int | None):
+    """A `should_stop` that turns true once process `pid` is gone (or replaced: the same pid
+    with another start time), checked at most once a second. Never true without a pid."""
+    if pid is None:
+        return lambda: False
+    import psutil  # noqa: PLC0415
+
+    try:
+        created = psutil.Process(pid).create_time()
+    except psutil.Error:
+        return lambda: True
+    state = {"at": 0.0, "gone": False}
+
+    def gone() -> bool:
+        now = time.monotonic()
+        if not state["gone"] and now - state["at"] >= 1.0:
+            state["at"] = now
+            try:
+                state["gone"] = psutil.Process(pid).create_time() != created
+            except psutil.Error:
+                state["gone"] = True
+        return state["gone"]
+
+    return gone
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--root", type=artifact_root_arg, required=True)
     parser.add_argument("--world", required=True)
     parser.add_argument("--session", required=True)
+    parser.add_argument("--parent-pid", type=int, default=None)
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                         format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
@@ -49,7 +80,8 @@ def main(argv=None) -> int:
     except (OSError, ValueError, AttributeError):
         sources = {}
     try:
-        summary = masks_at_stop.prefill(store, args.world, args.session, sources=sources)
+        summary = masks_at_stop.prefill(store, args.world, args.session, sources=sources,
+                                        should_stop=parent_gone(args.parent_pid))
     except Exception:  # noqa: BLE001 -- the stage computes whatever is missing
         logging.getLogger(__name__).exception("%s the worker failed", masks_at_stop.LOG)
         return 1
