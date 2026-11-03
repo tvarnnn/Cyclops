@@ -549,7 +549,9 @@ def test_stop_ends_the_child_at_its_matching_commit(tmp_path, monkeypatch, caplo
         assert global_solve.database_digest(snapshot) == global_solve.database_digest(database)
         deferred = solver._deferred
         assert deferred["snapshot"] == str(snapshot) and deferred["keyframe_ids"] == IDS
-        assert deferred["token"] == marker["token"] and deferred["descendants_gone"] is True
+        assert deferred["token"] == marker["token"] and deferred["standing_solved_at"] is None
+        # R1-G: the Stop path's own cost of ending the child and of the copy, on its own line.
+        assert "snapshotted in" in caplog.text
         # From its commit to the cap: the 60-s cap plus the time it committed before the wait began.
         assert 59.0 < deferred["budget_s"] < 80.0
     finally:
@@ -714,7 +716,7 @@ def test_every_descendant_is_gone_before_the_wait_returns_at_a_marker(tmp_path, 
         assert grandchild.is_running()
         assert solver.wait(60.0) is False
         assert not grandchild.is_running()
-        assert solver._deferred["descendants_gone"] is True
+        assert solver._deferred is not None and MM.snapshot_path(root).exists()
     finally:
         solver.close()
         if grandchild.is_running():
@@ -779,6 +781,13 @@ FINAL_STUB = textwrap.dedent(r'''
                           "keyframes_posed": 2, "components": [{"id": 0}]}))
         sys.exit(0)
     mode = os.environ["WB_L2_FINAL"]
+    if mode.startswith("published-then"):
+        # The final PUBLISHES (write_solution's last act), then fails before a summary reaches the
+        # builder -- or is hard-stopped right after (R1 round 2, probe A).
+        (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "final"}))
+        if mode == "published-then-crash":
+            sys.exit(3)
+        time.sleep(60)
     if mode == "solved":
         print(json.dumps({"solved": True, "solver": "glomap", "components": []}))
     elif mode == "failed":
@@ -834,6 +843,7 @@ def test_a_final_that_publishes_nothing_gets_the_ended_childs_map(tmp_path, monk
         assert call["order"]["record"] == MM.DEFERRED_ORDER_RECORD
         assert call["order"]["database"] == str(MM.snapshot_path(root))
         assert call["order"]["keyframe_ids"] == IDS and call["order"]["solve"]["match_s"] == 1.5
+        assert call["order"]["standing_solved_at"] is None   # nothing stood at the snapshot
         assert "--deferred-map" in call["argv"] and "--final" not in call["argv"]
         outcome = report["deferred_background_map"]
         assert outcome["ran"] is True and outcome["published"] is True
@@ -846,166 +856,86 @@ def test_a_final_that_publishes_nothing_gets_the_ended_childs_map(tmp_path, monk
         solver.close()
 
 
-def test_a_hard_stop_maps_nothing_and_leaves_the_map_owed(tmp_path, monkeypatch):
+def test_a_hard_stop_maps_nothing_and_discards_the_snapshot(tmp_path, monkeypatch):
     """A hard stop (Tower shutdown) during the final: the final is interrupted as today, nothing is
-    mapped after it, and the builder goes on at once -- leaving the map OWED to the finisher: the
-    snapshot stays, beside an order `read_owed` accepts, bound to the solution standing now."""
+    mapped after it, the builder goes on at once, and the snapshot is discarded (round 3: the
+    accepted residual -- the standing world may be one background solve older than off)."""
     solver, root = _ended_at_marker(tmp_path, monkeypatch, "hang")
-    (root / "solution.json").write_text(json.dumps({"solved_at": 123.5}), encoding="utf-8")
     started = time.monotonic()
     try:
         report = solver.run_final(_Store(tmp_path), {},
                                   should_stop=lambda: time.monotonic() - started > 1.0)
         assert report["interrupted"] is True and report["solved"] is False
         assert report["deferred_background_map"] == {"ran": False, "published": False,
-                                                     "why": "hard stop", "owed": True}
+                                                     "why": "hard stop"}
         assert _deferred_calls(root) == [] and time.monotonic() - started < 15.0
-        assert MM.snapshot_path(root).is_file()
-        order = MM.read_owed(root)
-        assert order["owed"] == MM.OWED_HARD_STOP and order["keyframe_ids"] == IDS
-        assert order["database"] == str(MM.snapshot_path(root))
-        assert order["standing_solved_at"] == 123.5 and order["budget_s"] > 59.0
+        assert not MM.snapshot_path(root).exists()
+        assert not (root / MM.DEFERRED_ORDER_FILENAME).exists()
     finally:
         solver.close()
 
 
-def test_an_owed_order_needs_its_snapshot_and_its_fields(tmp_path):
-    root = _workspace(tmp_path)
-    root.mkdir(parents=True)
-    deferred = {"token": "t", "keyframe_ids": IDS, "solve": {}, "budget_s": 60.0}
-    MM.write_owed(root, deferred, standing_solved_at=None)
-    assert MM.read_owed(root) is None                      # no snapshot beside it
-    MM.snapshot_path(root).write_bytes(b"db")
-    assert MM.read_owed(root)["keyframe_ids"] == IDS
-    MM.write_owed(root, dict(deferred, keyframe_ids=["s:1"]), standing_solved_at=None)
-    assert MM.read_owed(root) is None
-    MM.discard_snapshot(root)
-    assert not MM.snapshot_path(root).exists()
-    assert not (root / MM.DEFERRED_ORDER_FILENAME).exists()
+@pytest.mark.parametrize("final_mode", ["published-then-crash", "published-then-hang"])
+def test_a_final_that_published_is_never_overwritten(tmp_path, monkeypatch, final_mode):
+    """R1 round 2, A: a final that published and then exited non-zero (or was hard-stopped after its
+    publish) reports `not solved`; the deferred map is bound to the solution standing at the snapshot,
+    so it is moot: never spawned, and the final's solution stands."""
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, final_mode)
+    started = time.monotonic()
+
+    def stop():
+        return (final_mode == "published-then-hang" and time.monotonic() - started > 1.5
+                and json.loads((root / "solution.json").read_text())["who"] == "final")
+
+    try:
+        report = solver.run_final(_Store(tmp_path), {}, should_stop=stop)
+        assert not report.get("solved")
+        assert json.loads((root / "solution.json").read_text())["who"] == "final"
+        assert _deferred_calls(root) == []
+        assert report["deferred_background_map"]["published"] is False
+        assert not MM.snapshot_path(root).exists()
+    finally:
+        solver.close()
 
 
-# ---------------------------------------------------------------------------
-# the finisher runs an owed deferred map first (scripts/world_finish_pending.py)
-# ---------------------------------------------------------------------------
+def test_a_run_final_that_never_runs_discards_the_snapshot(tmp_path, monkeypatch, caplog):
+    """R1 round 2, D: a hard stop between the marker kill and the Stop branch's `run_final` (the
+    builder skips the final): `close()` discards the snapshot and says so."""
+    caplog.set_level(logging.INFO, logger="tower.world_build_session")
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    assert MM.snapshot_path(root).exists()
+    solver.close()
+    assert not MM.snapshot_path(root).exists() and solver._deferred is None
+    assert "its snapshot is discarded" in caplog.text
 
 
-def _owe(session, *, standing=None, budget=60.0):
-    ws = session.workspace
-    ws.root.mkdir(parents=True, exist_ok=True)
-    MM.snapshot_path(ws.root).write_bytes(b"snapshot")
-    keyframes = session.store.read_keyframes(session.world_id, session.session_id)
-    ids = [k.keyframe_id for k in keyframes[:3]]
-    MM.write_owed(ws.root, {"token": "t", "keyframe_ids": ids, "solve": {"match_s": 1.5},
-                            "budget_s": budget}, standing_solved_at=standing)
-    return ids
+def test_a_surviving_descendant_fails_closed_to_todays_wait(tmp_path, monkeypatch, caplog):
+    """Round 3, decision 2: a process of the ended child still alive after the bounded wait: no
+    snapshot, no deferred map, and the final does not start early -- the wait goes on to the cap."""
+    caplog.set_level(logging.INFO, logger="tower.world_build_session")
+    solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
+    monkeypatch.setattr(solver, "_await_gone", lambda child, family: False)
+    try:
+        _wait_for(MM.marker_path(root))
+        started = time.monotonic()
+        assert solver.wait(2.0) is False
+        assert time.monotonic() - started >= 2.0             # the cap, not the marker
+        assert solver._deferred is None and not MM.snapshot_path(root).exists()
+        assert "failing closed to today's path" in caplog.text
+    finally:
+        solver.close()
 
 
-def test_the_finisher_assesses_an_owed_deferred_map_first(session):
-    import scripts.world_finish_pending as F
-
-    before = F.assess(session.store, session.world_id, session.session_id)
-    assert before.stage != F.DEFERRED_MAP_STAGE
-    _owe(session)
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    assert verdict.owed is True and verdict.stage == F.DEFERRED_MAP_STAGE
-    assert verdict.code == F.OWED_DEFERRED_MAP
-
-
-def test_the_finisher_maps_publishes_rebuilds_and_clears(session, monkeypatch):
-    import scripts.world_finish_pending as F
-
-    ids = _owe(session)
-    calls, builds = [], []
-
-    def fake_map(store, world, sess, **kwargs):
-        calls.append(kwargs)
-        return {"solved": True, "solver": "glomap", "keyframes": len(kwargs["keyframe_ids"])}
-
-    monkeypatch.setattr(global_solve, "map_committed_horizon", fake_map)
-    monkeypatch.setattr(F.WorldBuilderEngine, "build",
-                        lambda self, w, s: builds.append((w, s)) or types.SimpleNamespace(poses_solved=3))
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    from scripts.world_build_session import StopRequest
-    stop = StopRequest()
-    report = F.finish(session.store, verdict, appearance=False, prune_depth_work=True,
-                      stop_request=stop)
-    assert report["finished"] is True and report["deferred_map"]["solved"] is True
-    ((kwargs,),) = [calls]
-    assert kwargs["database_path"] == MM.snapshot_path(session.workspace.root)
-    assert kwargs["keyframe_ids"] == ids and kwargs["context"] == {"match_s": 1.5}
-    from scripts.world_build_session import DEFERRED_MAP_START_ALLOWANCE_S
-    assert kwargs["max_map_s"] == 60.0 + DEFERRED_MAP_START_ALLOWANCE_S
-    assert builds == [(session.world_id, session.session_id)]
-    assert not MM.snapshot_path(session.workspace.root).exists()
-    assert MM.read_owed(session.workspace.root) is None
-    assert F.read_attempts(session.store, session.world_id,
-                           F.deferred_ledger_key(session.session_id)) == 1
-    assert session.store.lock_holder(session.world_id) is None
-    # Nothing is owed any more; the session is assessed as it was before.
-    assert F.assess(session.store, session.world_id,
-                    session.session_id).stage != F.DEFERRED_MAP_STAGE
-
-
-def test_the_finisher_clears_a_map_a_later_solution_made_moot(session, monkeypatch):
-    import scripts.world_finish_pending as F
-
-    _owe(session, standing=None)
-    session.workspace.solution_path.write_text(json.dumps({"solved_at": 9.0}), encoding="utf-8")
-    monkeypatch.setattr(global_solve, "map_committed_horizon",
-                        lambda *a, **k: pytest.fail("a moot order is not mapped"))
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    from scripts.world_build_session import StopRequest
-    stop = StopRequest()
-    report = F.finish(session.store, verdict, appearance=False, prune_depth_work=True,
-                      stop_request=stop)
-    assert report["finished"] is True and report["moot"] is True
-    assert MM.read_owed(session.workspace.root) is None
-
-
-def test_the_finisher_does_not_rebuild_for_a_refused_map(session, monkeypatch):
-    import scripts.world_finish_pending as F
-
-    _owe(session)
-    monkeypatch.setattr(global_solve, "map_committed_horizon",
-                        lambda *a, **k: {"solved": False, "reason": "past the default's time"})
-    monkeypatch.setattr(F.WorldBuilderEngine, "build",
-                        lambda self, w, s: pytest.fail("nothing was published"))
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    from scripts.world_build_session import StopRequest
-    stop = StopRequest()
-    report = F.finish(session.store, verdict, appearance=False, prune_depth_work=True,
-                      stop_request=stop)
-    assert report.get("finished") is True, report
-    assert report["deferred_map"]["solved"] is False
-    assert MM.read_owed(session.workspace.root) is None
-
-
-def test_the_finisher_gives_up_at_its_attempt_bound(session):
-    import scripts.world_finish_pending as F
-
-    _owe(session)
-    for _ in range(F.DEFAULT_MAX_ATTEMPTS):
-        F.record_attempt(session.store, session.world_id,
-                         F.deferred_ledger_key(session.session_id), detail="test")
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    assert verdict.owed is False and verdict.code == "deferred-map-given-up"
-
-
-def test_the_deferred_map_is_not_published_past_its_bound(session, monkeypatch):
-    """`max_map_s`, the finisher's in-process bound: a map that took longer is not published."""
-    _bg_solve(session, _FakeColmap(), monkeypatch)
-    before = session.workspace.solution_path.read_bytes()
-    slow = _FakeColmap()
-    real = slow.global_mapping
-    slow.global_mapping = lambda *a, **k: (time.sleep(0.3), real(*a, **k))[1]
-    monkeypatch.setitem(sys.modules, "pycolmap", slow)
-    keyframes = session.store.read_keyframes(session.world_id, session.session_id)
-    summary = global_solve.map_committed_horizon(
-        session.store, session.world_id, session.session_id,
-        database_path=session.workspace.database_path,
-        keyframe_ids=[k.keyframe_id for k in keyframes], max_map_s=0.1)
-    assert summary["solved"] is False and "past the 0.1 s" in summary["reason"]
-    assert session.workspace.solution_path.read_bytes() == before
+def test_a_surviving_descendant_still_honours_a_stop(tmp_path, monkeypatch):
+    solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
+    monkeypatch.setattr(solver, "_await_gone", lambda child, family: False)
+    try:
+        _wait_for(MM.marker_path(root))
+        started = time.monotonic()
+        assert solver.wait(60.0, should_stop=lambda: time.monotonic() - started > 0.5) is False
+        assert time.monotonic() - started < 10.0 and solver._deferred is None
+    finally:
+        solver.close()
 
 
 def test_a_hard_stop_during_the_deferred_map_ends_it(tmp_path, monkeypatch):
@@ -1017,6 +947,7 @@ def test_a_hard_stop_during_the_deferred_map_ends_it(tmp_path, monkeypatch):
         outcome = report["deferred_background_map"]
         assert outcome["ran"] is True and outcome["published"] is False
         assert outcome["why"] == "hard stop" and not solver.running
+        assert not MM.snapshot_path(root).exists()          # the accepted residual: discarded
     finally:
         solver.close()
 
@@ -1084,6 +1015,34 @@ def test_the_deferred_map_maps_the_snapshot_with_the_childs_keyframes(session, m
     assert published["input_digest"] == compute_input_digest(keyframes[:3])
 
 
+def test_the_deferred_map_publishes_only_over_the_solution_standing_at_the_snapshot(session,
+                                                                                  monkeypatch):
+    _bg_solve(session, _FakeColmap(), monkeypatch)            # publishes a solution
+    ws = session.workspace
+    standing = json.loads(ws.solution_path.read_text(encoding="utf-8"))["solved_at"]
+    before = ws.solution_path.read_bytes()
+    ids = [k.keyframe_id for k in session.store.read_keyframes(session.world_id,
+                                                                session.session_id)[:3]]
+    monkeypatch.setitem(sys.modules, "pycolmap", _FakeColmap())
+    for expected in (None, standing + 1.0):                   # nothing stood / another stood
+        summary = global_solve.map_committed_horizon(
+            session.store, session.world_id, session.session_id, database_path=ws.database_path,
+            keyframe_ids=ids, expect_standing_solved_at=expected)
+        assert summary["solved"] is False and summary["moot"] is True
+        assert ws.solution_path.read_bytes() == before
+    ws.solution_path.write_text("{torn", encoding="utf-8")   # unreadable: never overwritten
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id, database_path=ws.database_path,
+        keyframe_ids=ids, expect_standing_solved_at=None)
+    assert summary.get("moot") is True and ws.solution_path.read_text() == "{torn"
+    ws.solution_path.write_bytes(before)
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id, database_path=ws.database_path,
+        keyframe_ids=ids, expect_standing_solved_at=standing)
+    assert summary["solved"] is True
+    assert json.loads(ws.solution_path.read_text())["keyframe_ids"] == ids
+
+
 def test_the_deferred_map_refuses_keyframes_no_longer_in_the_session(session, monkeypatch):
     monkeypatch.setitem(sys.modules, "pycolmap", _FakeColmap())
     summary = global_solve.map_committed_horizon(
@@ -1107,12 +1066,20 @@ def test_world_solve_deferred_map_hands_the_order_over(monkeypatch, tmp_path):
     order = tmp_path / "order.json"
     order.write_text(json.dumps({"record": MM.DEFERRED_ORDER_RECORD, "token": "t",
                                  "database": str(tmp_path / "snap.db"), "keyframe_ids": IDS,
-                                 "solve": {"match_s": 1.5}}))
+                                 "solve": {"match_s": 1.5}, "standing_solved_at": 7.5}))
     assert world_solve.main(["--root", str(tmp_path), "--world", "w", "--session", "s",
                              "--deferred-map", str(order)]) == 0
     assert captured["database_path"] == tmp_path / "snap.db"
     assert captured["keyframe_ids"] == IDS and captured["context"] == {"match_s": 1.5}
     assert captured["num_threads"] == world_solve.background_threads()
+    assert captured["expect_standing_solved_at"] == 7.5
+    # An order that does not say what stood at the snapshot is not an order.
+    captured.clear()
+    order.write_text(json.dumps({"record": MM.DEFERRED_ORDER_RECORD, "database": "x",
+                                 "keyframe_ids": IDS}))
+    assert world_solve.main(["--root", str(tmp_path), "--world", "w", "--session", "s",
+                             "--deferred-map", str(order)]) == 0
+    assert captured == {}
 
 
 # ---------------------------------------------------------------------------
@@ -1151,26 +1118,3 @@ def test_on_changes_nothing_but_the_background_childs_environment(tmp_path, monk
         assert a["env_changed"] == b["env_changed"] and a["env_removed"] == b["env_removed"]
         expected = sorted(a["env_added"] + ([MM.TOKEN_ENV] if "--final" not in a["argv"] else []))
         assert b["env_added"] == expected
-
-
-def test_a_stopped_finisher_keeps_the_order_and_is_forgiven(session, monkeypatch):
-    """A stop asked for during the map (the wearer starts a walk): the order and snapshot stay for
-    the next run, and the attempt is given back, as for any stopped finisher attempt."""
-    import scripts.world_finish_pending as F
-    from scripts.world_build_session import StopRequest
-
-    _owe(session)
-    stop = StopRequest()
-
-    def stopped_map(store, world, sess, **kwargs):
-        stop.request(StopRequest.SOFT, "stdin-closed")
-        return {"solved": False, "reason": "stopped"}
-
-    monkeypatch.setattr(global_solve, "map_committed_horizon", stopped_map)
-    verdict = F.assess(session.store, session.world_id, session.session_id)
-    F.finish(session.store, verdict, appearance=False, prune_depth_work=True, stop_request=stop)
-    assert MM.read_owed(session.workspace.root) is not None
-    assert F.read_attempts(session.store, session.world_id,
-                           F.deferred_ledger_key(session.session_id)) == 0
-    assert F.assess(session.store, session.world_id,
-                    session.session_id).stage == F.DEFERRED_MAP_STAGE

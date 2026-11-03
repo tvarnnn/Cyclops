@@ -123,7 +123,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from scripts.world_build_session import (  # noqa: E402
-    DEFERRED_MAP_START_ALLOWANCE_S,
     StopRequest,
     final_surface_stages,
     published_consensus_solve,
@@ -640,12 +639,6 @@ def assess(
     left = _assess_refinish(store, world_id, session_id, session, max_attempts=max_attempts)
     if left is not None:
         return left
-    # A BACKGROUND SOLVE'S MAP A HARD STOP LEFT OWED (`TOWER_WORLD_BG_STOP_AT_MATCH`): before
-    # anything else this session owes, so the world standing is never older than with the switch
-    # off. Only a builder with the switch on ever leaves one. See `finish_deferred_map`.
-    deferred = _assess_deferred_map(store, world_id, session_id, max_attempts=max_attempts)
-    if deferred is not None:
-        return deferred
 
     if session.ended_at is None:
         # A walk in progress, or a builder that died mid-walk. Either way the
@@ -1438,123 +1431,6 @@ def _assess_refinish(store: WorldStore, world_id: str, session_id: str, session,
                    stage=REFINISH_STAGE, attempts=attempts)
 
 
-DEFERRED_MAP_STAGE = "deferred-map"
-OWED_DEFERRED_MAP = "owed-deferred-map"
-
-
-def deferred_ledger_key(session_id: str) -> str:
-    return f"{session_id}#{DEFERRED_MAP_STAGE}"
-
-
-def _assess_deferred_map(store: WorldStore, world_id: str, session_id: str, *,
-                         max_attempts: int) -> "Verdict | None":
-    """A verdict about the deferred map a hard stop left owed for this session
-    (`matching_marker.read_owed`), or None when there is none. Reads only."""
-    from tower.world_builder import matching_marker  # noqa: PLC0415
-    from tower.world_builder.global_solve import workspace_for  # noqa: PLC0415
-
-    order = matching_marker.read_owed(workspace_for(store, world_id, session_id).root)
-    if order is None:
-        return None
-    holder = store.lock_holder(world_id)
-    if holder is not None and holder["pid"] == os.getpid():
-        holder = None
-    if holder is not None and (holder["alive"] or holder["unreadable"]):
-        return Verdict(world_id, session_id, False,
-                       "this world's writer lock is held by another process",
-                       code="locked", stage=DEFERRED_MAP_STAGE)
-    attempts = read_attempts(store, world_id, deferred_ledger_key(session_id)) or 0
-    if attempts >= max_attempts:
-        return Verdict(world_id, session_id, False,
-                       f"this tool has tried {attempts} times (the bound is {max_attempts}) to "
-                       "map the background solve a hard stop left owed, and could not",
-                       code="deferred-map-given-up", stage=DEFERRED_MAP_STAGE, attempts=attempts)
-    return Verdict(world_id, session_id, True,
-                   f"a hard stop ended this walk's finalization after its background solve was "
-                   f"ended at its matching commit; that solve's map ({len(order['keyframe_ids'])} "
-                   "keyframes) is owed so the world is never older than the default path's",
-                   code=OWED_DEFERRED_MAP, stage=DEFERRED_MAP_STAGE, attempts=attempts)
-
-
-def finish_deferred_map(store: WorldStore, verdict: Verdict, *, stop_request,
-                        max_forgiven: int = DEFAULT_MAX_FORGIVEN) -> dict:
-    """Map and publish the background solve a hard stop left owed, under the world's lock: what the
-    builder's `run_final` would have done had the final published nothing and no hard stop come.
-
-    `global_solve.map_committed_horizon` maps the kept snapshot with exactly that solve's keyframes,
-    bounded as the builder bounds it (the time the default path gave the child + the start
-    allowance), and publishes it as that solve would have; the derived tree is then rebuilt from it
-    (`engine.build`), as the builder's final build would have. MOOT, and only cleared, when a
-    solution was published after the hard stop (a re-finish): the standing world is newer already.
-    The order and the snapshot are removed once an attempt has ended on its own (published, refused
-    or moot); a stopped attempt keeps them, and is forgiven."""
-    from scripts.world_solve import background_threads  # noqa: PLC0415
-    from tower.world_builder import global_solve, matching_marker  # noqa: PLC0415
-
-    key = deferred_ledger_key(verdict.session_id)
-    report: dict = {"world_id": verdict.world_id, "session_id": verdict.session_id,
-                    "stage": DEFERRED_MAP_STAGE}
-    engine = WorldBuilderEngine(store)
-    try:
-        store.acquire_writer_lock(verdict.world_id)
-    except Exception as exc:  # noqa: BLE001
-        report.update({"finished": False, "waiting": True, "world_busy": True,
-                       "reason": f"{type(exc).__name__}: {exc}"})
-        return report
-    disarm = None
-    done = False
-    root = global_solve.workspace_for(store, verdict.world_id, verdict.session_id).root
-    try:
-        busy = refinish_in_progress(store, verdict.world_id)
-        if busy is not None:
-            report.update({"finished": False, "waiting": True, "world_busy": True,
-                           "reason": busy})
-            return report
-        order = matching_marker.read_owed(root)
-        if order is None:
-            report.update({"finished": True, "reason": "nothing is owed any more"})
-            return report
-        if matching_marker.standing_solved_at(root) != order.get("standing_solved_at"):
-            done = True
-            report.update({"finished": True, "moot": True,
-                           "reason": "a solution was published after the hard stop; the "
-                                     "deferred map is moot"})
-            return report
-        report["attempts"] = record_attempt(
-            store, verdict.world_id, key, detail="mapping the background solve a hard stop left owed")
-        disarm = _forgive_on_stop(
-            stop_request,
-            lambda source: forgive_attempt(store, verdict.world_id, key,
-                                           detail=f"stopped ({source})",
-                                           max_forgiven=max_forgiven))
-        budget = order.get("budget_s")
-        summary = global_solve.map_committed_horizon(
-            store, verdict.world_id, verdict.session_id, database_path=Path(order["database"]),
-            keyframe_ids=list(order["keyframe_ids"]), num_threads=background_threads(),
-            context=order.get("solve") or {},
-            max_map_s=None if budget is None else float(budget) + DEFERRED_MAP_START_ALLOWANCE_S)
-        report["deferred_map"] = {k: summary.get(k) for k in ("solved", "solver", "keyframes",
-                                                              "keyframes_posed", "reason")}
-        if summary.get("solved"):
-            report["build"] = {"poses_solved": getattr(
-                engine.build(verdict.world_id, verdict.session_id), "poses_solved", None)}
-        done = not stop_request.asked
-        report["finished"] = True
-    except Exception as exc:  # noqa: BLE001 -- recorded, then reported
-        report.update({"finished": False, "reason": f"{type(exc).__name__}: {exc}"})
-    finally:
-        if disarm is not None:
-            forgiven = disarm()
-            if not forgiven and stop_request.asked:
-                forgive_attempt(store, verdict.world_id, key,
-                                detail=f"stopped ({stop_request.source})",
-                                max_forgiven=max_forgiven)
-        if done:
-            matching_marker.discard_snapshot(root)
-        engine.release_world(verdict.world_id)
-    return report
-
-
 def finish_refinish_restore(store: WorldStore, verdict: Verdict) -> dict:
     """Put back what a dead re-finish set aside, under the world's lock. No GPU and no
     native warm: moves and a record. A put-back that cannot complete parks the session and
@@ -2216,9 +2092,6 @@ def finish(
                              stop_request=stop_request, max_forgiven=max_forgiven)
     if verdict.stage == REFINISH_STAGE:
         return finish_refinish_restore(store, verdict)
-    if verdict.stage == DEFERRED_MAP_STAGE:
-        return finish_deferred_map(store, verdict, stop_request=stop_request,
-                                   max_forgiven=max_forgiven)
     report: dict = {
         "world_id": verdict.world_id,
         "session_id": verdict.session_id,

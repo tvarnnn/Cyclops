@@ -120,18 +120,21 @@ def main(argv=None) -> int:
 def _deferred_map(store, args) -> int:
     """`--deferred-map <order>`: the builder's order (`matching_marker.DEFERRED_ORDER_RECORD`) to map a
     background solve's committed horizon (`global_solve.map_committed_horizon`) and publish it as that
-    solve would have. Prints its summary like any solve; a refused order is a summary saying why."""
+    solve would have, only over the solution that stood at the snapshot (`standing_solved_at`). Prints
+    its summary like any solve; a refused or moot order is a summary saying why."""
     from tower.storage import read_json_closed  # noqa: PLC0415
 
     order = read_json_closed(args.deferred_map)
-    if not isinstance(order, dict) or order.get("record") != matching_marker.DEFERRED_ORDER_RECORD:
+    if (not isinstance(order, dict) or order.get("record") != matching_marker.DEFERRED_ORDER_RECORD
+            or "standing_solved_at" not in order):
         summary = {"solved": False, "reason": "deferred map: not an order"}
     else:
         summary = global_solve.map_committed_horizon(
             store, args.world, args.session, database_path=Path(order["database"]),
             keyframe_ids=list(order.get("keyframe_ids") or []),
             num_threads=args.threads if args.threads is not None else background_threads(),
-            context=order.get("solve") or {})
+            context=order.get("solve") or {},
+            expect_standing_solved_at=order["standing_solved_at"])
     print(json.dumps(summary, indent=2))
     return 0
 

@@ -20,13 +20,15 @@ first -- the writer check, the digest in probe mode, the write itself -- leaves 
 today's wait (fail closed). The builder's wait (`BackgroundSolver.wait`) accepts a marker only with
 THIS child's token and every field `read` checks.
 
-THE HORIZON SNAPSHOT AND THE DEFERRED MAP. Ending the child early must never leave an older world
-standing than the switch off would. If the final solve then fails, is withheld or produces nothing,
-the default path could have published THIS child's map (it would have finished inside the cap). So
-the builder snapshots the committed database right after the child and its descendants have exited
-(`snapshot_horizon`, before the final solve opens it), and in those cases maps that snapshot with
-the child's own keyframes (`global_solve.map_committed_horizon`, through `world_solve.py
---deferred-map`) inside the time the default path would have given the child. See
+THE HORIZON SNAPSHOT AND THE DEFERRED MAP (in the builder only). If the final solve then fails, is
+withheld or produces nothing, the default path could have left THIS child's map standing (it would
+have finished inside the cap and published before the final ran). So the builder snapshots the
+committed database right after the child and every descendant have exited (`snapshot_horizon`,
+before the final solve opens it), notes the solution standing then (`standing_solved_at`), and in
+those cases maps that snapshot with the child's own keyframes (`global_solve.map_committed_horizon`,
+through `world_solve.py --deferred-map`), bounded and stoppable, and publishes it ONLY IF NOTHING
+NEWER WAS PUBLISHED SINCE (a final that published and then failed is never overwritten). Every other
+ending -- a hard stop, a solved final, a `run_final` that never runs -- discards the snapshot. See
 `BackgroundSolver.run_final`.
 
 SAFE WHEREVER THE KILL LANDS. Before the marker exists the wait is exactly today's (it may kill the
@@ -209,27 +211,6 @@ def snapshot_horizon(workspace_root) -> Path | None:
         return None
 
 
-# The order a HARD STOP leaves for the finisher (`scripts/world_finish_pending.py`): the deferred map
-# that could not run because nothing is mapped after a hard stop.
-OWED_HARD_STOP = "hard-stop"
-
-
-def write_owed(workspace_root, deferred: dict, *, standing_solved_at) -> Path:
-    """Leave the deferred map of a background child ended at its marker as OWED WORK, beside its
-    snapshot: the finisher maps it at the Tower's next start (`read_owed`). `standing_solved_at` is the
-    published solution's `solved_at` at this moment (None: none), so that a solution published since
-    (a re-finish) makes the order moot. Raises on a write failure (the caller logs it)."""
-    from tower.storage import write_json_atomic  # noqa: PLC0415
-
-    path = Path(workspace_root) / DEFERRED_ORDER_FILENAME
-    write_json_atomic(path, {
-        "record": DEFERRED_ORDER_RECORD, "owed": OWED_HARD_STOP, "token": deferred["token"],
-        "database": SNAPSHOT_FILENAME, "keyframe_ids": list(deferred["keyframe_ids"]),
-        "solve": deferred.get("solve") or {}, "budget_s": deferred.get("budget_s"),
-        "standing_solved_at": standing_solved_at, "written_at": time.time()})
-    return path
-
-
 def standing_solved_at(workspace_root):
     """The published solution's `solved_at` (None: none, or unreadable). Never raises."""
     try:
@@ -237,31 +218,6 @@ def standing_solved_at(workspace_root):
 
         return read_json_closed(Path(workspace_root) / "solution.json").get("solved_at")
     except Exception:  # noqa: BLE001
-        return None
-
-
-def read_owed(workspace_root) -> dict | None:
-    """The owed deferred-map order a hard stop left here, whole, with its snapshot on disk; else
-    None. The snapshot path in it is resolved against `workspace_root`. Never raises."""
-    try:
-        root = Path(workspace_root)
-        path = root / DEFERRED_ORDER_FILENAME
-        if not path.exists():
-            return None
-        from tower.storage import read_json_closed  # noqa: PLC0415
-
-        order = read_json_closed(path)
-        if not isinstance(order, dict) or order.get("record") != DEFERRED_ORDER_RECORD:
-            return None
-        if order.get("owed") != OWED_HARD_STOP or order.get("database") != SNAPSHOT_FILENAME:
-            return None
-        ids = order.get("keyframe_ids")
-        if not isinstance(ids, list) or len(ids) < 2 or not all(isinstance(i, str) for i in ids):
-            return None
-        if not (root / SNAPSHOT_FILENAME).is_file():
-            return None
-        return dict(order, database=str(root / SNAPSHOT_FILENAME))
-    except Exception:  # noqa: BLE001 -- unreadable is "nothing owed"
         return None
 
 

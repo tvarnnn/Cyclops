@@ -1887,9 +1887,12 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
 DEFERRED_SPARSE_DIRNAME = "sparse-deferred"
 
 
+_ANY_STANDING = object()
+
+
 def map_committed_horizon(store, world_id: str, session_id: str, *, database_path, keyframe_ids,
                           num_threads: int | None = None, context: dict | None = None,
-                          max_map_s: float | None = None,
+                          expect_standing_solved_at=_ANY_STANDING,
                           min_image_observations: int = MIN_IMAGE_OBSERVATIONS) -> dict:
     """THE MAP A BACKGROUND SOLVE WAS ENDED BEFORE (`TOWER_WORLD_BG_STOP_AT_MATCH`), and its publication.
 
@@ -1908,8 +1911,13 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
     `keyframes_posed`, `components`, `points`, `timing`, `workspace`), or `{"solved": False,
     "reason": ...}` when it cannot run (pycolmap missing, a keyframe id no longer in the session,
     no camera). Maps into `sparse-deferred/`, removed afterwards; never touches `sparse/` or the
-    walk database. `max_map_s` (the finisher's bound, in-process): a map that took longer is not
-    published -- the default path's cap would have killed the child before it finished."""
+    walk database.
+
+    BOUND TO THE SOLUTION STANDING AT THE SNAPSHOT. `expect_standing_solved_at` is the published
+    solution's `solved_at` when the builder took the snapshot (None: none). Right before publishing it
+    is read again, and anything else -- a final that published and then failed, any newer solution, or
+    one that cannot be read -- means nothing is published (`moot: True`): a deferred map never
+    replaces a newer world. Not given (a direct caller), it publishes as a background solve would."""
     available, reason = solver_available()
     if not available:
         return {"solved": False, "reason": reason}
@@ -1939,10 +1947,6 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
             min_image_observations=min_image_observations, camera=camera)
     finally:
         shutil.rmtree(sparse_dir, ignore_errors=True)
-    map_s = time.perf_counter() - started
-    if max_map_s is not None and map_s > max_map_s:
-        return {"solved": False, "reason": f"deferred map: mapped in {map_s:.1f} s, past the "
-                                           f"{max_map_s:.1f} s the default path gave the child"}
     context = dict(context or {})
     solution.timing = {
         "prepare_s": context.get("prepare_s"), "extract_s": context.get("extract_s"),
@@ -1960,6 +1964,15 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
         "revisit_pairs": {"listed": 0, "verified": 0, "detail": None},
         "deferred_map": True,
     }
+    if expect_standing_solved_at is not _ANY_STANDING:
+        from tower.world_builder.matching_marker import standing_solved_at  # noqa: PLC0415
+
+        standing = standing_solved_at(workspace.root)
+        if (standing != expect_standing_solved_at
+                or (standing is None and workspace.solution_path.exists())):
+            return {"solved": False, "moot": True,
+                    "reason": "deferred map: a newer solution was published since the snapshot "
+                              f"(solved_at {standing!r}, expected {expect_standing_solved_at!r})"}
     solution, _record = coherence_publish.gate_and_publish(
         store, world_id, session_id, workspace, solution, final=False, gate=None,
         database_path=Path(database_path), keyframes=keyframes, write=write_solution,
