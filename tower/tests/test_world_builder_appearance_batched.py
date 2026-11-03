@@ -24,9 +24,11 @@ DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
 
 # Gains of the batched path against the per-group path when the exposure solve
 # is NOT made deterministic (CUDA atomics): the solve's own run-to-run spread.
-# Two runs of main on walk 10.2 differ in the 5th decimal (STAGE-BENCH 5.2:
-# 0.99318 vs 0.99316, 2e-5 relative). The bound is 1e-4, five times that, and
-# still 39 times below a one-level change of an 8-bit pixel (1/255 relative).
+# Measured on walk 10.2 (APPEAR-VEC.md 3.1): the solve run four times in one
+# process on the same byte-identical observation stream differs between runs
+# by max |d log gain| 1.9e-5 to 1.3e-4, and two separate stage runs of main by
+# 2.1e-4. The bound is 1e-4, inside main's own spread, and 39 times below a
+# one-level change of an 8-bit pixel (1/255 relative).
 GAIN_LOG_TOL = 1e-4
 
 
