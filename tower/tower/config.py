@@ -1042,6 +1042,20 @@ def world_picture_basis_setting() -> bool:
     return _flag(WORLD_PICTURE_BASIS_ENV, default=False)
 
 
+# Windows power throttling (EcoQoS). Read once at the start of each World Builder process (the
+# builder, its solve, surface and masks-at-Stop children, the appearance CLI and the recovery
+# finisher) by `tower.power_throttling`. On: each such process tells Windows never to throttle its
+# execution speed. It computes nothing differently; it removes a measured slowdown when Windows
+# throttles the process (ECOQOS lane, 2026-11-03). Off: no call is made, and the process is exactly
+# as before.
+WORLD_NO_POWER_THROTTLING_ENV = "TOWER_WORLD_NO_POWER_THROTTLING"
+
+
+def world_no_power_throttling_setting() -> bool:
+    """`TOWER_WORLD_NO_POWER_THROTTLING`: opt World Builder processes out of EcoQoS. Off."""
+    return _flag(WORLD_NO_POWER_THROTTLING_ENV, default=False)
+
+
 WORLD_RELOCALIZER_ENV = "TOWER_WORLD_RELOCALIZER"
 
 

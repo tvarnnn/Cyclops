@@ -131,6 +131,7 @@ from tower.process_ownership import (  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 from tower.world_builder import stage_timing  # noqa: E402
 from tower.world_builder import finish_phase  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 
 DEFAULT_ROOT = Path("data/world_builder")
 TOWER_ROOT = Path(__file__).resolve().parents[1]
@@ -2834,6 +2835,10 @@ def main(argv=None) -> int:
             level=logging.INFO,
             format="%(asctime)s %(levelname)s %(name)s %(message)s",
         )
+    # After the logging setup, so the result is in this process's log; before any work.
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
+    apply_world_build_power_policy("builder")
 
     # BEFORE the watcher is armed, for the reason `tower/native_prewarm.py`
     # gives at length: this process runs `final_surface_stages` after Stop,

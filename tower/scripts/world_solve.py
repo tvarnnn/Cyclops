@@ -33,6 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 from tower.world_builder import finish_phase, global_solve, matching_marker  # noqa: E402
 from tower.world_builder.store import WorldStore, compute_input_digest  # noqa: E402
 
@@ -76,6 +77,9 @@ def main(argv=None) -> int:
                         help="TOWER_WORLD_BG_STOP_AT_MATCH: map and publish the committed horizon of a "
                              "background solve the builder ended early (its order file); internal")
     args = parser.parse_args(argv)
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
+    apply_world_build_power_policy("solve")
 
     store = WorldStore(Path(args.root))
     if args.deferred_map is not None:
