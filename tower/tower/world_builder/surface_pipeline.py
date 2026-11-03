@@ -993,9 +993,10 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
         )
 
         # A live build journals each mask it computes (`masks_at_stop.live_recorder`), so the
-        # worker at Stop can reuse it under the final key. Off: False, and the line below is L1's.
-        journal = live and backend_factory is None and world_masks_live_reuse_setting()
-        if (world_masks_at_stop_setting() or journal) and backend_factory is None:
+        # worker at Stop can reuse it under the final key -- only when that worker exists
+        # (`TOWER_WORLD_MASKS_AT_STOP`). With LIVE_REUSE off this block is L1's alone.
+        journal = live and world_masks_live_reuse_setting()
+        if world_masks_at_stop_setting() and backend_factory is None:
             # Masks staged after Stop (`masks_at_stop.py`) become cache hits here, each only
             # if its inputs are this build's own. The detector device is decided ONCE: the
             # detectors this stage builds run on it, and promotion requires the staged masks'
@@ -1006,10 +1007,9 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
 
             device = MS.stage_device()
             backend_factory = functools.partial(T.default_backend_factory, device=device)
-            if world_masks_at_stop_setting():
-                MS.promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
-                                   align_records=records, solution=solution, intrinsics=intrinsics,
-                                   params=tparams, policy=policy, mode=MS.execution_mode(device))
+            MS.promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
+                               align_records=records, solution=solution, intrinsics=intrinsics,
+                               params=tparams, policy=policy, mode=MS.execution_mode(device))
             if journal:
                 backend_factory = MS.live_recorder(backend_factory, depth_dir=work / "depth",
                                                    mode=MS.execution_mode(device),

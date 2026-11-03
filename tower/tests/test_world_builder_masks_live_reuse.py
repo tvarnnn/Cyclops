@@ -103,7 +103,8 @@ def on(monkeypatch):
     monkeypatch.setenv(ENV, "on")
 
 
-def _live_build(monkeypatch, world, *, redactor=None, device="cuda", params=None, quality_live=True):
+def _live_build(monkeypatch, world, *, redactor=None, device="cuda", params=None, quality_live=True,
+                kis=None):
     """The live surface child's transient step DURING the walk (session label `none`, OneFormer
     only, the stage's own backends on the device it decides), then Stop: the real label written.
     Returns (report, the detector stub)."""
@@ -115,8 +116,9 @@ def _live_build(monkeypatch, world, *, redactor=None, device="cuda", params=None
     monkeypatch.setattr(R, "FaceRedactor", redactor or _keeps_bytes())
     monkeypatch.setattr(M, "stage_device", lambda: device)
     monkeypatch.setattr(T, "default_backend_factory", lambda component, device=None: stub(component))
-    frames = types.SimpleNamespace(items=[(ki,) for ki in range(len(world.kids))],
-                                   kids=dict(enumerate(world.kids)))
+    monkeypatch.setattr(T, "BACKEND_FACTORY", lambda component: stub(component))   # the switch-off path
+    kis = list(range(len(world.kids))) if kis is None else list(kis)
+    frames = types.SimpleNamespace(items=[(ki,) for ki in kis], kids={ki: world.kids[ki] for ki in kis})
     report = SP._ensure_transients(world.store, WORLD, SESSION, _solution(world), world.intrinsics,
                                    {"records": world.records}, world.dense / "work", frames,
                                    params or T.TransientParams(mode=T.MODE_ONEFORMER), None, None, None,
@@ -454,3 +456,162 @@ def test_the_worker_thread_cap(monkeypatch, world, value, expect):
         assert seen["env"] == base
     else:
         assert seen["env"] == {**base, "OMP_NUM_THREADS": expect, "MKL_NUM_THREADS": expect}
+
+
+# ---------------------------------------------------------------------------
+# round 2 (reviews MASKCOV.R1 / R2)
+# ---------------------------------------------------------------------------
+
+
+def test_without_masks_at_stop_a_live_build_journals_nothing(monkeypatch, world):
+    """LIVE_REUSE feeds the masks-at-Stop worker; with that switch off nothing reads a journal, so
+    none is written (and the live detectors are the stage's default, untouched)."""
+    monkeypatch.delenv(AT_STOP, raising=False)
+    monkeypatch.setenv(ENV, "on")
+    report, _ = _live_build(monkeypatch, world)
+    assert report.computed == len(world.kids)
+    assert not _journal(world).exists()
+
+
+def test_a_mask_made_with_other_library_versions_is_computed_again(monkeypatch, world, on):
+    """Same device and fp16, another torch: the versions are part of the mode a line must match."""
+    monkeypatch.setattr(M, "execution_mode", lambda device=None: dict(CUDA, torch="2.other"))
+    _live_build(monkeypatch, world)
+    assert {x["torch"] for x in _lines(world)} == {"2.other"}
+    monkeypatch.setattr(M, "execution_mode", lambda device=None: dict(CUDA))
+    summary, worker = _worker(world)
+    assert summary.get("rekeyed", 0) == 0
+    assert len(worker.computed(ONE)) == len(world.kids)
+
+
+def test_a_mask_of_another_model_revision_is_computed_again(monkeypatch, world, on):
+    (model_id, _rev), = T.COMPONENT_MODELS[ONE]
+    with monkeypatch.context() as m:
+        m.setitem(T.COMPONENT_MODELS, ONE, ((model_id, "another-revision"),))
+        _live_build(monkeypatch, world)
+    summary, worker = _worker(world)
+    assert summary.get("rekeyed", 0) == 0
+    assert len(worker.computed(ONE)) == len(world.kids)
+
+
+def _older_file_then_failed_write(monkeypatch, world, arrays):
+    """An older mask file at HAND_KI's path (another label in its key, so a live build recomputes it),
+    holding `arrays` ("same": this computation's own masks; else other ones), then a live build
+    whose write of that mask fails."""
+    depth = world.dense / "work" / "depth"
+    path = T.cache_path(depth, HAND_KI, ONE)
+    _live_build(monkeypatch, world, kis=[HAND_KI])            # this computation's masks, for "same"
+    hand, phone, rec = T.read_component(path)
+    _journal(world).unlink()
+    key = {k: v for k, v in rec.items() if k not in ("image_sha1", "computed_at", "seconds")}
+    if arrays != "same":
+        hand, phone = ~hand, ~phone
+    T.write_component(path, dict(key, redaction_effective="older&label"), hand, phone,
+                      image_sha1=rec["image_sha1"])
+    real = T.write_component
+
+    def failing(p, *a, **k):
+        if p == path:
+            raise OSError("held by another process")
+        return real(p, *a, **k)
+
+    monkeypatch.setattr(T, "write_component", failing)
+    _live_build(monkeypatch, world)
+    monkeypatch.setattr(T, "write_component", real)
+    return path
+
+
+def test_an_older_file_holding_the_same_masks_gets_no_line(monkeypatch, world, on):
+    """Only `computed_at` tells this file is not this computation's write: the masks are equal."""
+    path = _older_file_then_failed_write(monkeypatch, world, "same")
+    assert path.name not in {x["f"] for x in _lines(world)}
+    assert len(_lines(world)) == len(world.kids) - 1
+
+
+def test_a_fresh_file_holding_other_masks_gets_no_line(monkeypatch, world, on):
+    """Written after the call (fresh `computed_at`), but not these masks: another writer's."""
+    depth = world.dense / "work" / "depth"
+    path = T.cache_path(depth, HAND_KI, ONE)
+    real = T.write_component
+
+    def other(p, key, hand, phone, **k):
+        if p == path:
+            return real(p, key, ~np.asarray(hand, bool), ~np.asarray(phone, bool), **k)
+        return real(p, key, hand, phone, **k)
+
+    monkeypatch.setattr(T, "write_component", other)
+    _live_build(monkeypatch, world)
+    monkeypatch.setattr(T, "write_component", real)
+    assert path.name not in {x["f"] for x in _lines(world)}
+    assert len(_lines(world)) == len(world.kids) - 1
+
+
+def test_the_worker_runs_the_reusable_frames_first(monkeypatch, world, on):
+    """`prefill` hands `keyframe_order` the reusable frames: they lead the GPU loop."""
+    _live_build(monkeypatch, world, kis=[5, 6, 7])
+    summary, worker = _worker(world)
+    assert summary["rekeyed"] == 3
+    assert worker.computed(GDSAM) == [5, 6, 7, 0, 1, 2, 3, 4]
+    assert worker.computed(ONE) == [0, 1, 2, 3, 4]
+
+
+def test_a_recorder_that_fails_costs_the_journal_not_the_live_build(monkeypatch, world, on):
+    def broken(data):
+        raise ValueError("an unforeseen failure while checking the write")
+
+    monkeypatch.setattr(M, "_decode_component", broken)
+    report, _ = _live_build(monkeypatch, world)
+    assert report.state == T.STATE_OK and report.computed == len(world.kids)
+    assert _lines(world) == []
+
+
+# ---------------------------------------------------------------------------
+# evidence for verification (TOWER_WORLD_MASKS_AT_STOP_EVIDENCE)
+# ---------------------------------------------------------------------------
+
+EVIDENCE = "TOWER_WORLD_MASKS_AT_STOP_EVIDENCE"
+
+
+def test_without_the_evidence_switch_nothing_is_kept(monkeypatch, world, on):
+    monkeypatch.delenv(EVIDENCE, raising=False)
+    _live_build(monkeypatch, world)
+    _worker(world)
+    _final(world, PixelStub(), promote=True)
+    assert not M.evidence_dir(world.store, WORLD, SESSION).exists()
+
+
+def test_evidence_keeps_every_promoted_mask_and_its_fill_past_the_prune(monkeypatch, world, on):
+    import shutil
+
+    monkeypatch.setenv(EVIDENCE, "on")
+    _live_build(monkeypatch, world)
+    _worker(world)
+    _, promoted = _final(world, PixelStub(), promote=True)
+    root = M.evidence_dir(world.store, WORLD, SESSION)
+    lines = [json.loads(x) for x in (root / M.EVIDENCE_LISTING).read_text().splitlines()]
+    assert promoted["promoted"] == len(lines) == 2 * len(world.kids)
+    assert sorted((x["component"], x["from"]) for x in lines) == sorted(
+        [(ONE, M.LIVE_ORIGIN)] * len(world.kids) + [(GDSAM, "worker")] * len(world.kids))
+    assert all(x["mode"] == CUDA for x in lines)
+    depth = world.dense / "work" / "depth"
+    kept = {x["f"]: (root / x["f"]).read_bytes() for x in lines}
+    assert all(kept[n] == (depth / n).read_bytes() for n in kept)
+    fills = {n: np.load(depth / n) for n in (f"{ki:05d}_fill.npy" for ki in range(len(world.kids)))}
+    shutil.rmtree(world.dense / "work")                        # the final's prune
+    assert all((root / n).read_bytes() == b for n, b in kept.items())
+    assert all(np.array_equal(np.load(root / n), f) for n, f in fills.items())
+    assert T.read_component(root / T.cache_path(root, HAND_KI, ONE).name)[2]["staged_from"] == M.LIVE_ORIGIN
+
+
+def test_evidence_that_cannot_be_kept_costs_no_promotion(monkeypatch, world, on):
+    monkeypatch.setenv(EVIDENCE, "on")
+    _live_build(monkeypatch, world)
+    _worker(world)
+
+    def broken(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(M, "_keep", broken)
+    stage = PixelStub()
+    warm, promoted = _final(world, stage, promote=True)
+    assert promoted["promoted"] == 2 * len(world.kids) and stage.calls == []

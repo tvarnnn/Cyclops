@@ -123,6 +123,8 @@ RUN_ID_HEX = 8
 INDEX_FILENAME = "index.json"
 MODES_FILENAME = "modes.jsonl"
 LIVE_JOURNAL = "transient_live.jsonl"     # beside the live build's masks (see LIVE MASKS)
+LIVE_ORIGIN = "live-surface"              # `staged_from` of a re-keyed live mask's record
+EVIDENCE_LISTING = "promoted.jsonl"
 CHUNK_FRAMES = 256
 
 LOG = "[Tower][WorldBuilder][masks-at-stop]"
@@ -140,6 +142,25 @@ def sources_path(store, world_id: str, session_id: str) -> Path:
     digest of the world AND the session (two worlds' sessions never share or delete one)."""
     key = hashlib.sha1(f"{world_id}/{session_id}".encode()).hexdigest()[:16]
     return staging_root(store) / f"sources-{key}.json"
+
+
+def evidence_dir(store, world_id: str, session_id: str) -> Path:
+    """Where `promote` keeps what it promoted when `TOWER_WORLD_MASKS_AT_STOP_EVIDENCE` is on: each
+    mask moved into the cache and its frame's final fill, hard-linked (they outlive the prune of
+    `work/`), and `promoted.jsonl`. Never an 8-hex name, so no discard ever removes it."""
+    key = hashlib.sha1(f"{world_id}/{session_id}".encode()).hexdigest()[:16]
+    return staging_root(store) / f"evidence-{key}"
+
+
+def _keep(src: Path, dst: Path) -> None:
+    """`dst` as a hard link to `src` (same volume), else a copy; an existing `dst` is replaced."""
+    import shutil  # noqa: PLC0415
+
+    dst.unlink(missing_ok=True)
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
 
 
 def _is_run_name(name: str) -> bool:
@@ -455,7 +476,7 @@ class _LiveRecorder(T.ComponentBackend):
                                   sort_keys=True)
                 with open(self.journal, "a", encoding="utf-8") as fh:
                     fh.write(line + "\n")
-            except OSError:
+            except Exception:  # noqa: BLE001 -- an optimisation: no line, the mask is computed at Stop
                 pass
 
         return self.inner.run(items, params, noted, should_stop)
@@ -711,9 +732,10 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
                 continue
             path = T.cache_path(run_dir, ki, T.COMPONENT_ONEFORMER)
             try:
-                T.write_component(path, T.component_key(T.COMPONENT_ONEFORMER, params, keyframe_id=rec["kid"],
-                                                        source_sha1=sha, redaction_effective=policy.effective),
-                                  hand, phone, image_sha1=sha)
+                key = T.component_key(T.COMPONENT_ONEFORMER, params, keyframe_id=rec["kid"],
+                                      source_sha1=sha, redaction_effective=policy.effective)
+                # `staged_from` is provenance, not key: readers match only the key's fields.
+                T.write_component(path, dict(key, staged_from=LIVE_ORIGIN), hand, phone, image_sha1=sha)
                 with open(run_dir / MODES_FILENAME, "a", encoding="utf-8") as fh:
                     fh.write(json.dumps(dict(mask_mode(mode["device"]), f=path.name)) + "\n")
             except OSError:
@@ -840,6 +862,7 @@ def _promote_run(store, world_id, session_id, staging: Path, index: dict, *, dep
         _log_promote(world_id, session_id, out)
         return out
     undistorter = A.Undistorter(intrinsics, camera)
+    evidence = _evidence_keeper(store, world_id, session_id, depth_dir, staging.name, mode)
     modes = _read_modes(staging)
     source_sha1: dict = {}
     for path in files:
@@ -887,8 +910,40 @@ def _promote_run(store, world_id, session_id, staging: Path, index: dict, *, dep
             refuse("write")
             continue
         out["promoted"] += 1
+        if evidence is not None:
+            evidence(target, ki, kid, component, got[2].get("staged_from") or "worker")
     _log_promote(world_id, session_id, out)
     return out
+
+
+def _evidence_keeper(store, world_id, session_id, depth_dir: Path, run: str, mode: dict):
+    """With `TOWER_WORLD_MASKS_AT_STOP_EVIDENCE` on, a function keeping one promoted mask (and its
+    frame's final fill) in `evidence_dir` with a `promoted.jsonl` line; else None. Never raises:
+    evidence is for verification and must not cost the build anything but the copies."""
+    from tower.config import world_masks_at_stop_evidence_setting  # noqa: PLC0415
+
+    if not world_masks_at_stop_evidence_setting():
+        return None
+    root = evidence_dir(store, world_id, session_id)
+    failed = []
+
+    def keep(target: Path, ki: int, kid: str, component: str, origin: str) -> None:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            _keep(target, root / target.name)
+            fill = root / f"{ki:05d}_fill.npy"
+            if not fill.exists():
+                _keep(Path(depth_dir) / fill.name, fill)
+            line = json.dumps({"f": target.name, "ki": ki, "kid": kid, "component": component,
+                               "from": origin, "run": run, "mode": mode}, sort_keys=True)
+            with open(root / EVIDENCE_LISTING, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+        except Exception:  # noqa: BLE001 -- verification aid only
+            if not failed:
+                failed.append(True)
+                logger.exception("%s %s/%s: keeping promotion evidence failed", LOG, world_id, session_id)
+
+    return keep
 
 
 def _log_promote(world_id, session_id, out) -> None:
