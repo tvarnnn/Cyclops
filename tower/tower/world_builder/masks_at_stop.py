@@ -18,7 +18,7 @@ TWO HALVES, AND THE CACHE IS NEVER WRITTEN BY THE FIRST.
    the final solve returns (`scripts/world_masks_at_stop.py`). It calls the transient stage
    UNCHANGED -- `ensure_transient_masks`, the same backends, batch 1, the same fp16 -- on
    chunks of keyframes, most-likely-needed first, with `depth_dir` = a STAGING directory of
-   its own, `dense/<sid>/work/masks_at_stop/run-<token>/`. The masks it writes there are the cache's own files
+   its own, `<store root>/masks_at_stop/<run id>/`. The masks it writes there are the cache's own files
    under the cache's own key (`transients.component_key`), so the manifest's
    `frames_digest` of a build that uses them is the one it would have had anyway.
 2. `promote` runs in the final surface stage after its depth stage, just before its
@@ -31,13 +31,21 @@ TWO HALVES, AND THE CACHE IS NEVER WRITTEN BY THE FIRST.
    staged and the stage computes it exactly as it does today. Then `ensure_transient_masks`
    finds hits.
 
-ONE RUN'S FILES, NEVER TWO. The index describes ONE prefill run (its calibration, camera,
-execution mode), and a staged mask's key does not carry its fill or its calibration. So every
-run stages into a directory of its own, `run-<token>`, created exclusively (`os.mkdir`, which
-fails if the name exists: two runs, even at the same moment, never share one), and its index
-names that token. `promote` reads exactly one run: the one whose complete index (written
-whole, by replace) is newest. A mask of another run -- earlier, or interleaved with this one
--- is never checked against this run's index or fills.
+ONE RUN'S FILES, NEVER TWO. The index describes ONE prefill run (its world, session,
+calibration, camera, execution mode), and a staged mask's key does not carry its fill or its
+calibration. So every run stages into a directory of its own, an 8-hex run id created
+exclusively (`os.mkdir`, which fails if the name exists: two runs, even at the same moment,
+never share one), and its index names that id. `promote` reads exactly one run: the one of
+this session whose complete index (written whole, by replace) is newest. A mask of another
+run -- earlier, or interleaved with this one -- is never checked against this run's index or
+fills. After promoting, the session's runs are removed (and by the builder when no surface
+stage follows).
+
+SHORT PATHS (Windows MAX_PATH, 260). The staging lives at the STORE ROOT, not under
+`worlds/<wid>/dense/<sid>/work/` (two 32-hex ids and four directories: 99 characters before
+any file, which put a staged mask's temp file at 278 characters on a bench root). The longest
+staging path is `<store root>/masks_at_stop/<8 hex>/<ki>_transient.oneformer.npz.p<pid>.tmp`:
+the store root plus 66 characters (`test_..._paths_stay_short`).
 
 THE EXECUTION MODE OF EVERY MASK. The key has no device or dtype, and the stage's backends
 choose CUDA (fp16 forward calls) or the CPU (fp32) when they run. The worker's backends are
@@ -45,6 +53,8 @@ held to CUDA (`device="cuda"`: a forward call that cannot run there fails, it ne
 the CPU), the worker declines outright without a CUDA device, and every mask it stages gets a
 `<name>.mode.json` beside it naming the device and dtype it was computed with. `promote`
 requires that record, and the index's (device, fp16, library versions), to equal the stage's.
+The records are one line each in the run's `modes.jsonl`, appended after the mask is written;
+a torn last line is a missing record.
 
 THE ONE INPUT NOT FIXED AT STOP IS THE FILL MASK. Grounding DINO + SAM drops a mask that
 lies mostly inside redaction fill (`filter_instance_masks`), so the cached gdsam masks depend
@@ -88,34 +98,40 @@ from tower.world_builder import transients as T
 
 logger = logging.getLogger(__name__)
 
-SCHEMA = 2
+SCHEMA = 3
 STAGING_DIRNAME = "masks_at_stop"
-RUN_PREFIX = "run-"
+RUN_ID_HEX = 8
 INDEX_FILENAME = "index.json"
-SOURCES_FILENAME = "sources.json"
-MODE_SUFFIX = ".mode.json"
+MODES_FILENAME = "modes.jsonl"
 CHUNK_FRAMES = 256
 
 LOG = "[Tower][WorldBuilder][masks-at-stop]"
 
 
-def staging_dir(store, world_id: str, session_id: str) -> Path:
-    """`dense/<sid>/work/masks_at_stop`: the builder's `sources.json` and one `run-<token>`
-    directory per prefill run. Inside the depth work, so `prune_intermediates` removes what is
-    left of it with the rest of the work."""
-    from tower.world_builder.dense_pipeline import dense_dir  # noqa: PLC0415
-
-    return dense_dir(store, world_id, session_id) / "work" / STAGING_DIRNAME
+def staging_root(store) -> Path:
+    """`<store root>/masks_at_stop`: one directory per prefill run (any world, any session; each
+    run's index says whose), and the builder's raw-frame paths per session. At the store root,
+    beside the depth `predictions` cache, to keep every path short (see SHORT PATHS)."""
+    return Path(store.root) / STAGING_DIRNAME
 
 
-def new_run_dir(staging: Path) -> Path:
-    """A run directory no other run has or will have: a token of the clock, the pid and a
-    random part, created with `os.mkdir`, which fails rather than reuse an existing name."""
+def sources_path(store, session_id: str) -> Path:
+    """The builder's `keyframe_id -> raw frame path` for one session's worker."""
+    return staging_root(store) / f"sources-{session_id}.json"
+
+
+def _is_run_name(name: str) -> bool:
+    return len(name) == RUN_ID_HEX and all(c in "0123456789abcdef" for c in name)
+
+
+def new_run_dir(root: Path) -> Path:
+    """A run directory no other run has or will have: a random 8-hex id, created with
+    `os.mkdir`, which fails rather than reuse an existing name (a taken id is drawn again)."""
     import uuid  # noqa: PLC0415
 
-    staging.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, exist_ok=True)
     while True:
-        path = staging / f"{RUN_PREFIX}{time.time_ns():x}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
+        path = root / uuid.uuid4().hex[:RUN_ID_HEX]
         try:
             os.mkdir(path)
             return path
@@ -123,26 +139,46 @@ def new_run_dir(staging: Path) -> Path:
             continue
 
 
-def latest_run(staging: Path):
-    """`(run dir, its index)` of the run with the newest complete index, or None. An index is
-    whole or absent (written by replace) and names its own directory; anything else is not a
-    run of this module and is never read."""
-    best = None
+def session_runs(root: Path, world_id: str, session_id: str) -> list:
+    """`[(run dir, its index)]` for every run of this session with a complete index. An index is
+    whole or absent (written by replace), names its own directory and its world and session;
+    anything else is not this session's run and is never read."""
+    out = []
     try:
-        candidates = [p for p in staging.iterdir() if p.is_dir() and p.name.startswith(RUN_PREFIX)]
+        candidates = [p for p in root.iterdir() if p.is_dir() and _is_run_name(p.name)]
     except OSError:
-        return None
+        return out
     for run in candidates:
         try:
             index = json.loads((run / INDEX_FILENAME).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if not isinstance(index, dict) or index.get("run") != run.name:
-            continue
-        rank = (float(index.get("started_at") or 0.0), run.name)
-        if best is None or rank > best[0]:
-            best = (rank, run, index)
-    return None if best is None else (best[1], best[2])
+        if (isinstance(index, dict) and index.get("run") == run.name
+                and index.get("world_id") == world_id and index.get("session_id") == session_id):
+            out.append((run, index))
+    return out
+
+
+def latest_run(root: Path, world_id: str, session_id: str):
+    """`(run dir, its index)` of this session's run with the newest complete index, or None."""
+    runs = session_runs(root, world_id, session_id)
+    if not runs:
+        return None
+    return max(runs, key=lambda r: (float(r[1].get("started_at") or 0.0), r[0].name))
+
+
+def discard_session(store, world_id: str, session_id: str) -> None:
+    """Remove this session's runs and its raw-frame paths; never raises. A run of another
+    session, or one too young to have an index, is left alone."""
+    import shutil  # noqa: PLC0415
+
+    root = staging_root(store)
+    for run, _index in session_runs(root, world_id, session_id):
+        shutil.rmtree(run, ignore_errors=True)
+    try:
+        sources_path(store, session_id).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def log_path(store, world_id: str, session_id: str) -> Path:
@@ -302,9 +338,9 @@ def mask_mode(device: str) -> dict:
 
 
 class _HeldToCuda(T.ComponentBackend):
-    """The stage's backend, run on CUDA only, writing each emitted mask's execution mode beside
-    it. The record is written after the mask (`emit` writes it), so a mask without one -- a kill
-    in between -- is never promoted."""
+    """The stage's backend, run on CUDA only, appending each emitted mask's execution mode to
+    the run's `modes.jsonl`. The record is written after the mask (`emit` writes it), so a mask
+    without one -- a kill in between -- is never promoted."""
 
     def __init__(self, inner, run_dir: Path):
         self.inner = inner
@@ -318,20 +354,22 @@ class _HeldToCuda(T.ComponentBackend):
     def run(self, items, params, emit, should_stop=None):
         def noted(ki, hand, phone, seconds):
             emit(ki, hand, phone, seconds)
-            _write_json(Path(f"{T.cache_path(self.run_dir, ki, self.component)}{MODE_SUFFIX}"), self.mode)
+            line = json.dumps(dict(self.mode, f=T.cache_path(self.run_dir, ki, self.component).name))
+            with open(self.run_dir / MODES_FILENAME, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
 
         return self.inner.run(items, params, noted, should_stop)
 
 
 def _save_atomic(path: Path, array) -> None:
-    tmp = path.with_name(f"{path.name}.p{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.t")
     with open(tmp, "wb") as fh:
         np.save(fh, array)
     os.replace(tmp, path)
 
 
 def _write_json(path: Path, doc: dict) -> None:
-    tmp = path.with_name(f"{path.name}.p{os.getpid()}.tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.t")
     tmp.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     os.replace(tmp, path)
 
@@ -340,15 +378,25 @@ def _write_index(staging: Path, doc: dict) -> None:
     _write_json(staging / INDEX_FILENAME, doc)
 
 
-def write_sources(staging: Path, sources: dict) -> None:
+def write_sources(store, session_id: str, sources: dict) -> None:
     """The builder's `keyframe_id -> raw frame path`, as `run_final` hands it to the final
     solve's `sources.json`: the worker reads raw frames exactly where the depth stage will."""
-    _write_json(staging / SOURCES_FILENAME, {"sources": {k: str(v) for k, v in sources.items()}})
+    path = sources_path(store, session_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _write_json(path, {"sources": {k: str(v) for k, v in sources.items()}})
+
+
+def read_sources(store, session_id: str) -> dict:
+    try:
+        doc = json.loads(sources_path(store, session_id).read_text(encoding="utf-8"))
+        return dict(doc.get("sources") or {})
+    except (OSError, ValueError, AttributeError):
+        return {}
 
 
 def prefill(store, world_id: str, session_id: str, *, sources: dict | None = None,
             should_stop=None, backend_factory=None, chunk: int = CHUNK_FRAMES) -> dict:
-    """Stage the final build's transient masks in a new run directory under `staging_dir`,
+    """Stage the final build's transient masks in a new run directory under `staging_root`,
     most-likely-needed first, until done or `should_stop()`. The detector backends are held to
     CUDA. Never writes the real cache. Returns a summary dict (also the run's index).
     `backend_factory` (tests): the backends to hold, instead of the stage's own on CUDA."""
@@ -358,13 +406,14 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
     from tower.world_builder.surface import SurfaceParams  # noqa: PLC0415
 
     t0 = time.time()
-    run_dir = new_run_dir(staging_dir(store, world_id, session_id))
+    run_dir = new_run_dir(staging_root(store))
     surface_params = SurfaceParams()
     params = T.TransientParams(mode=surface_params.transient_detector)
     imagery_source = surface_params.imagery_source
     mode = execution_mode()
     summary = {"schema": SCHEMA, "run": run_dir.name, "world_id": world_id, "session_id": session_id,
                "rule": params.rule_id(), "execution": mode, "started_at": t0, "state": "running"}
+    _write_index(run_dir, summary)          # at once: the run is this session's from its start
 
     def done(state, detail=None, **more):
         summary.update(state=state, detail=detail, seconds=round(time.time() - t0, 3), **more)
@@ -465,21 +514,46 @@ def _same_array(a: Path, b: Path) -> bool:
 
 def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: dict, solution,
             intrinsics, params: T.TransientParams, policy, mode: dict | None = None) -> dict | None:
-    """Move every staged mask whose inputs are the final's own into the real cache.
+    """Move every staged mask of this session's newest run whose inputs are the final's own into
+    the real cache, then remove the session's runs (what was not promoted is never used).
 
     None when nothing was staged. Otherwise a record of what happened, also logged:
     `promoted`, `already` (the cache held it under the final key), `refused` by reason. A
-    refused mask stays where it is and the transient stage computes it as it always has.
+    refused mask is not promoted and the transient stage computes it as it always has.
     `mode`: the `execution_mode` of the detectors the calling stage will build -- the surface
     stage passes the device it decided once and builds its detectors on; None reads it now."""
+    latest = latest_run(staging_root(store), world_id, session_id)
+    try:
+        if latest is None:
+            return None
+        return _promote_run(store, world_id, session_id, *latest, depth_dir=Path(depth_dir),
+                            align_records=align_records, solution=solution, intrinsics=intrinsics,
+                            params=params, policy=policy, mode=mode)
+    finally:
+        discard_session(store, world_id, session_id)
+
+
+def _read_modes(run: Path) -> dict:
+    """`{mask file name: {device, fp16}}` from the run's `modes.jsonl`; a torn line is skipped."""
+    out = {}
+    try:
+        lines = (run / MODES_FILENAME).read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return out
+    for line in lines:
+        try:
+            rec = json.loads(line)
+            out[rec.pop("f")] = rec
+        except (ValueError, KeyError, AttributeError, TypeError):
+            continue
+    return out
+
+
+def _promote_run(store, world_id, session_id, staging: Path, index: dict, *, depth_dir: Path,
+                 align_records, solution, intrinsics, params, policy, mode) -> dict:
     from tower.world_builder import appearance as A  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import FILL_RULE  # noqa: PLC0415
 
-    depth_dir = Path(depth_dir)
-    latest = latest_run(depth_dir.parent / STAGING_DIRNAME)
-    if latest is None:
-        return None
-    staging, index = latest
     out = {"run": staging.name, "staged": 0, "promoted": 0, "already": 0, "refused": {}}
 
     def refuse(why):
@@ -508,6 +582,7 @@ def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: 
         _log_promote(world_id, session_id, out)
         return out
     undistorter = A.Undistorter(intrinsics, camera)
+    modes = _read_modes(staging)
     source_sha1: dict = {}
     for path in files:
         try:
@@ -545,11 +620,7 @@ def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: 
         if not _same_array(staging / f"{ki:05d}_fill.npy", depth_dir / f"{ki:05d}_fill.npy"):
             refuse("fill")
             continue
-        try:
-            computed_with = json.loads(Path(f"{path}{MODE_SUFFIX}").read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            computed_with = None
-        if computed_with != mask_mode(mode.get("device")):
+        if modes.get(path.name) != mask_mode(mode.get("device")):
             refuse("mask-mode")
             continue
         try:
