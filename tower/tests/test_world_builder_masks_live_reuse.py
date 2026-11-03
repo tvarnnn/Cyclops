@@ -413,3 +413,45 @@ def test_a_reused_mask_that_cannot_be_staged_is_computed_by_the_worker(monkeypat
     monkeypatch.setattr(T, "write_component", real)
     assert summary["state"] == "done" and summary["rekeyed"] == len(world.kids) - 1
     assert stub.computed(ONE) == [HAND_KI]
+
+
+# ---------------------------------------------------------------------------
+# the worker's CPU threads (TOWER_WORLD_MASKS_AT_STOP_THREADS)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("value, expect", [(None, None), ("", None), ("0", None), ("x", None), ("-2", None),
+                                           ("4", "4")])
+def test_the_worker_thread_cap(monkeypatch, world, value, expect):
+    """Unset (or 0, or garbage) leaves the worker's environment exactly the builder's child
+    environment; N starts it with OMP_NUM_THREADS = MKL_NUM_THREADS = N."""
+    from tests.test_world_builder_masks_at_stop import _builder_module
+
+    wbs = _builder_module("wbs_masks_threads_test")
+    monkeypatch.setenv(AT_STOP, "on")
+    if value is None:
+        monkeypatch.delenv("TOWER_WORLD_MASKS_AT_STOP_THREADS", raising=False)
+    else:
+        monkeypatch.setenv("TOWER_WORLD_MASKS_AT_STOP_THREADS", value)
+    seen = {}
+
+    class Child:
+        pid, returncode = 4242, None
+
+        def poll(self):
+            return self.returncode
+
+    def spawn(*a, **k):
+        seen.update(k)
+        return Child()
+
+    monkeypatch.setattr(wbs, "_terminate_process_tree", lambda p: None)
+    worker = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
+                                         sources={}, wanted=True, spawn=spawn)
+    assert worker is not None
+    worker.close()
+    base = wbs.child_environment()
+    if expect is None:
+        assert seen["env"] == base
+    else:
+        assert seen["env"] == {**base, "OMP_NUM_THREADS": expect, "MKL_NUM_THREADS": expect}

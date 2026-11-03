@@ -1049,6 +1049,21 @@ def world_masks_live_reuse_setting() -> bool:
     return _flag(WORLD_MASKS_LIVE_REUSE_ENV, default=False)
 
 
+# THE MASKS-AT-STOP WORKER'S CPU THREADS. Its detectors run on the GPU, yet torch's default intra-op
+# pool (one OpenMP worker per logical CPU, twenty on the Tower) keeps ~16 cores spinning between
+# kernel launches -- the effect `TOWER_CV_TORCH_THREADS` caps for the CV Lab -- and the worker runs
+# beside the final solve, whose matching wants every core. A positive integer N starts the worker
+# with OMP_NUM_THREADS = MKL_NUM_THREADS = N (measured at 4 on walk 10.2: ~3.4 cores instead of
+# ~16, the same masks per second, the staged masks byte-identical). Unset, blank, 0 or garbage:
+# the worker's environment is untouched, as before.
+WORLD_MASKS_AT_STOP_THREADS_ENV = "TOWER_WORLD_MASKS_AT_STOP_THREADS"
+
+
+def world_masks_at_stop_threads_setting() -> int:
+    """`TOWER_WORLD_MASKS_AT_STOP_THREADS`: the worker's CPU thread cap; 0 = torch's default."""
+    return _non_negative_int(os.environ.get(WORLD_MASKS_AT_STOP_THREADS_ENV), default=0)
+
+
 # The PREVIEW (WORLD-BUILDER-WORLDS.md §4a `basis`, rule 8). Read per request by the render revision
 # route. Off: the revision body is byte for byte as before (no `basis` key).
 WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"
