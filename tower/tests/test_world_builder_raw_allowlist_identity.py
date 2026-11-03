@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import pytest
@@ -40,6 +41,14 @@ import pytest
 import tests.test_world_builder_appearance as TWA
 import tests.test_world_builder_photos_after_stop_identity as ID
 from tests.test_world_builder_appearance import SESSION, TRUSTED, UNGATED, World, _never_redact
+
+# At collection, never inside a test. Every scenario patches `TWA.WORLD` to HEX,
+# and a module imported for the first time inside that window copies HEX for good:
+# this one binds `WORLD` by value and as `write_components`' default, and the
+# patch's undo restores only `TWA` and `ID`. Imported lazily, it moved the photos
+# identity file's seven area scenarios onto world HEX whenever this file ran
+# first. `test_the_patched_world_id_was_copied_nowhere` pins it.
+from tests.test_world_builder_components_areas import _entries, write_components
 from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import raw_imagery as RAWIMG
@@ -127,7 +136,6 @@ def _then(make, *steps):
 def _with_area(make, raw: bool):
     """`make`, then an area built by the real pipeline through `AreaStore`."""
     def run(tmp_path, log):
-        from tests.test_world_builder_components_areas import _entries, write_components
         from tower.world_builder import components as C
 
         w = make(tmp_path, log)
@@ -214,6 +222,33 @@ def test_every_other_payload_is_byte_identical_to_ba5f138(name, tmp_path, monkey
     moved = [variant for variant, value in sorted(_variants(raw_env, raw_artifact).items())
              if _observe(w, log, monkeypatch, value) != expected]
     assert moved == [], f"{name}: the payload moved under {moved}"
+
+
+def _copies_of(value: str) -> list[str]:
+    """Every global, and every function default, of a loaded `tests.*` module that
+    holds `value`, outside the modules that spell it themselves (`HEX`): what a
+    patch to `value` left behind after its undo."""
+    def holds(v):
+        return isinstance(v, str) and v == value
+
+    out = []
+    for name, module in sorted(sys.modules.items()):
+        if not name.startswith("tests.") or module is None or holds(getattr(module, "HEX", None)):
+            continue
+        for attr, v in list(vars(module).items()):
+            defaults = [*(getattr(v, "__defaults__", None) or ()),
+                        *(getattr(v, "__kwdefaults__", None) or {}).values()]
+            if holds(v) or any(holds(d) for d in defaults):
+                out.append(f"{name}.{attr}")
+    return out
+
+
+def test_the_patched_world_id_was_copied_nowhere():
+    """Runs after the scenarios (file order): their `WORLD` patch is undone, and
+    no other test module may still hold HEX. One that does serves its own tests
+    world HEX -- this file, run first, used to fail the photos identity file's
+    seven area scenarios that way (see the components-areas import above)."""
+    assert _copies_of(HEX) == []
 
 
 def test_the_scenarios_cover_both_sides_of_the_list():

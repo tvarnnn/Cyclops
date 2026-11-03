@@ -20,6 +20,13 @@ import pytest
 
 import tests.test_world_builder_appearance as TWA
 from tests.test_world_builder_appearance import SESSION, World, _app, _never_redact
+
+# At collection, never inside a test: the `world` fixture patches `TWA.WORLD` to
+# HEX, and this module, imported for the first time inside that window, would
+# keep HEX for good (as `WORLD` and as `write_components`' default) -- run before
+# the photos identity file, that failed its seven area scenarios.
+from tests.test_world_builder_components_areas import _entries, write_components
+from tests.test_world_builder_raw_allowlist_identity import _copies_of
 from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import raw_imagery as RAWIMG
@@ -308,7 +315,6 @@ def test_a_research_tower_is_unchanged_by_the_list(world, monkeypatch):
 
 
 def _raw_area(world):
-    from tests.test_world_builder_components_areas import _entries, write_components
     from tower.world_builder import components as C
 
     TWA._paint_forbidden_sources(world)
@@ -404,3 +410,9 @@ def test_the_build_clis_resolve_redacted_with_the_list_set(monkeypatch):
     monkeypatch.setenv(ENV, HEX)
     assert SURF._imagery_from_args(argparse.Namespace(imagery_source=None)) == RED
     assert RAWIMG.imagery_source_from_env() == RED
+
+
+def test_the_patched_world_id_was_copied_nowhere():
+    """Runs last (file order): the `world` fixture's `WORLD` patch is undone, and no
+    other test module may still hold HEX (see the components-areas import above)."""
+    assert _copies_of(HEX) == []
