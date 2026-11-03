@@ -52,6 +52,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from tower.config import world_surface_edge_key_setting
 from tower.world_builder.raw_imagery import IMAGERY_REDACTED
 
 
@@ -3038,6 +3039,12 @@ def face_evidence_components(*, sup, thru, wmin, parallax, resid_rms,
     return out
 
 
+def _packed_edge_keys(key, n):
+    # max(lo * n + hi) is n**2 - 1; reject meshes that could wrap int64.
+    assert n * n <= np.iinfo(np.int64).max, "edge key exceeds int64"
+    return key[:, 0] * np.int64(n) + key[:, 1]
+
+
 def mesh_geometry_components(V, F) -> dict:
     """The three things a level's own triangles say about themselves.
 
@@ -3084,7 +3091,11 @@ def mesh_geometry_components(V, F) -> dict:
     # A boundary edge belongs to exactly one face; its endpoints are the rim.
     ends = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]], 0)
     key = np.sort(ends, axis=1)
-    _u, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    if world_surface_edge_key_setting():
+        key = _packed_edge_keys(key, n)
+        _u, inv, counts = np.unique(key, return_inverse=True, return_counts=True)
+    else:
+        _u, inv, counts = np.unique(key, axis=0, return_inverse=True, return_counts=True)
     bedge = counts[inv.reshape(-1)] == 1
     onrim = np.zeros(n, bool)
     onrim[ends[bedge].reshape(-1)] = True

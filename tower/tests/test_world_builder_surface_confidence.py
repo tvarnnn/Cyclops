@@ -168,6 +168,51 @@ class TestWhatWasMeasuredAndNotBelieved:
 
 class TestTheTrianglesGradeThemselves:
 
+    def test_packed_edge_key_keeps_rim_confidence_and_written_bytes(self, monkeypatch,
+                                                                   tmp_path):
+        V, F = _grid(nx=7, ny=7)
+        # Repeated, degenerate, and non-manifold edges, including reverse order.
+        F = np.concatenate([F, np.array([[0, 1, 2], [2, 1, 0],
+                                          [0, 1, 8], [3, 3, 4]])])
+        V = np.concatenate([V, np.array([[2, 2, 0]], np.float32)])
+        ends = np.concatenate([F[:, [0, 1]], F[:, [1, 2]], F[:, [2, 0]]])
+        key = np.sort(ends, axis=1)
+        _, inv, counts = np.unique(key, axis=0, return_inverse=True,
+                                   return_counts=True)
+        expected_rim = np.zeros(len(V), bool)
+        expected_rim[ends[counts[inv] == 1].ravel()] = True
+
+        evidence = np.linspace(0.1, 0.95, len(V))
+        outputs = []
+        for setting in (None, "0", "1"):
+            if setting is None:
+                monkeypatch.delenv("TOWER_WORLD_SURFACE_EDGE_KEY", raising=False)
+            else:
+                monkeypatch.setenv("TOWER_WORLD_SURFACE_EDGE_KEY", setting)
+            components = S.mesh_geometry_components(V, F)
+            assert np.array_equal(components["rim"] == 0, expected_rim)
+            confidence = S.vertex_confidence(V, F, evidence)
+            mesh = S.write_mesh_bytes(V, F, np.zeros((len(V), 3), np.uint8),
+                                      S.vertex_normals(V, F))
+            root = tmp_path / ("default" if setting is None else setting)
+            root.mkdir()
+            (root / "mesh_l0.bin").write_bytes(mesh)
+            (root / "conf_l0.bin").write_bytes(S.write_confidence_bytes(confidence))
+            outputs.append((components, confidence, root))
+
+        for components, confidence, root in outputs[1:]:
+            assert all(np.array_equal(components[k], outputs[0][0][k])
+                       for k in ("shape", "rim", "normal"))
+            assert np.array_equal(confidence, outputs[0][1])
+            for name in ("mesh_l0.bin", "conf_l0.bin"):
+                assert (root / name).read_bytes() == (outputs[0][2] / name).read_bytes()
+
+    def test_packed_edge_key_checks_int64_capacity(self):
+        key = np.array([[9_999_998, 9_999_999]], np.int64)
+        assert S._packed_edge_keys(key, 10_000_000)[0] == 99_999_989_999_999
+        with pytest.raises(AssertionError, match="int64"):
+            S._packed_edge_keys(key, 3_037_000_500)
+
     def test_a_stretched_triangle_scores_below_an_equilateral_one(self):
         square = S.mesh_geometry_components(*_grid())["shape"]
         sliver = S.mesh_geometry_components(*_grid(stretch=40.0))["shape"]
@@ -334,6 +379,22 @@ class TestThroughTheBuild:
                                         lod_face_targets=(0, 400), mobile_level=1, **kw))
         assert r.state == SP.STATE_OK, r.detail
         return store, SP.read_surface_manifest(store, WORLD, SESSION)
+
+    def test_edge_key_switch_keeps_every_packed_level_byte(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TOWER_WORLD_SURFACE_EDGE_KEY", "0")
+        old_store, old = self._build(tmp_path, "edge-off")
+        monkeypatch.setenv("TOWER_WORLD_SURFACE_EDGE_KEY", "1")
+        new_store, new = self._build(tmp_path, "edge-on")
+        assert len(old["levels"]) == len(new["levels"])
+        for old_level, new_level in zip(old["levels"], new["levels"]):
+            old_root = SP.surface_dir(old_store, WORLD, SESSION)
+            new_root = SP.surface_dir(new_store, WORLD, SESSION)
+            assert old_level["vertices"] == new_level["vertices"]
+            assert old_level["faces"] == new_level["faces"]
+            assert (old_root / old_level["file"]).read_bytes() == (
+                new_root / new_level["file"]).read_bytes()
+            assert SP.confidence_file(old_root, old_level).read_bytes() == (
+                SP.confidence_file(new_root, new_level).read_bytes())
 
     def test_every_level_publishes_a_channel_the_manifest_names(self, tmp_path):
         store, man = self._build(tmp_path, "on")
