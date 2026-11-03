@@ -1656,22 +1656,30 @@ def encoder_versions(params: AppearanceParams) -> dict:
     }
 
 
-def encode_astc(rgba: np.ndarray, quality: float = ASTC_QUALITY, threads: int = 1) -> bytes:
-    from astc_encoder import (  # noqa: PLC0415
-        ASTCConfig,
-        ASTCContext,
-        ASTCImage,
-        ASTCProfile,
-        ASTCSwizzle,
-        ASTCType,
-    )
+def astc_context(quality: float = ASTC_QUALITY, threads: int = 1,
+                 contexts: dict | None = None):
+    """The ASTC context for (quality, threads) in `contexts` (default: this
+    process's cache), allocated on first use. Allocating one rewrites
+    astcenc's process-global angular tables, so a caller that compresses on
+    several Python threads allocates all its contexts before the first
+    compress, and gives each context to one thread at a time."""
+    from astc_encoder import ASTCConfig, ASTCContext, ASTCProfile  # noqa: PLC0415
 
     key = (quality, threads)
-    ctx = _ASTC_CONTEXTS.get(key)
+    cache = _ASTC_CONTEXTS if contexts is None else contexts
+    ctx = cache.get(key)
     if ctx is None:
         ctx = ASTCContext(ASTCConfig(ASTCProfile.LDR, ASTC_BLOCK, ASTC_BLOCK, 1, float(quality)),
                           threads=threads)
-        _ASTC_CONTEXTS[key] = ctx
+        cache[key] = ctx
+    return ctx
+
+
+def encode_astc(rgba: np.ndarray, quality: float = ASTC_QUALITY, threads: int = 1,
+                *, contexts: dict | None = None) -> bytes:
+    from astc_encoder import ASTCImage, ASTCSwizzle, ASTCType  # noqa: PLC0415
+
+    ctx = astc_context(quality, threads, contexts)
     h, w = rgba.shape[:2]
     blocks = ctx.compress(ASTCImage(ASTCType.U8, w, h, 1, np.ascontiguousarray(rgba).tobytes()),
                           ASTCSwizzle.from_str("RGBA"))

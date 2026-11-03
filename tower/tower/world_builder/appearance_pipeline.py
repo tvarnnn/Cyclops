@@ -32,12 +32,17 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
+from tower.config import (world_appearance_encode_pool_setting,
+                          world_appearance_encode_workers_setting)
 from tower.storage import write_bytes_atomic, write_json_atomic
 from tower.world_builder import appearance as A
 from tower.world_builder import raw_imagery as RAWIMG
@@ -58,6 +63,14 @@ STAGE_EXPOSURE = "exposure"
 STAGE_TRANSIENTS = "transients"
 STAGE_SELECTION = "selection"
 STAGE_ENCODE = "encode"
+
+# The encode pool (TOWER_WORLD_APPEARANCE_ENCODE_POOL, default off). Working
+# memory of ONE image in flight, per texel: the RGBA frame and rgba_for's
+# temporaries (distance, alpha), encode_webp's copy and BGRA conversion, and
+# the codec's own picture and alpha-plane buffers. The pool never holds more
+# images in flight than fit ENCODE_POOL_MEMORY of that.
+ENCODE_BYTES_PER_TEXEL = 64
+ENCODE_POOL_MEMORY = 256 * 1024 * 1024
 
 PRUNE_GRACE_S = 120.0
 STAGING_GRACE_S = 600.0
@@ -266,6 +279,26 @@ def _unobserved_rule(policy) -> str:
     """What produced each frame's unobserved mask. Under the bypass: nothing,
     and the record says so rather than naming a rule that did not run."""
     return RAWIMG.RAW_UNOBSERVED_RULE if policy.raw else A.UNOBSERVED_RULE
+
+
+def encode_pool_size(cpu: int, threads: int, astc: bool, width: int, height: int,
+                     requested: int = 0) -> tuple[int, int]:
+    """(images in flight, ASTC compresses at once) for the encode pool.
+
+    `threads` is the native thread count the stage already gives ONE ASTC
+    compress (half the cores, at most 8). A WebP encode is one OpenCV call on
+    one thread, so by default the pool keeps that many images in flight: the
+    encode's CPU budget is the one main already grants it, now spent on WebP
+    too. `requested` (TOWER_WORLD_APPEARANCE_ENCODE_WORKERS, 0 = this default)
+    is capped by the cores and by ENCODE_POOL_MEMORY. Every ASTC compress runs
+    `threads` native threads of its own, so at most cpu // threads (at least
+    one) compress at once: never more ASTC threads than cores. 0 when no image
+    is ASTC-encoded.
+    """
+    per_image = max(1, width * height * ENCODE_BYTES_PER_TEXEL)
+    workers = max(1, min(requested or threads, cpu, ENCODE_POOL_MEMORY // per_image))
+    astc_at_once = max(1, min(workers, cpu // max(1, threads))) if astc else 0
+    return workers, astc_at_once
 
 
 def _build(store, world_id, session_id, root, params, should_stop, progress, force,
@@ -590,6 +623,7 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     _status(root, state=STATE_RUNNING, stage=STAGE_ENCODE, params_digest=pdigest)
     astc_ok, astc_why = A.astc_available()
     threads = max(1, min(8, (os.cpu_count() or 2) // 2))
+    pool_on = world_appearance_encode_pool_setting()
     phone = [frames[i] for i in order]
     tower = sorted((fr for i, fr in enumerate(frames) if i not in rank),
                    key=lambda fr: fr.source.ki)
@@ -597,12 +631,44 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     chunks: list[dict] = []
     written: list[str] = []
 
+    workers, astc_at_once = 1, 0
+    # ASTC contexts the pool lends out, one compress per context at a time.
+    astc_contexts: queue.SimpleQueue = queue.SimpleQueue()
+    if pool_on:
+        workers, astc_at_once = encode_pool_size(
+            os.cpu_count() or 2, threads, astc_ok and bool(phone), W, H,
+            world_appearance_encode_workers_setting())
+        # Every context is allocated HERE, before any image is compressed:
+        # astcenc_context_alloc rewrites astcenc's process-global angular
+        # tables (prepare_angular_tables), which a running compress reads.
+        for _ in range(astc_at_once):
+            contexts: dict = {}
+            A.astc_context(params.astc_quality, threads, contexts)
+            astc_contexts.put(contexts)
+
+    def encode_frame(fr, encoding):
+        rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
+        if encoding != A.ENC_ASTC:
+            return A.encode_webp(rgba, params.webp_quality)
+        # The compress releases the GIL and runs `threads` native threads on its
+        # context: a context is never compressed from two Python threads at
+        # once, and at most `astc_at_once` compresses run together.
+        contexts = astc_contexts.get()
+        try:
+            return A.encode_astc(rgba, params.astc_quality, threads, contexts=contexts)
+        finally:
+            astc_contexts.put(contexts)
+
     def emit(group, encoding, tier):
-        blobs = []
-        for fr in group:
-            rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
-            blobs.append(A.encode_astc(rgba, params.astc_quality, threads)
-                         if encoding == A.ENC_ASTC else A.encode_webp(rgba, params.webp_quality))
+        if pool is None:
+            blobs = []
+            for fr in group:
+                rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
+                blobs.append(A.encode_astc(rgba, params.astc_quality, threads)
+                             if encoding == A.ENC_ASTC else A.encode_webp(rgba, params.webp_quality))
+        else:
+            # map yields in input order, regardless of worker completion order.
+            blobs = list(pool.map(lambda fr: encode_frame(fr, encoding), group))
         buf = A.pack_chunk(encoding, W, H, blobs)
         digest = content_digest(buf)
         name = _file_name("chunk", digest)
@@ -613,18 +679,19 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         for slot, fr in enumerate(group):
             entry_chunks.setdefault(fr.source.ki, {})[encoding] = {"digest": digest, "slot": slot}
 
-    step = max(1, params.chunk_slots)
-    for c0 in range(0, len(phone), step):
-        if _stopped(should_stop):
-            return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
-        group = phone[c0:c0 + step]
-        if astc_ok:
-            emit(group, A.ENC_ASTC, A.TIER_PHONE)
-        emit(group, A.ENC_WEBP, A.TIER_PHONE)
-    for c0 in range(0, len(tower), step):
-        if _stopped(should_stop):
-            return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
-        emit(tower[c0:c0 + step], A.ENC_WEBP, A.TIER_TOWER)
+    with (ThreadPoolExecutor(max_workers=workers) if pool_on else nullcontext()) as pool:
+        step = max(1, params.chunk_slots)
+        for c0 in range(0, len(phone), step):
+            if _stopped(should_stop):
+                return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
+            group = phone[c0:c0 + step]
+            if astc_ok:
+                emit(group, A.ENC_ASTC, A.TIER_PHONE)
+            emit(group, A.ENC_WEBP, A.TIER_PHONE)
+        for c0 in range(0, len(tower), step):
+            if _stopped(should_stop):
+                return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
+            emit(tower[c0:c0 + step], A.ENC_WEBP, A.TIER_TOWER)
     proxy_name = _file_name("proxy", proxy_digest)
     _write_once(root / proxy_name, proxy_bytes)
     written.append(proxy_name)
