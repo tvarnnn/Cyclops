@@ -27,7 +27,6 @@ from tests.test_world_builder_masks_at_stop import (  # noqa: F401 -- `_cuda` is
     _cuda,
     _final,
     _masks,
-    _run_dir,
     _same_masks,
     _solution,
     _with_keyframes,
