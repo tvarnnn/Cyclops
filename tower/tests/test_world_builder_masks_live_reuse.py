@@ -668,3 +668,17 @@ def test_old_evidence_is_swept_and_fresh_evidence_kept(monkeypatch, world, on):
     _final(world, PixelStub(), promote=True)                  # promote ends with discard_session
     assert not old.exists() and young.exists()
     assert (M.evidence_dir(world.store, WORLD, SESSION) / "promote.json").is_file()
+
+
+def test_evidence_whose_directory_cannot_be_made_costs_no_promotion(monkeypatch, world, on):
+    """Anything else going wrong while keeping evidence (here its directory cannot be created) is
+    logged once; the promotion is complete."""
+    monkeypatch.setenv(EVIDENCE, "on")
+    _live_build(monkeypatch, world)
+    _worker(world)
+    root = M.evidence_dir(world.store, WORLD, SESSION)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    root.write_text("a file where the evidence directory would go")
+    stage = PixelStub()
+    _, promoted = _final(world, stage, promote=True)
+    assert promoted["promoted"] == 2 * len(world.kids) and stage.calls == []
