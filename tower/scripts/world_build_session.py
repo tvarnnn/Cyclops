@@ -73,6 +73,7 @@ import itertools
 import json
 import logging
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -846,6 +847,7 @@ class MasksAtStop:
         self._spawn = spawn if spawn is not None else subprocess.Popen
         self._child = None
         self._log = None
+        self._staging = None
 
     @classmethod
     def start_if_on(cls, store: WorldStore, *, root: Path, world_id: str, session_id: str,
@@ -873,7 +875,7 @@ class MasksAtStop:
         from tower.world_builder import masks_at_stop  # noqa: PLC0415
 
         try:
-            staging = masks_at_stop.staging_dir(store, self.world_id, self.session_id)
+            staging = self._staging = masks_at_stop.staging_dir(store, self.world_id, self.session_id)
             staging.mkdir(parents=True, exist_ok=True)
             masks_at_stop.write_sources(staging, sources)
             self._log = open(masks_at_stop.log_path(store, self.world_id, self.session_id), "ab")
@@ -895,8 +897,10 @@ class MasksAtStop:
                     self._child.pid)
         return True
 
-    def close(self) -> None:
-        """Terminate the child (its staged files are whole), never raising."""
+    def close(self, discard: bool = False) -> None:
+        """Terminate the child (its staged files are whole), never raising. `discard`: no
+        surface stage will run for this session (no solved final, a hard stop, an error), so
+        the staged masks are removed rather than left in the depth work (~0.5 GB on 10.2)."""
         if self._child is not None:
             try:
                 if self._child.poll() is None:
@@ -912,6 +916,9 @@ class MasksAtStop:
             except OSError:
                 pass
             self._log = None
+        if discard and self._staging is not None:
+            shutil.rmtree(self._staging, ignore_errors=True)
+            self._staging = None
 
 
 class BackgroundSolver:
@@ -3036,8 +3043,10 @@ def main(argv=None) -> int:
             # build below, and leaving it holding the GPU would slow that down.
             surfacer.close()
         if masks_at_stop is not None:
-            # The final solve has returned (or the walk is ending): the card is the stage's.
-            masks_at_stop.close()
+            # The final solve has returned (or the walk is ending): the card is the stage's. The
+            # staged masks stay only for the surface stage that is about to run.
+            masks_at_stop.close(discard=not (args.surface and finalization_state == FINALIZATION_COMPLETE
+                                             and final_solve_state == FINAL_SOLVE_SOLVED))
         if solver is not None:
             solver.close()
         try:

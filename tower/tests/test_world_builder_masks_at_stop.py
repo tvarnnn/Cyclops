@@ -86,6 +86,12 @@ def _masks(report):
     return {ki: report.mask(ki) for ki in sorted(report.keys)}
 
 
+def _run_dir(world):
+    """The run `promote` would read: the newest complete index."""
+    got = M.latest_run(M.staging_dir(world.store, WORLD, SESSION))
+    return None if got is None else got[0]
+
+
 def _same_masks(a, b):
     return a.keys() == b.keys() and all(np.array_equal(a[k], b[k]) for k in a)
 
@@ -278,9 +284,9 @@ def test_the_worker_stages_the_fill_the_final_depth_stage_will_reuse(world):
 
     summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     assert summary["fills"] == {"reused": len(world.kids), "fresh": 0, "none": 0}
-    staging = M.staging_dir(world.store, WORLD, SESSION)
-    assert np.array_equal(np.load(staging / "00001_fill.npy"), prior)
-    assert np.array_equal(np.load(staging / "00003_fill.npy"), live)
+    run = _run_dir(world)
+    assert np.array_equal(np.load(run / "00001_fill.npy"), prior)
+    assert np.array_equal(np.load(run / "00003_fill.npy"), live)
     world.set_fill(3, live)                                   # what `offer_live_predictions` copies in
     stub = Stub()
     report, promoted = _final(world, stub, promote=True)
@@ -360,38 +366,89 @@ def test_a_second_run_never_promotes_a_mask_made_from_the_first_runs_fill(tmp_pa
     assert _same_masks(_masks(warm), _masks(cold))
 
 
-def test_every_run_starts_from_an_empty_staging_directory(world):
+def test_each_run_stages_into_a_directory_of_its_own(world):
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
-    staging = M.staging_dir(world.store, WORLD, SESSION)
-    M.write_sources(staging, {"k": "p"})
-    (staging / "00003_transient.gdsam.npz.p99.tmp").write_bytes(b"debris")
-    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub(), should_stop=lambda: True)
-    assert summary["state"] == "stopped"
-    assert sorted(p.name for p in staging.iterdir()) == [M.INDEX_FILENAME, M.SOURCES_FILENAME]
+    first = _run_dir(world)
+    first_files = sorted(p.name for p in first.iterdir())
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub(), should_stop=lambda: True)
+    second = _run_dir(world)
+    assert second != first and second.parent == first.parent
+    assert sorted(p.name for p in first.iterdir()) == first_files      # untouched
     stub = Stub()
     report, promoted = _final(world, stub, promote=True)
-    assert promoted["staged"] == 0 and report.computed == len(world.kids)
+    # the newest run is read, and it staged nothing: the first run's masks are never taken
+    assert promoted["run"] == second.name and promoted["staged"] == 0
+    assert report.computed == len(world.kids)
 
 
-def test_a_staging_directory_that_cannot_be_emptied_leaves_no_index(monkeypatch, world):
-    import pathlib
+def test_interleaved_prefills_cannot_mix(tmp_path, world):
+    """Run A is part-way (its fills staged, its detector running) when run B starts, stages
+    and finishes on a NEWER fill for HAND_KI; A then emits masks made from its older fill. The
+    stage must end up with B's masks, made from the fill it actually uses."""
+    fill = np.zeros_like(np.load(world.dense / "work" / "depth" / f"{HAND_KI:05d}_fill.npy"))
+    y0, y1, x0, x1 = Stub().hands[HAND_KI]
+    fill[y0:y1, x0:(x0 + x1) // 2] = True
+    nested = {"done": False}
+
+    class StartsBMidway(FillStub):
+        def __call__(self, component):
+            inner = super().__call__(component)
+
+            class Backend(type(inner)):
+                def run(self, items, params, emit, should_stop=None):
+                    if not nested["done"]:
+                        nested["done"] = True
+                        world.set_fill(HAND_KI, fill)            # the depth stage's fill moves
+                        undist = world.dense / "work" / "undist"
+                        undist.mkdir(parents=True, exist_ok=True)
+                        for i in range(len(world.kids)):
+                            (undist / f"{i:05d}.jpg").write_bytes(b"jpg")
+                        M.prefill(world.store, WORLD, SESSION, backend_factory=FillStub())   # run B
+                    return inner.run(items, params, emit, should_stop)   # A's masks, A's fill
+
+            Backend.component = component
+            return Backend()
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=StartsBMidway())          # run A
+    assert nested["done"]
+    runs = [p for p in M.staging_dir(world.store, WORLD, SESSION).iterdir() if p.is_dir()]
+    assert len(runs) == 2
+    warm, promoted = _final(world, FillStub(), promote=True)
+    cold_world = _with_keyframes(World(tmp_path / "cold"))
+    cold_world.set_fill(HAND_KI, fill)
+    cold, _ = _final(cold_world, FillStub(), promote=False)
+    assert promoted["promoted"] == 2 * len(world.kids)
+    assert np.array_equal(warm.mask(HAND_KI), cold.mask(HAND_KI))
+    assert _same_masks(_masks(warm), _masks(cold))
+
+
+def test_a_run_directory_is_never_shared(monkeypatch, tmp_path):
+    """`new_run_dir` creates its directory with `os.mkdir`, which refuses an existing name: a
+    colliding token is drawn again, never reused."""
+    import uuid
+
+    tokens = iter(["aaaaaaaa" * 4, "aaaaaaaa" * 4, "bbbbbbbb" * 4])
+    monkeypatch.setattr(M.time, "time_ns", lambda: 1)
+    monkeypatch.setattr(uuid, "uuid4", lambda: type("U", (), {"hex": next(tokens)})())
+    first = M.new_run_dir(tmp_path / "staging")
+    second = M.new_run_dir(tmp_path / "staging")
+    assert first != second and first.name.endswith("aaaaaaaa") and second.name.endswith("bbbbbbbb")
+
+
+def test_only_a_complete_index_naming_its_own_run_is_read(world):
+    import json
 
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
-    staging = M.staging_dir(world.store, WORLD, SESSION)
-    real_unlink = pathlib.Path.unlink
-
-    def unlink(self, *a, **k):
-        if self.name.endswith("_transient.gdsam.npz"):
-            raise PermissionError("held by another process")
-        return real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", unlink)
-    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
-    monkeypatch.setattr(pathlib.Path, "unlink", real_unlink)
-    assert summary["state"] == "declined"
-    assert not (staging / M.INDEX_FILENAME).exists()
-    assert list(staging.glob("*_transient.gdsam.npz"))       # the old masks are still there ...
-    assert _promote(world) is None                            # ... and nothing takes them
+    good = _run_dir(world)
+    staging = good.parent
+    later = json.loads((good / M.INDEX_FILENAME).read_text())
+    later["started_at"] += 1000
+    (staging / "run-zz-no-index").mkdir()                              # a run killed before its index
+    (staging / "run-zz-torn").mkdir()
+    (staging / "run-zz-torn" / M.INDEX_FILENAME).write_text('{"run": "run-zz-to')
+    (staging / "run-zz-other").mkdir()
+    (staging / "run-zz-other" / M.INDEX_FILENAME).write_text(json.dumps(dict(later, run="run-elsewhere")))
+    assert M.latest_run(staging)[0] == good
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +461,7 @@ def test_without_cuda_the_worker_declines(monkeypatch, world):
     stub = Stub()
     summary = M.prefill(world.store, WORLD, SESSION, backend_factory=stub)
     assert summary["state"] == "declined" and stub.calls == []
-    assert not list(M.staging_dir(world.store, WORLD, SESSION).glob("*_transient.*.npz"))
+    assert not list(M.staging_dir(world.store, WORLD, SESSION).rglob("*_transient.*.npz"))
 
 
 @pytest.mark.parametrize("change", [{"device": "cpu", "fp16": False}, {"fp16": False},
@@ -416,16 +473,51 @@ def test_a_stage_in_another_execution_mode_takes_nothing(world, change):
     assert not list((world.dense / "work" / "depth").glob("*_transient.*.npz"))
 
 
+REAL_EXECUTION_MODE = M.execution_mode
+
+
 def test_the_recorded_execution_mode_is_the_backends_choice(monkeypatch):
     """`execution_mode` mirrors the backends: CUDA when available (fp16 forward calls), else
     CPU (no autocast)."""
     import torch
 
-    monkeypatch.undo()                                         # the real function
     for available, want in ((True, ("cuda", True)), (False, ("cpu", False))):
         monkeypatch.setattr(torch.cuda, "is_available", lambda a=available: a)
-        got = M.execution_mode()
+        got = REAL_EXECUTION_MODE()
         assert (got["device"], got["fp16"]) == want and got["torch"] == torch.__version__
+
+
+def test_every_staged_mask_carries_the_mode_it_was_computed_with(world):
+    import json
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    run = _run_dir(world)
+    masks = sorted(run.glob("*_transient.*.npz"))
+    assert masks and all(json.loads(open(f"{m}{M.MODE_SUFFIX}").read()) == {"device": "cuda", "fp16": True}
+                         for m in masks)
+    # one mask lost its record (a kill between the mask and its record), one says CPU fp32
+    import os
+
+    os.remove(f"{run / '00002_transient.gdsam.npz'}{M.MODE_SUFFIX}")
+    (run / f"00005_transient.oneformer.npz{M.MODE_SUFFIX}").write_text(json.dumps({"device": "cpu", "fp16": False}))
+    out = _promote(world)
+    assert out["refused"] == {"mask-mode": 2} and out["promoted"] == 2 * len(world.kids) - 2
+
+
+def test_the_workers_backends_are_held_to_cuda(monkeypatch, world):
+    """The stage's own backends, asked for with device="cuda": they never fall back to the CPU
+    (a forward call that cannot run on CUDA fails the worker's chunk instead)."""
+    asked = []
+
+    def factory(component, device=None):
+        asked.append((component, device))
+        return Stub()(component)
+
+    monkeypatch.setattr(T, "default_backend_factory", factory)
+    summary = M.prefill(world.store, WORLD, SESSION)
+    assert summary["state"] == "done"
+    assert sorted(set(asked)) == [(T.COMPONENT_GDSAM, "cuda"), (T.COMPONENT_ONEFORMER, "cuda")]
+    assert T.GroundingDinoSamBackend().device is None and T.OneFormerBackend().device is None
 
 
 # ---------------------------------------------------------------------------
@@ -515,7 +607,7 @@ def test_an_untrusted_label_is_declined(world):
     world.set_label("none")
     summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     assert summary["state"] == "declined"
-    assert not list(M.staging_dir(world.store, WORLD, SESSION).glob("*_transient.*.npz"))
+    assert not list(M.staging_dir(world.store, WORLD, SESSION).rglob("*_transient.*.npz"))
 
 
 def test_nothing_staged_promotes_nothing(world):
@@ -588,3 +680,73 @@ def test_the_worker_stops_when_its_builder_is_gone():
     assert cli.parent_gone(os.getpid())() is False
     unused = max(psutil.pids()) + 100_000
     assert cli.parent_gone(unused)() is True
+
+
+# ---------------------------------------------------------------------------
+# the builder's wiring (review L1 R1 N2, N4)
+# ---------------------------------------------------------------------------
+
+
+def _wired_run(tmp_path, monkeypatch, *, solved=True, hard=False):
+    """`main()` on a synthetic walk with a final solve and a surface, the solve and the surface
+    stages stood in for, recording the order of the calls that matter."""
+    import contextlib
+    import io
+
+    wbs = _builder_module("wbs_masks_wiring")
+    monkeypatch.setenv(ENV, "on")
+    order = []
+    monkeypatch.setattr(wbs, "prewarm_world_builder", lambda *a, **k: ())
+    if hard:
+        monkeypatch.setattr(wbs.StopRequest, "install",
+                            lambda self, **k: self.request(wbs.StopRequest.HARD, "test-hard"))
+    else:
+        monkeypatch.setattr(wbs.StopRequest, "install", lambda self, **k: None)
+    real_stop = wbs.WorldBuilderEngine.stop_session
+    monkeypatch.setattr(wbs.WorldBuilderEngine, "stop_session",
+                        lambda self, *a, **k: order.append("stop_session") or real_stop(self, *a, **k))
+    monkeypatch.setattr(wbs.BackgroundSolver, "run_final",
+                        lambda self, store, sources, should_stop=None: order.append("run_final")
+                        or {"attempted": True, "solved": solved, "reason": None if solved else "stub"})
+    monkeypatch.setattr(wbs, "final_surface_stages", lambda *a, **k: order.append("final_surface_stages") or {})
+
+    class Child:
+        pid, returncode = 4242, None
+
+        def poll(self):
+            return self.returncode
+
+    monkeypatch.setattr(wbs, "_terminate_process_tree", lambda p: order.append("terminate"))
+    real_start = wbs.MasksAtStop.start
+
+    def start(self, store, sources):
+        order.append("masks.start")
+        self._spawn = lambda *a, **k: Child()          # no real child: its argv is not the point
+        return real_start(self, store, sources)
+
+    monkeypatch.setattr(wbs.MasksAtStop, "start", start)
+    root = tmp_path / "wb"
+    with contextlib.redirect_stdout(io.StringIO()):
+        code = wbs.main(["--synthetic", "--synthetic-frames", "10", "--root", str(root),
+                         "--solve", "--solve-every", "0", "--surface", "--format", "json"])
+    return code, order, root
+
+
+def test_the_builder_starts_the_worker_after_stop_and_ends_it_before_the_surface(tmp_path, monkeypatch):
+    code, order, root = _wired_run(tmp_path, monkeypatch)
+    assert code == 0
+    assert order == ["stop_session", "masks.start", "run_final", "terminate", "final_surface_stages"]
+    # a surface follows: the staged masks are kept for it
+    assert list(root.rglob(M.STAGING_DIRNAME))
+
+
+def test_no_surface_follows_so_the_staging_is_discarded(tmp_path, monkeypatch):
+    code, order, root = _wired_run(tmp_path, monkeypatch, solved=False)
+    assert order[:4] == ["stop_session", "masks.start", "run_final", "terminate"]
+    assert not list(root.rglob(M.STAGING_DIRNAME))
+
+
+def test_a_hard_stop_starts_no_worker(tmp_path, monkeypatch):
+    code, order, root = _wired_run(tmp_path, monkeypatch, hard=True)
+    assert "masks.start" not in order and "run_final" not in order
+    assert not list(root.rglob(M.STAGING_DIRNAME))
