@@ -90,7 +90,7 @@ def _masks(report):
 
 def _run_dir(world):
     """The run `promote` would read: the newest complete index."""
-    got = M.latest_run(M.staging_dir(world.store, WORLD, SESSION))
+    got = M.latest_run(M.staging_root(world.store), WORLD, SESSION)
     return None if got is None else got[0]
 
 
@@ -165,7 +165,7 @@ def test_off_the_builder_starts_no_child(monkeypatch, world):
     got = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
                                       sources={}, wanted=True, spawn=lambda *a, **k: spawned.append(a))
     assert got is None and spawned == []
-    assert not M.staging_dir(world.store, WORLD, SESSION).exists()
+    assert not M.staging_root(world.store).exists()
     # On but nothing will be built after the final solve: no child either.
     monkeypatch.setenv(ENV, "on")
     got = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
@@ -452,7 +452,7 @@ def test_interleaved_prefills_cannot_mix(tmp_path, world):
 
     M.prefill(world.store, WORLD, SESSION, backend_factory=StartsBMidway())          # run A
     assert nested["done"]
-    runs = [p for p in M.staging_dir(world.store, WORLD, SESSION).iterdir() if p.is_dir()]
+    runs = [p for p in M.staging_root(world.store).iterdir() if p.is_dir()]
     assert len(runs) == 2
     warm, promoted = _final(world, FillStub(), promote=True)
     cold_world = _with_keyframes(World(tmp_path / "cold"))
@@ -469,11 +469,10 @@ def test_a_run_directory_is_never_shared(monkeypatch, tmp_path):
     import uuid
 
     tokens = iter(["aaaaaaaa" * 4, "aaaaaaaa" * 4, "bbbbbbbb" * 4])
-    monkeypatch.setattr(M.time, "time_ns", lambda: 1)
     monkeypatch.setattr(uuid, "uuid4", lambda: type("U", (), {"hex": next(tokens)})())
     first = M.new_run_dir(tmp_path / "staging")
     second = M.new_run_dir(tmp_path / "staging")
-    assert first != second and first.name.endswith("aaaaaaaa") and second.name.endswith("bbbbbbbb")
+    assert (first.name, second.name) == ("aaaaaaaa", "bbbbbbbb")
 
 
 def test_only_a_complete_index_naming_its_own_run_is_read(world):
@@ -484,12 +483,16 @@ def test_only_a_complete_index_naming_its_own_run_is_read(world):
     staging = good.parent
     later = json.loads((good / M.INDEX_FILENAME).read_text())
     later["started_at"] += 1000
-    (staging / "run-zz-no-index").mkdir()                              # a run killed before its index
-    (staging / "run-zz-torn").mkdir()
-    (staging / "run-zz-torn" / M.INDEX_FILENAME).write_text('{"run": "run-zz-to')
-    (staging / "run-zz-other").mkdir()
-    (staging / "run-zz-other" / M.INDEX_FILENAME).write_text(json.dumps(dict(later, run="run-elsewhere")))
-    assert M.latest_run(staging)[0] == good
+    (staging / "0000000a").mkdir()                                     # a run killed before its index
+    (staging / "0000000b").mkdir()
+    (staging / "0000000b" / M.INDEX_FILENAME).write_text('{"run": "0000000b", "wor')      # torn
+    for name, other in (("0000000c", {"run": "0000000x"}), ("0000000d", {"run": "0000000d", "session_id": "s2"}),
+                        ("0000000e", {"run": "0000000e", "world_id": "w2"})):
+        (staging / name).mkdir()                                       # another run's / session's / world's
+        (staging / name / M.INDEX_FILENAME).write_text(json.dumps(dict(later, **other)))
+    (staging / "not-a-run").mkdir()
+    (staging / "not-a-run" / M.INDEX_FILENAME).write_text(json.dumps(dict(later, run="not-a-run")))
+    assert M.latest_run(staging, WORLD, SESSION)[0] == good
 
 
 # ---------------------------------------------------------------------------
@@ -502,7 +505,7 @@ def test_without_cuda_the_worker_declines(monkeypatch, world):
     stub = Stub()
     summary = M.prefill(world.store, WORLD, SESSION, backend_factory=stub)
     assert summary["state"] == "declined" and stub.calls == []
-    assert not list(M.staging_dir(world.store, WORLD, SESSION).rglob("*_transient.*.npz"))
+    assert not list(M.staging_root(world.store).rglob("*_transient.*.npz"))
 
 
 @pytest.mark.parametrize("change", [{"device": "cpu", "fp16": False}, {"fp16": False},
@@ -534,13 +537,16 @@ def test_every_staged_mask_carries_the_mode_it_was_computed_with(world):
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     run = _run_dir(world)
     masks = sorted(run.glob("*_transient.*.npz"))
-    assert masks and all(json.loads(open(f"{m}{M.MODE_SUFFIX}").read()) == {"device": "cuda", "fp16": True}
-                         for m in masks)
-    # one mask lost its record (a kill between the mask and its record), one says CPU fp32
-    import os
-
-    os.remove(f"{run / '00002_transient.gdsam.npz'}{M.MODE_SUFFIX}")
-    (run / f"00005_transient.oneformer.npz{M.MODE_SUFFIX}").write_text(json.dumps({"device": "cpu", "fp16": False}))
+    lines = [json.loads(x) for x in (run / M.MODES_FILENAME).read_text().splitlines()]
+    assert sorted(x["f"] for x in lines) == sorted(m.name for m in masks)
+    assert all({k: v for k, v in x.items() if k != "f"} == {"device": "cuda", "fp16": True} for x in lines)
+    # one mask lost its record (a kill between the mask and its record), one says CPU fp32, and
+    # the file ends in a torn line
+    kept = [x for x in lines if x["f"] != "00002_transient.gdsam.npz"]
+    for x in kept:
+        if x["f"] == "00005_transient.oneformer.npz":
+            x.update(device="cpu", fp16=False)
+    (run / M.MODES_FILENAME).write_text("".join(json.dumps(x) + "\n" for x in kept) + '{"f": "00006_tr')
     out = _promote(world)
     assert out["refused"] == {"mask-mode": 2} and out["promoted"] == 2 * len(world.kids) - 2
 
@@ -648,7 +654,7 @@ def test_an_untrusted_label_is_declined(world):
     world.set_label("none")
     summary = M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     assert summary["state"] == "declined"
-    assert not list(M.staging_dir(world.store, WORLD, SESSION).rglob("*_transient.*.npz"))
+    assert not list(M.staging_root(world.store).rglob("*_transient.*.npz"))
 
 
 def test_nothing_staged_promotes_nothing(world):
@@ -679,8 +685,7 @@ def test_the_builder_survives_a_child_that_cannot_start(monkeypatch, world):
     worker = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
                                          sources={"k": "p"}, wanted=True, spawn=lambda *a, **k: child)
     assert worker is not None
-    staging = M.staging_dir(world.store, WORLD, SESSION)
-    assert (staging / M.SOURCES_FILENAME).is_file()
+    assert M.sources_path(world.store, WORLD, SESSION).is_file()
     worker.close()
     worker.close()                                            # idempotent
     assert ended == [child]
@@ -777,17 +782,139 @@ def test_the_builder_starts_the_worker_after_stop_and_ends_it_before_the_surface
     code, order, root = _wired_run(tmp_path, monkeypatch)
     assert code == 0
     assert order == ["stop_session", "masks.start", "run_final", "terminate", "final_surface_stages"]
-    # a surface follows: the staged masks are kept for it
-    assert list(root.rglob(M.STAGING_DIRNAME))
+    # a surface follows: what the worker was handed is kept for it
+    assert [p.name for p in (root / M.STAGING_DIRNAME).iterdir()] == [_sources_name(root)]
 
 
 def test_no_surface_follows_so_the_staging_is_discarded(tmp_path, monkeypatch):
     code, order, root = _wired_run(tmp_path, monkeypatch, solved=False)
     assert order[:4] == ["stop_session", "masks.start", "run_final", "terminate"]
-    assert not list(root.rglob(M.STAGING_DIRNAME))
+    assert not [p for p in (root / M.STAGING_DIRNAME).rglob("*") if p.is_file()]
 
 
 def test_a_hard_stop_starts_no_worker(tmp_path, monkeypatch):
     code, order, root = _wired_run(tmp_path, monkeypatch, hard=True)
     assert "masks.start" not in order and "run_final" not in order
-    assert not list(root.rglob(M.STAGING_DIRNAME))
+    assert not (root / M.STAGING_DIRNAME).exists()
+
+
+def _sources_name(root):
+    from tower.world_builder.store import WorldStore
+
+    store = WorldStore(root)
+    (wid,) = store.list_world_ids()
+    (sid,) = store.list_session_ids(wid)
+    return M.sources_path(store, wid, sid).name
+
+
+# ---------------------------------------------------------------------------
+# MAX_PATH (review: a staged temp file reached 278 characters on a bench root)
+# ---------------------------------------------------------------------------
+
+
+def test_every_staging_path_stays_short_under_a_deep_root(tmp_path):
+    """A 120-character data root (the store is `<data>/world_builder`): every path the worker,
+    the builder and promote write stays under 240 characters, temp names included."""
+    deep = tmp_path / "d"
+    pad = 120 - len(str(deep))
+    data = deep.parent / (deep.name + "x" * max(0, pad)) if pad > 0 else tmp_path
+    world = _with_keyframes(World(data / "world_builder"))
+    assert len(str(data)) >= 120
+    M.write_sources(world.store, WORLD, SESSION, {k: f"data/captures/c/frames/{i:08d}.jpg" for i, k in enumerate(world.kids)})
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    written = [p for p in M.staging_root(world.store).rglob("*")]
+    assert len(written) > 2 * len(world.kids)
+    longest_tmp = ".p" + "9" * 7 + ".tmp"                     # `write_component`'s temp suffix, a 7-digit pid
+
+    def real_length(path):
+        """As long as with the product's 32-hex world and session ids (the fixture's are short)."""
+        text = str(path)
+        extra = (32 - len(WORLD)) if f"{os.sep}worlds{os.sep}" in text else 0
+        if f"{os.sep}dense{os.sep}" in text:
+            extra += 32 - len(SESSION)
+        return len(text) + extra
+
+    worst = max(real_length(p) + len(longest_tmp) for p in written)
+    print("worst staging path with temp suffix:", worst, "data root:", len(str(data)))
+    assert worst < 240, worst
+    # the worker's log is opened in place (no temp name), beside the session's depth work
+    assert real_length(M.log_path(world.store, WORLD, SESSION)) < 240
+    run = _run_dir(world)
+    mask_tmp = run / f"00007_transient.oneformer.npz{longest_tmp}"
+    assert len(str(mask_tmp)) < 240
+
+
+def test_promotion_removes_this_sessions_staging_and_only_it(world):
+    """The staging is outside the depth work (no prune reaches it): promotion removes this
+    session's runs and its raw-frame paths, and leaves another session's run alone."""
+    import json
+
+    M.write_sources(world.store, WORLD, SESSION, {"k": "p"})
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub(), should_stop=lambda: True)
+    other = M.new_run_dir(M.staging_root(world.store))
+    (other / M.INDEX_FILENAME).write_text(json.dumps({"run": other.name, "world_id": WORLD, "session_id": "s2"}))
+    _final(world, Stub(), promote=True)
+    left = sorted(p.name for p in M.staging_root(world.store).iterdir())
+    assert left == [other.name]
+
+
+# ---------------------------------------------------------------------------
+# review L1e.R2: world-scoped sources, live runs kept, complete mode records only
+# ---------------------------------------------------------------------------
+
+
+def test_two_worlds_sessions_never_share_or_delete_each_others_sources(world):
+    M.write_sources(world.store, WORLD, SESSION, {"a": "1"})
+    M.write_sources(world.store, "w2", SESSION, {"b": "2"})
+    assert M.sources_path(world.store, WORLD, SESSION) != M.sources_path(world.store, "w2", SESSION)
+    M.discard_session(world.store, WORLD, SESSION)
+    assert M.read_sources(world.store, WORLD, SESSION) == {}
+    assert M.read_sources(world.store, "w2", SESSION) == {"b": "2"}
+
+
+def test_a_run_whose_worker_may_still_be_writing_is_never_removed(world):
+    """Cleanup removes a run only when its worker is known to be finished: a final state, or
+    the process its index names gone. A worker whose termination failed keeps its run."""
+    import json
+    import os
+
+    import psutil
+
+    root = M.staging_root(world.store)
+    me = {"pid": os.getpid(), "pid_started": psutil.Process(os.getpid()).create_time()}
+    unused = max(psutil.pids()) + 100_000
+    runs = {}
+    for name, extra in (("alive", dict(me, state="running")),           # termination failed
+                        ("gone", {"pid": unused, "pid_started": 1.0, "state": "running"}),   # killed
+                        ("reused", dict(me, pid_started=1.0, state="running")),   # pid reused since
+                        ("unknown", {"state": "running"}),              # no pid: not known gone
+                        ("ended", dict(me, state="stopped"))):          # finished on its own
+        run = M.new_run_dir(root)
+        (run / M.INDEX_FILENAME).write_text(json.dumps(dict(extra, run=run.name, world_id=WORLD,
+                                                             session_id=SESSION, started_at=1.0)))
+        runs[name] = run
+    M.discard_session(world.store, WORLD, SESSION)
+    assert {n for n, r in runs.items() if r.exists()} == {"alive", "unknown"}
+
+
+def test_the_prefill_index_names_its_worker(world):
+    import json
+    import os
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    index = json.loads((_run_dir(world) / M.INDEX_FILENAME).read_text())
+    assert index["pid"] == os.getpid() and index["pid_started"] and index["state"] == "done"
+
+
+def test_a_mode_record_without_its_newline_is_not_a_record(world):
+    import json
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    run = _run_dir(world)
+    lines = (run / M.MODES_FILENAME).read_text().split("\n")[:-1]
+    last = json.loads(lines[-1])["f"]
+    (run / M.MODES_FILENAME).write_text("\n".join(lines))          # valid JSON, cut before its newline
+    out = _promote(world)
+    assert out["refused"] == {"mask-mode": 1} and out["promoted"] == 2 * len(world.kids) - 1
+    assert not (world.dense / "work" / "depth" / last).exists()

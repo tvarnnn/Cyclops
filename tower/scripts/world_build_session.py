@@ -73,7 +73,6 @@ import itertools
 import json
 import logging
 import os
-import shutil
 import signal
 import sqlite3
 import subprocess
@@ -847,7 +846,7 @@ class MasksAtStop:
         self._spawn = spawn if spawn is not None else subprocess.Popen
         self._child = None
         self._log = None
-        self._staging = None
+        self._store = None
 
     @classmethod
     def start_if_on(cls, store: WorldStore, *, root: Path, world_id: str, session_id: str,
@@ -875,9 +874,8 @@ class MasksAtStop:
         from tower.world_builder import masks_at_stop  # noqa: PLC0415
 
         try:
-            staging = self._staging = masks_at_stop.staging_dir(store, self.world_id, self.session_id)
-            staging.mkdir(parents=True, exist_ok=True)
-            masks_at_stop.write_sources(staging, sources)
+            self._store = store
+            masks_at_stop.write_sources(store, self.world_id, self.session_id, sources)
             self._log = open(masks_at_stop.log_path(store, self.world_id, self.session_id), "ab")
             argv = [python_executable(), str(self.script), "--root", str(self.root),
                     "--world", self.world_id, "--session", self.session_id,
@@ -916,9 +914,11 @@ class MasksAtStop:
             except OSError:
                 pass
             self._log = None
-        if discard and self._staging is not None:
-            shutil.rmtree(self._staging, ignore_errors=True)
-            self._staging = None
+        if discard and self._store is not None:
+            from tower.world_builder import masks_at_stop  # noqa: PLC0415
+
+            masks_at_stop.discard_session(self._store, self.world_id, self.session_id)
+            self._store = None
 
 
 class BackgroundSolver:
