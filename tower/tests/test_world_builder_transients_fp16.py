@@ -333,6 +333,22 @@ def test_sync_check_switch_restores_prior_value_on_error(monkeypatch):
     assert os.environ["TRANSFORMERS_DISABLE_TORCH_CHECK"] == "0"
 
 
+def test_sync_check_switch_overlapping_entries_restore_once(monkeypatch):
+    # Two forwards on two threads: the first to leave must not re-enable the
+    # checks under the second, and the last to leave must not leave them off.
+    monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
+    monkeypatch.delenv("TRANSFORMERS_DISABLE_TORCH_CHECK", raising=False)
+    monkeypatch.setitem(sys.modules, "transformers", types.SimpleNamespace(__version__="5.16.1"))
+    first = T._skip_deformable_attention_sync_check(True)
+    second = T._skip_deformable_attention_sync_check(True)
+    first.__enter__()
+    second.__enter__()
+    first.__exit__(None, None, None)
+    assert os.environ.get("TRANSFORMERS_DISABLE_TORCH_CHECK") == "1"
+    second.__exit__(None, None, None)
+    assert "TRANSFORMERS_DISABLE_TORCH_CHECK" not in os.environ
+
+
 def test_sync_check_switch_defaults_off_and_works_with_installed_transformers(monkeypatch):
     import pytest
     import torch
@@ -345,8 +361,12 @@ def test_sync_check_switch_defaults_off_and_works_with_installed_transformers(mo
     with pytest.raises(ValueError):
         torch_compilable_check(torch.tensor(False), "bad shape")
     monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
-    assert transformers.__version__ in ("5.16.1", "5.17.0")
     with T._skip_deformable_attention_sync_check(True):
-        torch_compilable_check(torch.tensor(False), "bad shape")
+        if transformers.__version__ in T._SYNC_CHECK_VERSIONS:
+            torch_compilable_check(torch.tensor(False), "bad shape")
+        else:  # another version the dependency range allows: the guarded no-op
+            assert "TRANSFORMERS_DISABLE_TORCH_CHECK" not in os.environ
+            with pytest.raises(ValueError):
+                torch_compilable_check(torch.tensor(False), "bad shape")
     with pytest.raises(ValueError):
         torch_compilable_check(torch.tensor(False), "bad shape")
