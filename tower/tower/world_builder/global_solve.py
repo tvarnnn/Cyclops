@@ -1205,6 +1205,7 @@ def solve(
     gate: bool | None = None,
     consensus: int | None = None,
     should_stop=None,
+    on_matched=None,
 ) -> dict:
     """Reconstruct a session's keyframes into one global solution, and publish it.
 
@@ -1274,6 +1275,15 @@ def solve(
     (`coherence_publish.gate_by_consensus`). None reads
     `TOWER_WORLD_SOLVE_CONSENSUS` for a gated final solve (1, a single
     draw, by default); it needs a seeded solve.
+
+    `on_matched`: called as `on_matched(database_path, context)` once everything the solve writes
+    into its feature databases is written (extraction, matching, the mask filter, the revisit
+    import) -- the matching call has returned without error -- and before mapping: from there a
+    background solve only reads them (it maps, then publishes with no gate). `context` is what a
+    deferred map of this horizon needs (`map_committed_horizon`): the keyframe ids this solve read,
+    in order, its timings so far, its threads and whether the database existed. None, the default,
+    calls nothing. `scripts/world_solve.py` passes it only for `TOWER_WORLD_BG_STOP_AT_MATCH`'s
+    marker and its probes (`matching_marker.py`); it must not raise, and it changes nothing published.
 
     TWO OPTIONS, BOTH OFF BY DEFAULT, BOTH FOR THE FINAL SOLVE
     (`resolve_run_options`; the settings are `world_solve_masks` and
@@ -1552,6 +1562,17 @@ def solve(
             frozen = False
             frozen_refusal = FROZEN_REFUSAL_CHANGED_UNDER_THE_SOLVE
     matched = time.perf_counter()
+    # The hook's own seconds count in neither `match_s` nor `map_s` (0.0 without one).
+    hook_s = 0.0
+    if on_matched is not None:
+        # Every write this solve makes into its databases is behind it; from here a background
+        # solve maps (reads) and publishes. Its "matching committed" marker (`matching_marker.py`).
+        on_matched(database_path, {
+            "keyframe_ids": [k.keyframe_id for k in keyframes],
+            "prepare_s": round(prepared - started, 3), "extract_s": round(extracted - froze, 3),
+            "match_s": round(matched - extracted, 3), "images_undistorted": written,
+            "threads": threads, "database_existed": bool(database_existed)})
+        hook_s = time.perf_counter() - matched
 
     # ONE thread when seeded: GLOMAP is reproducible only then.
     map_threads = 1 if seeded else threads
@@ -1567,7 +1588,7 @@ def solve(
         "prepare_s": round(prepared - started, 3),
         "extract_s": round(extracted - froze, 3),
         "match_s": round(matched - extracted, 3),
-        "map_s": round(mapped - matched, 3),
+        "map_s": round(mapped - matched - hook_s, 3),
         "images_undistorted": written,
         "final": bool(final),
     }
@@ -1859,6 +1880,123 @@ def frozen_draw_mapper(store, world_id: str, session_id: str, database_path, bas
         return candidate
 
     return map_draw
+
+
+# A deferred map of a background solve's committed horizon maps into its own scratch beside `sparse/`
+# (`map_committed_horizon`): the final solve's model in `sparse/` is left as it was.
+DEFERRED_SPARSE_DIRNAME = "sparse-deferred"
+
+
+_ANY_STANDING = object()
+
+
+def map_committed_horizon(store, world_id: str, session_id: str, *, database_path, keyframe_ids,
+                          num_threads: int | None = None, context: dict | None = None,
+                          expect_standing_solved_at=_ANY_STANDING, publish_claim=None,
+                          min_image_observations: int = MIN_IMAGE_OBSERVATIONS) -> dict:
+    """THE MAP A BACKGROUND SOLVE WAS ENDED BEFORE (`TOWER_WORLD_BG_STOP_AT_MATCH`), and its publication.
+
+    At Stop the builder ends the running background solve as soon as its matching is committed
+    (`matching_marker.py`), keeping a snapshot of that committed database. When the final solve
+    then publishes nothing (it failed, was withheld, or found nothing), the default path -- which
+    let the child map inside the 120-s cap -- could have left THIS child's solution standing. So
+    the builder asks for it here: map `database_path` (the snapshot) with exactly `keyframe_ids`
+    (the keyframes that solve read, in its order) the way that solve would have -- unseeded,
+    unmasked, ungated, `num_threads` mapper threads (the background count), its own camera -- and
+    publish it as that background solve would have (`gate_and_publish(final=False)`, i.e.
+    `write_solution`). `solve` records the solve's own matching (`context`, from its marker) and
+    `deferred_map: True`; `timing.map_s` is this mapping's.
+
+    Returns the summary a background solve prints (`solved`, `solver`, `keyframes`,
+    `keyframes_posed`, `components`, `points`, `timing`, `workspace`), or `{"solved": False,
+    "reason": ...}` when it cannot run (pycolmap missing, a keyframe id no longer in the session,
+    no camera). Maps into `sparse-deferred/`, removed afterwards; never touches `sparse/` or the
+    walk database.
+
+    BOUND TO THE SOLUTION STANDING AT THE SNAPSHOT. `expect_standing_solved_at` is the published
+    solution's `solved_at` when the builder took the snapshot (None: none). Right before publishing it
+    is read again, and anything else -- a final that published and then failed, any newer solution, or
+    one that cannot be read -- means nothing is published (`moot: True`): a deferred map never
+    replaces a newer world. Not given (a direct caller), it publishes as a background solve would.
+
+    `publish_claim` (the builder's order always names one): the publication is claimed by creating
+    that file exclusively (`matching_marker.claim_publish`) right before writing; when the builder has
+    created it first -- it revokes a deferred map it ended without confirming the child gone -- nothing
+    is published (`revoked: True`)."""
+    available, reason = solver_available()
+    if not available:
+        return {"solved": False, "reason": reason}
+    import pycolmap  # noqa: PLC0415
+
+    from tower.world_builder import coherence_publish  # noqa: PLC0415
+
+    _quiet_pycolmap()
+    started = time.perf_counter()
+    workspace = workspace_for(store, world_id, session_id)
+    by_id = {k.keyframe_id: k for k in store.read_keyframes(world_id, session_id)}
+    missing = [i for i in keyframe_ids if i not in by_id]
+    if missing or len(keyframe_ids) < 2:
+        return {"solved": False, "reason": f"deferred map: {len(missing)} of {len(keyframe_ids)} "
+                                           "keyframes are not in the session"}
+    keyframes = [by_id[i] for i in keyframe_ids]
+    try:
+        camera = PinholeCamera.from_json_dict(read_json_closed(workspace.camera_path))
+    except Exception as exc:  # noqa: BLE001 -- no camera, no map: refused, recorded
+        return {"solved": False, "reason": f"deferred map: no camera ({type(exc).__name__})"}
+    threads = num_threads if num_threads is not None else -1
+    sparse_dir = workspace.root / DEFERRED_SPARSE_DIRNAME
+    try:
+        solution = _map_candidate(
+            pycolmap, Path(database_path), workspace, sparse_dir, keyframes, seed=None,
+            threads=threads, input_digest=compute_input_digest(keyframes),
+            min_image_observations=min_image_observations, camera=camera)
+    finally:
+        shutil.rmtree(sparse_dir, ignore_errors=True)
+    context = dict(context or {})
+    solution.timing = {
+        "prepare_s": context.get("prepare_s"), "extract_s": context.get("extract_s"),
+        "match_s": context.get("match_s"), "map_s": round(time.perf_counter() - started, 3),
+        "images_undistorted": context.get("images_undistorted"), "final": False,
+    }
+    solution.transients = _masks_off_record()
+    solution.solve = {
+        "seed": None, "threads": threads, "seeded": False,
+        "extraction_threads": context.get("threads"), "matching_threads": context.get("threads"),
+        "verification_seed": None, "database": workspace.database_path.name,
+        "database_existed": context.get("database_existed"), "masking": None,
+        "walk_database": None, "final": False,
+        "pycolmap": getattr(pycolmap, "__version__", None),
+        "revisit_pairs": {"listed": 0, "verified": 0, "detail": None},
+        "deferred_map": True,
+    }
+    if expect_standing_solved_at is not _ANY_STANDING:
+        from tower.world_builder.matching_marker import standing_solved_at  # noqa: PLC0415
+
+        standing = standing_solved_at(workspace.root)
+        if (standing != expect_standing_solved_at
+                or (standing is None and workspace.solution_path.exists())):
+            return {"solved": False, "moot": True,
+                    "reason": "deferred map: a newer solution was published since the snapshot "
+                              f"(solved_at {standing!r}, expected {expect_standing_solved_at!r})"}
+    if publish_claim is not None:
+        from tower.world_builder.matching_marker import claim_publish  # noqa: PLC0415
+
+        if not claim_publish(publish_claim, "deferred-map"):
+            return {"solved": False, "revoked": True,
+                    "reason": "deferred map: the builder revoked its publication"}
+    solution, _record = coherence_publish.gate_and_publish(
+        store, world_id, session_id, workspace, solution, final=False, gate=None,
+        database_path=Path(database_path), keyframes=keyframes, write=write_solution,
+        consensus=None)
+    if solution is None:
+        return {"solved": False, "reason": "deferred map: nothing published"}
+    return {
+        "solved": True, "solver": solution.solver, "keyframes": len(keyframes),
+        "keyframes_posed": sum(1 for p in solution.poses.values()
+                               if p["observations"] >= min_image_observations),
+        "components": solution.components, "points": int(len(solution.xyz)),
+        "timing": solution.timing, "workspace": str(workspace.root), "deferred_map": True,
+    }
 
 
 def _withheld_summary(record, workspace: SolveWorkspace) -> dict:

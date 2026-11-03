@@ -153,6 +153,32 @@ class JobHandle:
             )
         return bool(ok)
 
+    def active_processes(self) -> int | None:
+        """How many processes are in the job right now (`QueryInformationJobObject`,
+        `JobObjectBasicAccountingInformation.ActiveProcesses`), or None when it cannot be asked.
+        Every descendant a member spawns is a member too, so 0 means the whole tree is gone --
+        including a grandchild nobody enumerated."""
+        if self._handle is None:
+            return None
+        import ctypes
+
+        class _Accounting(ctypes.Structure):
+            _fields_ = [("TotalUserTime", ctypes.c_int64), ("TotalKernelTime", ctypes.c_int64),
+                        ("ThisPeriodTotalUserTime", ctypes.c_int64),
+                        ("ThisPeriodTotalKernelTime", ctypes.c_int64),
+                        ("TotalPageFaultCount", ctypes.c_uint32),
+                        ("TotalProcesses", ctypes.c_uint32), ("ActiveProcesses", ctypes.c_uint32),
+                        ("TotalTerminatedProcesses", ctypes.c_uint32)]
+
+        info = _Accounting()
+        try:
+            ok = ctypes.WinDLL("kernel32", use_last_error=True).QueryInformationJobObject(
+                ctypes.c_void_p(self._handle), ctypes.c_int(1),  # JobObjectBasicAccountingInformation
+                ctypes.byref(info), ctypes.sizeof(info), None)
+        except Exception:  # noqa: BLE001 -- not Windows, or the call itself failed
+            return None
+        return int(info.ActiveProcesses) if ok else None
+
     def close(self) -> None:
         """Release the handle. With no other handle open, this kills the job."""
         if self._handle is None:

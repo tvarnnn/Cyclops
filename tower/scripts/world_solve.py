@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
-from tower.world_builder import finish_phase, global_solve  # noqa: E402
+from tower.world_builder import finish_phase, global_solve, matching_marker  # noqa: E402
 from tower.world_builder.store import WorldStore, compute_input_digest  # noqa: E402
 
 
@@ -72,9 +72,14 @@ def main(argv=None) -> int:
     parser.add_argument("--min-image-observations", type=int,
                         default=global_solve.MIN_IMAGE_OBSERVATIONS)
     parser.add_argument("--format", choices=("json", "text"), default="json")
+    parser.add_argument("--deferred-map", type=Path, default=None,
+                        help="TOWER_WORLD_BG_STOP_AT_MATCH: map and publish the committed horizon of a "
+                             "background solve the builder ended early (its order file); internal")
     args = parser.parse_args(argv)
 
     store = WorldStore(Path(args.root))
+    if args.deferred_map is not None:
+        return _deferred_map(store, args)
     keyframes = store.read_keyframes(args.world, args.session)
     threads = args.threads if args.threads is not None else (-1 if args.final else background_threads())
     # T-UX1: the finish phase, only for the final solve the live builder launched with its
@@ -83,6 +88,12 @@ def main(argv=None) -> int:
     phase = (finish_phase.writer_from_environment(store, args.world, args.session)
              if args.final else None)
     token = finish_phase.install(phase)
+    # `TOWER_WORLD_BG_STOP_AT_MATCH` (`matching_marker.py`): a background child the builder gave a
+    # token marks its matching commit, and `..._PROBE` records the database. None -- no token and
+    # no probe, which is every run with both off -- is exactly the call this always made.
+    hook = matching_marker.for_child(store, args.world, args.session, final=args.final)
+    if hook is not None:
+        hook.opened()
     try:
         summary = global_solve.solve(
             store, args.world, args.session,
@@ -92,14 +103,40 @@ def main(argv=None) -> int:
             min_image_observations=args.min_image_observations,
             loop_detection=args.loop_detection,
             input_digest=compute_input_digest(keyframes),
+            **(hook.solve_kwargs() if hook is not None else {}),
         )
     finally:
         finish_phase.uninstall(token)
+    if hook is not None:
+        hook.finished()
     if args.format == "json":
         print(json.dumps(summary, indent=2))
     else:
         for key, value in summary.items():
             print(f"{key:20s} {value}")
+    return 0
+
+
+def _deferred_map(store, args) -> int:
+    """`--deferred-map <order>`: the builder's order (`matching_marker.DEFERRED_ORDER_RECORD`) to map a
+    background solve's committed horizon (`global_solve.map_committed_horizon`) and publish it as that
+    solve would have, only over the solution that stood at the snapshot (`standing_solved_at`). Prints
+    its summary like any solve; a refused or moot order is a summary saying why."""
+    from tower.storage import read_json_closed  # noqa: PLC0415
+
+    order = read_json_closed(args.deferred_map)
+    if (not isinstance(order, dict) or order.get("record") != matching_marker.DEFERRED_ORDER_RECORD
+            or "standing_solved_at" not in order):
+        summary = {"solved": False, "reason": "deferred map: not an order"}
+    else:
+        summary = global_solve.map_committed_horizon(
+            store, args.world, args.session, database_path=Path(order["database"]),
+            keyframe_ids=list(order.get("keyframe_ids") or []),
+            num_threads=args.threads if args.threads is not None else background_threads(),
+            context=order.get("solve") or {},
+            expect_standing_solved_at=order["standing_solved_at"],
+            publish_claim=Path(order["claim"]) if order.get("claim") else None)
+    print(json.dumps(summary, indent=2))
     return 0
 
 
