@@ -9,8 +9,8 @@ default-off Tower settings:
   row project it as `processing`;
 - `TOWER_WORLD_PICTURE_BASIS`: the render revision body gains `basis`.
 
-The matrix also checks `TOWER_WORLD_FINAL_IMMEDIATE` off against the same
-baseline.
+The matrix also checks `TOWER_WORLD_FINAL_IMMEDIATE`, `TOWER_WORLD_BG_STOP_AT_MATCH` and
+`TOWER_WORLD_BG_STOP_AT_MATCH_PROBE` off against the same baseline.
 
 Off -- unset, blank, `0`, `off` or garbage -- nothing is written, nothing is read, and this
 file proves it against `golden/world_builder_finish_stages_5c0dc12.json`, recorded by running
@@ -61,7 +61,8 @@ from tests.conftest import without_live_depth
 GOLDEN = Path(__file__).parent / "golden" / "world_builder_finish_stages_5c0dc12.json"
 RECORD_ENV = "WB_FINISH_STAGES_RECORD"
 SWITCHES = ("TOWER_WORLD_FINISH_STAGES", "TOWER_WORLD_PICTURE_BASIS",
-            "TOWER_WORLD_FINAL_IMMEDIATE")
+            "TOWER_WORLD_FINAL_IMMEDIATE", "TOWER_WORLD_BG_STOP_AT_MATCH",
+            "TOWER_WORLD_BG_STOP_AT_MATCH_PROBE")
 OFF_SPELLINGS = (None, "", "0", "off", "garbage")
 EPOCH = 1790620836.43
 PHASE = "finish_phase.json"

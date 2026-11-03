@@ -1184,6 +1184,32 @@ def world_stage_timing_setting() -> bool:
     return False
 
 
+# STOP ENDS THE BACKGROUND SOLVE AT ITS MATCHING COMMIT (opt run 2026-11-03, lever L2). At Stop
+# the builder waits up to `--solve-wait-seconds` (120 s) for the running background solve and then
+# kills it. Its map is never used (the final solve maps from scratch); only its feature-database
+# rows reach the final solve, and mapping never writes the database. On, the background child writes
+# a marker once everything it writes into the database is committed
+# (`world_builder/matching_marker.py`), and the wait ends that child as soon as the marker is
+# there; the cap is unchanged, and no marker is today's wait. NOT `TOWER_WORLD_FINAL_IMMEDIATE`,
+# which kills at Stop in any phase and so loses uncommitted matching. Read by the BUILDER at session
+# start. Off: no token, no marker, and every byte and every wait is as before.
+WORLD_BG_STOP_AT_MATCH_ENV = "TOWER_WORLD_BG_STOP_AT_MATCH"
+# Its proof, log-only: each solve child records the feature database's digest and file hashes when
+# it opens it, at its matching commit and when it finishes (`<solve>/bg_stop_at_match.probe.jsonl`
+# and the solve log). Debug only; it costs a digest (about a second) per record. Off: nothing.
+WORLD_BG_STOP_AT_MATCH_PROBE_ENV = "TOWER_WORLD_BG_STOP_AT_MATCH_PROBE"
+
+
+def world_bg_stop_at_match_setting() -> bool:
+    """`TOWER_WORLD_BG_STOP_AT_MATCH`: end the background solve at its matching commit. Off."""
+    return _flag(WORLD_BG_STOP_AT_MATCH_ENV, default=False)
+
+
+def world_bg_stop_at_match_probe_setting() -> bool:
+    """`TOWER_WORLD_BG_STOP_AT_MATCH_PROBE`: log-only database digests in every solve child. Off."""
+    return _flag(WORLD_BG_STOP_AT_MATCH_PROBE_ENV, default=False)
+
+
 # Pose quarantine: impossible poses are never
 # published in a room. One switch, three PARTS:
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
