@@ -56,8 +56,9 @@ WHAT v2 MEASURES, on the candidate's ROOM (component 0, supported cameras: >= 30
      consecutive measured cameras each beyond the clear boundary (below 0.75 or above 1.333) on one side
      (an excursion, which the running median swallows) stay attached and `uncertified`: the record does
      not certify an unmeasured piece's scale.
-  5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference), over the
-     room's cameras in capture order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
+  5. POSES, recorded for the audit only (`applied: false`): with metres per unit = exp(-reference) (past the
+     largest float there is none, and no screen runs: `pose` is null), over the room's cameras in capture
+     order, a consecutive pair (<= 3 journal indices, <= 2 s) is a HARD step when
      it moves more than max(allowance + 0.5 m, 2 x allowance), allowance = 2.0 m/s x dt + 0.3 m, or more
      than the allowance AND a corroborating screen fires (> 0.75 m vertical step in <= 1 s; an endpoint
      > 1.5 m off the room's median height, > 120 deg from its median up, or > 15 m from its median
@@ -77,8 +78,9 @@ THE AUDIT (`solve/<session>/final_scale_guard.json`, Tower-internal, keyed to th
 solve's identity): when assessment completes, it records the params and digest, the reference, each
 plateau's endpoint keyframe ids and each isolated piece's keyframe ids, journal indices, ratio count,
 median ratio, bootstrap interval where computed, class and decision, and the pose flags and warnings. It
-also records timing and any error, so a scorer can see which segments were isolated and why. No ratio or metric
-figure ever reaches the components record or the phone (contract §2.4 rule 6).
+also records timing and any error, so a scorer can see which segments were isolated and why. A ratio past the
+largest float is `inf` and recorded null (`_ratio`, `_audit_ratio`): a finite log ratio never raises. No ratio or
+metric figure ever reaches the components record or the phone (contract §2.4 rule 6).
 """
 
 from __future__ import annotations
@@ -263,7 +265,8 @@ def ratio_reason(d: float, params: GuardParams) -> str | None:
 
 
 def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams, salt: int) -> list[float]:
-    """The deterministic percentile interval of median(piece) - median(core) in log, as RATIOS."""
+    """The deterministic percentile interval of median(piece) - median(core) in log, as RATIOS (`inf` past the
+    largest float, `_ratio`)."""
     rng = np.random.default_rng([params.bootstrap_seed, int(salt), len(piece), len(core)])
     b = params.bootstrap_draws
     ps = rng.choice(piece, size=(b, len(piece)), replace=True)
@@ -271,7 +274,7 @@ def bootstrap_interval(piece: np.ndarray, core: np.ndarray, params: GuardParams,
     d = np.median(ps, axis=1) - np.median(cs, axis=1)
     a = (1.0 - params.ci_level) / 2.0
     lo, hi = np.quantile(d, [a, 1.0 - a])
-    return [round(math.exp(float(lo)), 4), round(math.exp(float(hi)), 4)]
+    return [round(_ratio(float(lo)), 4), round(_ratio(float(hi)), 4)]
 
 
 def _excursions(cams: list, values: dict, ref: float, params: GuardParams) -> list[tuple[int, int]]:
@@ -327,7 +330,7 @@ def _split_excursions(row: dict, values: dict, ref: float, params: GuardParams) 
         m = np.asarray([values[c.name] for c in sub if c.name in values], np.float64)
         d = float(np.median(m)) - ref if len(m) else None
         part = dict(row, start=row["start"] + a, end=row["start"] + b, cameras=sub, values=m,
-                    measured=int(len(m)), ratio=None if d is None else math.exp(d),
+                    measured=int(len(m)), ratio=None if d is None else _ratio(d),
                     kind="excursion" if exc else "plateau")
         if exc:
             reason = ratio_reason(d, params) if len(m) >= params.min_ratios else REASON_SCALE_UNCERTIFIED
@@ -512,7 +515,7 @@ def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> lis
             m = seg[np.isfinite(seg)]
             d = float(np.median(m)) - ref
             row = {"group": gname, "start": start, "end": end, "class": cls, "measured": int(len(m)),
-                   "ratio": math.exp(d), "cameras": cams[start:end], "values": m, "kind": "plateau"}
+                   "ratio": _ratio(d), "cameras": cams[start:end], "values": m, "kind": "plateau"}
             if len(m) < params.min_ratios:
                 row.update(decision="attached", reason=None, certified=False, uncertified=UNCERTIFIED_SHORT)
             elif classify(d, params) == IN:
@@ -537,6 +540,17 @@ def _v2_rows(groups: dict, values: dict, ref: float, params: GuardParams) -> lis
 
 
 _LOG_FLOAT_MAX = math.log(sys.float_info.max)
+
+
+def _ratio(d: float) -> float:
+    """A log ratio as a ratio: `math.exp(d)`, or `inf` where that overflows (past the largest finite float), so
+    a finite but extreme log ratio can never raise. Every value `math.exp` returns is returned unchanged; the
+    audit writes `inf` as null (`_jsonable`). A ratio decision made on it (a bootstrap interval excluding 1)
+    reads `inf` on the side its log is on, as the log comparison would."""
+    try:
+        return math.exp(d)
+    except OverflowError:
+        return math.inf
 
 
 def _audit_ratio(d: float) -> float:
@@ -732,10 +746,15 @@ def assess_v2(cameras: list[RoomCamera], metric_log: dict, params: GuardParams |
     room = sorted((c for r in rows for c in r["cameras"]), key=lambda c: c.index)
     status = SCALE_CERTIFIED if (not uncertified and len(core) >= params.min_ratios) else SCALE_UNCERTIFIED
     pose = None
-    if ref is not None and room:
+    try:
+        mpu = None if ref is None else math.exp(-ref)
+    except OverflowError:
+        # Metres per unit past the largest float: nothing can be measured in metres, so no screen (`pose` null).
+        mpu = None
+    if mpu is not None and room:
         # Recorded for audit only: v2 isolates nothing on pose.
-        screen = _pose_screen(room, math.exp(-ref), params)
-        pose = {"applied": False, "metres_per_unit": math.exp(-ref), "flags": screen["flags"],
+        screen = _pose_screen(room, mpu, params)
+        pose = {"applied": False, "metres_per_unit": mpu, "flags": screen["flags"],
                 "warnings": screen["warnings"], "nonfinite": screen["nonfinite"],
                 "defects": screen.get("defects", {}), "flag_counts": _counts(screen["flags"]),
                 "warning_counts": _counts(screen["warnings"]),

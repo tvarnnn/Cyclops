@@ -406,11 +406,13 @@ def compatible_live_records(store, world_id, session_id, solution, intrinsics,
     set, numeric calibrated FoV == the solve's FoV, camera size, the keyframe's
     current image bytes, the prediction's shape). READ-ONLY: nothing is copied or
     written; `offer_live_predictions` stages these for the depth stage, and the
-    final scale guard (v2) reads them in place as publication evidence."""
+    final scale guard (v2) reads them in place as publication evidence. A session
+    without a usable calibration (`UndistortionUnavailable`) matches nothing."""
     import numpy as np
 
     from tower.world_builder.dense_pipeline import FILL_RULE
-    from tower.world_builder.global_solve import _undistort_maps
+    from tower.world_builder.global_solve import (UndistortionUnavailable,
+                                                  _undistort_maps)
 
     live = root / "live_depth"
     try:
@@ -433,7 +435,8 @@ def compatible_live_records(store, world_id, session_id, solution, intrinsics,
             intrinsics, frame.width, frame.height)
         calibrated_fov = round(math.degrees(2.0 * math.atan(
             calibrated.width / (2.0 * calibrated.fx))), 6)
-    except (KeyError, ValueError, StopIteration, AttributeError, TypeError):
+    except (KeyError, ValueError, StopIteration, AttributeError, TypeError,
+            UndistortionUnavailable):
         return {}
     if (document.get("known_fov") != calibrated_fov or
             final_fov != calibrated_fov or
