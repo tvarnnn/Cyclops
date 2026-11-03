@@ -80,6 +80,17 @@ def _same_masks(a, b):
     return a.keys() == b.keys() and all(np.array_equal(a[k], b[k]) for k in a)
 
 
+def _builder_module(name):
+    import importlib.util
+    import pathlib
+
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "world_build_session.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 # ---------------------------------------------------------------------------
 # the switch
 # ---------------------------------------------------------------------------
@@ -95,13 +106,7 @@ def test_the_switch_is_off_by_default(monkeypatch):
 
 
 def test_off_the_builder_starts_no_child(monkeypatch, world):
-    import importlib.util
-    import pathlib
-
-    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "world_build_session.py"
-    spec = importlib.util.spec_from_file_location("wbs_masks_test", path)
-    wbs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(wbs)
+    wbs = _builder_module("wbs_masks_test")
     spawned = []
     monkeypatch.delenv(ENV, raising=False)
     got = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
@@ -113,6 +118,21 @@ def test_off_the_builder_starts_no_child(monkeypatch, world):
     got = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
                                       sources={}, wanted=False, spawn=lambda *a, **k: spawned.append(a))
     assert got is None and spawned == []
+
+
+def test_no_child_when_the_final_solve_uses_the_gpu_itself(monkeypatch, world):
+    """Solve masks or the evidence gate put GPU work inside the final solve, on the critical
+    path: the worker would compete with it, so it is not started."""
+    wbs = _builder_module("wbs_masks_test3")
+    monkeypatch.setenv(ENV, "on")
+    for switch in ("TOWER_WORLD_SOLVE_MASKS", "TOWER_WORLD_SOLVE_GATE"):
+        monkeypatch.setenv(switch, "on")
+        spawned = []
+        got = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD,
+                                          session_id=SESSION, sources={}, wanted=True,
+                                          spawn=lambda *a, **k: spawned.append(a))
+        assert got is None and spawned == []
+        monkeypatch.delenv(switch)
 
 
 def test_off_the_surface_stage_never_promotes(monkeypatch, world):
@@ -317,13 +337,7 @@ def test_nothing_staged_promotes_nothing(world):
 
 
 def test_the_builder_survives_a_child_that_cannot_start(monkeypatch, world):
-    import importlib.util
-    import pathlib
-
-    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "world_build_session.py"
-    spec = importlib.util.spec_from_file_location("wbs_masks_test2", path)
-    wbs = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(wbs)
+    wbs = _builder_module("wbs_masks_test2")
     monkeypatch.setenv(ENV, "on")
 
     def broken(*a, **k):

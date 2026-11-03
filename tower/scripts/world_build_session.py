@@ -851,10 +851,20 @@ class MasksAtStop:
     def start_if_on(cls, store: WorldStore, *, root: Path, world_id: str, session_id: str,
                     sources: dict, wanted: bool, spawn=None):
         """The started worker, or None: the switch is off, nothing will be built after the
-        final solve (`wanted`), or the child could not be started (logged)."""
-        from tower.config import world_masks_at_stop_setting  # noqa: PLC0415
+        final solve (`wanted`), the final solve uses the GPU itself (solve masks, or the
+        evidence gate's depth stage: the worker would slow the critical path), or the child
+        could not be started (logged)."""
+        from tower.config import (  # noqa: PLC0415
+            world_masks_at_stop_setting,
+            world_solve_gate_setting,
+            world_solve_masks_setting,
+        )
 
         if not wanted or not world_masks_at_stop_setting():
+            return None
+        if world_solve_masks_setting() or world_solve_gate_setting():
+            logger.info("[Tower][WorldBuilder] masks at Stop: not started, the final solve uses "
+                        "the GPU itself (TOWER_WORLD_SOLVE_MASKS / TOWER_WORLD_SOLVE_GATE)")
             return None
         worker = cls(root=root, world_id=world_id, session_id=session_id, spawn=spawn)
         return worker if worker.start(store, sources) else None
