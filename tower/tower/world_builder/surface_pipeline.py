@@ -34,6 +34,7 @@ guard lives in the format, not in the reader's caller (a torn buffer on a
 
 from __future__ import annotations
 
+import functools
 import json
 import math
 import logging
@@ -985,14 +986,20 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
                                         imagery_source=imagery_source)
         from tower.config import world_masks_at_stop_setting  # noqa: PLC0415
 
-        if world_masks_at_stop_setting():
+        if world_masks_at_stop_setting() and backend_factory is None:
             # Masks staged after Stop (`masks_at_stop.py`) become cache hits here, each only
-            # if its inputs are this build's own. Off: not called at all.
-            from tower.world_builder.masks_at_stop import promote_quietly  # noqa: PLC0415
+            # if its inputs are this build's own. The detector device is decided ONCE: the
+            # detectors this stage builds run on it, and promotion requires the staged masks'
+            # mode to be its mode, so a promoted mask is what this stage would have computed.
+            # A caller's own backends (a test seam) have a device this stage cannot know:
+            # nothing is promoted for them. Off: not called at all.
+            from tower.world_builder import masks_at_stop as MS  # noqa: PLC0415
 
-            promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
-                            align_records=records, solution=solution, intrinsics=intrinsics,
-                            params=tparams, policy=policy)
+            device = MS.stage_device()
+            backend_factory = functools.partial(T.default_backend_factory, device=device)
+            MS.promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
+                               align_records=records, solution=solution, intrinsics=intrinsics,
+                               params=tparams, policy=policy, mode=MS.execution_mode(device))
         return T.ensure_transient_masks(
             store, world_id, session_id, [(ki, frames.kids[ki]) for ki, *_ in frames.items],
             intrinsics=intrinsics, camera=solution.camera, align_records=records,

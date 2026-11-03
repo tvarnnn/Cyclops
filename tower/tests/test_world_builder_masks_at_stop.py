@@ -48,7 +48,9 @@ CUDA = {"device": "cuda", "fp16": True, "torch": "2.x", "transformers": "4.x"}
 def _cuda(monkeypatch):
     """The worker runs only on a CUDA device and promote compares execution modes: this suite
     has no GPU, so both halves see the same CUDA mode unless a test says otherwise."""
-    monkeypatch.setattr(M, "execution_mode", lambda: dict(CUDA))
+    monkeypatch.setattr(M, "execution_mode",
+                        lambda device=None: dict(CUDA) if device in (None, "cuda")
+                        else dict(CUDA, device=device, fp16=False))
 
 
 @pytest.fixture
@@ -205,18 +207,57 @@ def test_off_the_surface_stage_never_promotes(monkeypatch, world):
     assert sorted(stub.computed(T.COMPONENT_ONEFORMER)) == list(range(len(world.kids)))
 
 
-def test_on_the_surface_stage_promotes_then_finds_hits(monkeypatch, world):
+def _surface_transients(monkeypatch, world, *, device, own_factory=None):
+    """The surface stage's transient step with the switch on, its detector device decided as
+    `device`; returns (report, the devices the stage built its detectors with, promote calls)."""
     from tower.world_builder import surface_pipeline as SP
 
-    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     monkeypatch.setenv(ENV, "on")
+    monkeypatch.setattr(M, "stage_device", lambda: device)
+    built, promoted = [], []
+    stage_stub = Stub()
+
+    def factory(component, device=None):
+        built.append(device)
+        return stage_stub(component)
+
+    monkeypatch.setattr(T, "default_backend_factory", factory)
+    real_promote = M.promote_quietly
+    monkeypatch.setattr(M, "promote_quietly", lambda *a, **k: promoted.append(k.get("mode")) or real_promote(*a, **k))
     frames = types.SimpleNamespace(items=[(ki,) for ki in range(len(world.kids))],
                                    kids=dict(enumerate(world.kids)))
-    stub = Stub()
     report = SP._ensure_transients(world.store, WORLD, SESSION, _solution(world), world.intrinsics,
                                    {"records": world.records}, world.dense / "work", frames,
-                                   T.TransientParams(), None, None, stub)
-    assert stub.calls == [] and report.cached == len(world.kids) and report.computed == 0
+                                   T.TransientParams(), None, None, own_factory)
+    return report, built, promoted, stage_stub
+
+
+def test_on_the_surface_stage_promotes_then_finds_hits(monkeypatch, world):
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    report, built, promoted, stage_stub = _surface_transients(monkeypatch, world, device="cuda")
+    assert report.cached == len(world.kids) and report.computed == 0
+    assert promoted == [CUDA] and set(built) == {"cuda"} and stage_stub.calls == []
+
+
+def test_the_stage_promotes_against_the_device_its_detectors_run_on(monkeypatch, world):
+    """CUDA is gone when the surface stage starts: it decides "cpu" once, builds its detectors
+    on the CPU, and promotes against a CPU mode, so no CUDA-made mask is taken."""
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    report, built, promoted, _ = _surface_transients(monkeypatch, world, device="cpu")
+    assert promoted and promoted[0]["device"] == "cpu"
+    assert set(built) == {"cpu"}
+    assert report.cached == 0 and report.computed == len(world.kids)
+    assert not list((world.dense / "work" / "depth").glob("*_transient.*.npz.mode.json"))
+
+
+def test_a_callers_own_detectors_take_no_staged_mask(monkeypatch, world):
+    """Backends handed in by a caller (the stage's test seam) run on a device the stage cannot
+    know, so nothing is promoted for them."""
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    own = Stub()
+    report, built, promoted, _ = _surface_transients(monkeypatch, world, device="cuda", own_factory=own)
+    assert promoted == [] and built == []
+    assert report.computed == len(world.kids) and len(set(own.computed())) == len(world.kids)
 
 
 # ---------------------------------------------------------------------------
