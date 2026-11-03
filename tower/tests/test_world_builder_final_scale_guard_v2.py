@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 
 import numpy as np
 import pytest
@@ -764,3 +765,43 @@ def test_a_ratio_past_the_largest_float_still_publishes_at_the_seam(tmp_path, co
     sid = s.session_id
     assert not ({f"{sid}:{i:08d}" for i in isolated} & _room_ids(meta))
     assert len(_room_ids(meta)) == 100 - len(isolated)
+
+
+def test_a_live_cache_whose_session_cannot_undistort_publishes_uncertified_at_the_seam(tmp_path, colmap, monkeypatch):
+    """R5 at the seam: the session's calibration is unusable by the time the guard reads the live cache (the
+    final solve undistorted its images before). On main the reader's `UndistortionUnavailable` reached the guard,
+    which withheld the final solve; now the cache is no evidence and the room is published `uncertified`."""
+    from tower.world_builder.coherence_publish import _depth_params
+    from tower.world_builder.dense_pipeline import dense_dir, depth_trust_now
+
+    eng = _Engines(monkeypatch, n=60, levels={f"{i:08d}.jpg": 0.0 for i in range(60)})
+    s = _walk(tmp_path / "w", 60, colmap, monkeypatch)
+    # The walk's live cache, made to match this session in everything before the calibration check (its
+    # redaction trust), so the reader gets as far as undistorting.
+    align = dense_dir(s.store, s.world_id, s.session_id) / "live_depth" / "align.json"
+    doc = json.loads(align.read_text(encoding="utf-8"))
+    imagery = _depth_params().imagery_source
+    doc["redaction_trust"] = depth_trust_now(s.store, s.world_id, s.session_id, imagery_source=imagery)
+    align.write_text(json.dumps(doc), encoding="utf-8")
+    real = GS._undistort_maps
+    refused = []
+
+    def unusable_for_the_live_reader(intrinsics, width, height):
+        if sys._getframe(1).f_code.co_name == "compatible_live_records":
+            refused.append((width, height))
+            raise GS.UndistortionUnavailable("session has no intrinsics")
+        return real(intrinsics, width, height)
+
+    monkeypatch.setattr(GS, "_undistort_maps", unusable_for_the_live_reader)
+    out = _simple(s)
+    assert refused, "the live cache reader never reached its calibration check"
+    assert out["solved"] is True
+    meta, comp, audit = _published(s)
+    assert len(_room_ids(meta)) == 60 and eng.depth_calls == 0 and eng.metric_calls == 0
+    assert audit["decision"] == "published" and audit["error"] is None
+    assert audit["inputs"]["source"] == FSG.EVIDENCE_NONE and audit["inputs"]["live"]["state"] == "incompatible"
+    assert audit["assessment"]["scale_status"] == FSG.SCALE_UNCERTIFIED and audit["assessment"]["pieces"] == []
+    status = _placed(comp)["final_scale_guard"]
+    assert status["scale_status"] == FSG.SCALE_UNCERTIFIED and status["evidence"] == FSG.EVIDENCE_NONE
+    assert meta["solve"]["final_scale_guard"]["decision"] == "published"
+    assert meta["solve"]["final_scale_guard"]["scale_status"] == FSG.SCALE_UNCERTIFIED
