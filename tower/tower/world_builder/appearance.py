@@ -993,6 +993,7 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
+    from tower.config import world_appearance_groups_setting  # noqa: PLC0415
 
     dev = _torch_device(device)
     N = len(zps)
@@ -1031,6 +1032,9 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     ys, xs = ys.reshape(-1), xs.reshape(-1)
     bd = params.exposure_border_px
     group = 48
+    reuse_groups = world_appearance_groups_setting()
+    groups = ([torch.arange(c0, min(N, c0 + group), device=dev)
+               for c0 in range(0, N, group)] if reuse_groups else None)
     out = []
     for a in range(N):
         if should_stop is not None and should_stop():
@@ -1048,8 +1052,14 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         X = (xc - t[a]) @ R[a]
         cols = []
         for c0 in range(0, N, group):
-            cs = torch.arange(c0, min(N, c0 + group), device=dev)
-            cs = cs[cs != a]
+            if groups is None:
+                cs = torch.arange(c0, min(N, c0 + group), device=dev)
+                cs = cs[cs != a]
+            else:
+                base = groups[c0 // group]
+                k = a - c0
+                cs = (torch.cat((base[:k], base[k + 1:]))
+                      if 0 <= k < len(base) else base)
             if not len(cs):
                 continue
             pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
@@ -1310,6 +1320,7 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
+    from tower.config import world_appearance_groups_setting  # noqa: PLC0415
 
     model = params.exposure_model
     if model not in EXPOSURE_MODELS:
@@ -1339,6 +1350,9 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     obs_p, obs_s, obs_c, obs_uv = [], [], [], []
     npts = 0
     group = 32
+    reuse_groups = world_appearance_groups_setting()
+    groups = ([torch.arange(c0, min(N, c0 + group), device=dev)
+               for c0 in range(0, N, group)] if reuse_groups else None)
     bd = params.exposure_border_px
     for a in range(N):
         if should_stop is not None and should_stop():
@@ -1353,7 +1367,8 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
         n = X.shape[0]
         fp, fs, fc, fuv = [], [], [], []
         for c0 in range(0, N, group):
-            cs = torch.arange(c0, min(N, c0 + group), device=dev)
+            cs = (torch.arange(c0, min(N, c0 + group), device=dev) if groups is None
+                  else groups[c0 // group])
             pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
             zz = pc[..., 2]
             u = Kt[0, 0] * pc[..., 0] / zz.clamp(min=1e-6) + Kt[0, 2]
