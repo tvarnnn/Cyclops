@@ -17,6 +17,9 @@ What Windows gives, and what it does not:
   policy: (1, 1) EcoQoS, (1, 0) HighQoS opt-out, (0, 0) none, i.e. the system's heuristics decide.
   What the heuristics decided is not readable; a heuristically throttled build shows as busy
   E-cores and a low clock while its explicit state reads (0, 0).
+- Exited processes: a process that ends between two samples takes its last partial period
+  with it, so in that sample `other_cpu_pct` (= cpu_pct - tree_cpu_pct) also holds the work of
+  build children that just exited; `top_other` names only processes still running.
 """
 
 import atexit
