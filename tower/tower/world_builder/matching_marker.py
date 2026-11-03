@@ -209,6 +209,62 @@ def snapshot_horizon(workspace_root) -> Path | None:
         return None
 
 
+# The order a HARD STOP leaves for the finisher (`scripts/world_finish_pending.py`): the deferred map
+# that could not run because nothing is mapped after a hard stop.
+OWED_HARD_STOP = "hard-stop"
+
+
+def write_owed(workspace_root, deferred: dict, *, standing_solved_at) -> Path:
+    """Leave the deferred map of a background child ended at its marker as OWED WORK, beside its
+    snapshot: the finisher maps it at the Tower's next start (`read_owed`). `standing_solved_at` is the
+    published solution's `solved_at` at this moment (None: none), so that a solution published since
+    (a re-finish) makes the order moot. Raises on a write failure (the caller logs it)."""
+    from tower.storage import write_json_atomic  # noqa: PLC0415
+
+    path = Path(workspace_root) / DEFERRED_ORDER_FILENAME
+    write_json_atomic(path, {
+        "record": DEFERRED_ORDER_RECORD, "owed": OWED_HARD_STOP, "token": deferred["token"],
+        "database": SNAPSHOT_FILENAME, "keyframe_ids": list(deferred["keyframe_ids"]),
+        "solve": deferred.get("solve") or {}, "budget_s": deferred.get("budget_s"),
+        "standing_solved_at": standing_solved_at, "written_at": time.time()})
+    return path
+
+
+def standing_solved_at(workspace_root):
+    """The published solution's `solved_at` (None: none, or unreadable). Never raises."""
+    try:
+        from tower.storage import read_json_closed  # noqa: PLC0415
+
+        return read_json_closed(Path(workspace_root) / "solution.json").get("solved_at")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def read_owed(workspace_root) -> dict | None:
+    """The owed deferred-map order a hard stop left here, whole, with its snapshot on disk; else
+    None. The snapshot path in it is resolved against `workspace_root`. Never raises."""
+    try:
+        root = Path(workspace_root)
+        path = root / DEFERRED_ORDER_FILENAME
+        if not path.exists():
+            return None
+        from tower.storage import read_json_closed  # noqa: PLC0415
+
+        order = read_json_closed(path)
+        if not isinstance(order, dict) or order.get("record") != DEFERRED_ORDER_RECORD:
+            return None
+        if order.get("owed") != OWED_HARD_STOP or order.get("database") != SNAPSHOT_FILENAME:
+            return None
+        ids = order.get("keyframe_ids")
+        if not isinstance(ids, list) or len(ids) < 2 or not all(isinstance(i, str) for i in ids):
+            return None
+        if not (root / SNAPSHOT_FILENAME).is_file():
+            return None
+        return dict(order, database=str(root / SNAPSHOT_FILENAME))
+    except Exception:  # noqa: BLE001 -- unreadable is "nothing owed"
+        return None
+
+
 def discard_snapshot(workspace_root) -> None:
     """Remove the horizon snapshot, its SQLite companions and the deferred-map order. Never raises."""
     target = snapshot_path(workspace_root)

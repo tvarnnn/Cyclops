@@ -1315,22 +1315,35 @@ class BackgroundSolver:
         from tower.world_builder import matching_marker  # noqa: PLC0415
 
         deferred, self._deferred = self._deferred, None
+        root = self._match_root or Path(deferred["snapshot"]).parent
+        keep = False
         try:
             if report.get("solved"):
                 return report
             if report.get("interrupted") or (should_stop is not None and should_stop()):
+                # Nothing is mapped after a hard stop (today's): the map is left as OWED WORK for
+                # the finisher at the Tower's next start (`world_finish_pending.py`), with its
+                # snapshot, so the standing world ends up no older than the default path's.
+                report["deferred_background_map"] = {"ran": False, "published": False,
+                                                     "why": "hard stop", "owed": True}
+                try:
+                    matching_marker.write_owed(
+                        root, deferred, standing_solved_at=matching_marker.standing_solved_at(root))
+                    keep = True
+                except Exception:  # noqa: BLE001 -- nothing to owe without its order
+                    logger.exception("[Tower][WorldBuilder] could not leave the deferred map owed")
+                    report["deferred_background_map"]["owed"] = False
                 logger.warning(
                     "[Tower][WorldBuilder] hard stop: the deferred map of background solve pid %s "
-                    "is not run (nothing is mapped after a hard stop); the last background "
-                    "solution stands", deferred["pid"])
-                report["deferred_background_map"] = {"ran": False, "published": False,
-                                                     "why": "hard stop"}
+                    "is not run now (nothing is mapped after a hard stop); %s", deferred["pid"],
+                    "it is owed to the finisher" if keep else "it could not be left owed")
                 return report
             report["deferred_background_map"] = self._run_deferred_map(store, deferred,
                                                                         should_stop)
             return report
         finally:
-            matching_marker.discard_snapshot(self._match_root or Path(deferred["snapshot"]).parent)
+            if not keep:
+                matching_marker.discard_snapshot(root)
 
     def _run_deferred_map(self, store: WorldStore, deferred: dict, should_stop) -> dict:
         """Map and publish the ended child's committed horizon (`world_solve.py --deferred-map`),

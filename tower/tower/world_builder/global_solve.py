@@ -1889,6 +1889,7 @@ DEFERRED_SPARSE_DIRNAME = "sparse-deferred"
 
 def map_committed_horizon(store, world_id: str, session_id: str, *, database_path, keyframe_ids,
                           num_threads: int | None = None, context: dict | None = None,
+                          max_map_s: float | None = None,
                           min_image_observations: int = MIN_IMAGE_OBSERVATIONS) -> dict:
     """THE MAP A BACKGROUND SOLVE WAS ENDED BEFORE (`TOWER_WORLD_BG_STOP_AT_MATCH`), and its publication.
 
@@ -1907,7 +1908,8 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
     `keyframes_posed`, `components`, `points`, `timing`, `workspace`), or `{"solved": False,
     "reason": ...}` when it cannot run (pycolmap missing, a keyframe id no longer in the session,
     no camera). Maps into `sparse-deferred/`, removed afterwards; never touches `sparse/` or the
-    walk database."""
+    walk database. `max_map_s` (the finisher's bound, in-process): a map that took longer is not
+    published -- the default path's cap would have killed the child before it finished."""
     available, reason = solver_available()
     if not available:
         return {"solved": False, "reason": reason}
@@ -1937,6 +1939,10 @@ def map_committed_horizon(store, world_id: str, session_id: str, *, database_pat
             min_image_observations=min_image_observations, camera=camera)
     finally:
         shutil.rmtree(sparse_dir, ignore_errors=True)
+    map_s = time.perf_counter() - started
+    if max_map_s is not None and map_s > max_map_s:
+        return {"solved": False, "reason": f"deferred map: mapped in {map_s:.1f} s, past the "
+                                           f"{max_map_s:.1f} s the default path gave the child"}
     context = dict(context or {})
     solution.timing = {
         "prepare_s": context.get("prepare_s"), "extract_s": context.get("extract_s"),
