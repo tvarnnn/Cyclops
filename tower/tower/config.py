@@ -1257,6 +1257,14 @@ def world_frame_quality_log_setting() -> bool:
 WORLD_STAGE_TIMING_ENV = "TOWER_WORLD_STAGE_TIMING"
 _world_stage_timing_warned_values: set[str] = set()
 
+# Reuse appearance projection view groups without changing their order.
+WORLD_APPEARANCE_GROUPS_ENV = "TOWER_WORLD_APPEARANCE_GROUPS"
+
+
+def world_appearance_groups_setting() -> bool:
+    """`TOWER_WORLD_APPEARANCE_GROUPS`: reuse projection indices. Off."""
+    return _flag(WORLD_APPEARANCE_GROUPS_ENV, default=False)
+
 
 def world_stage_timing_setting() -> bool:
     """Whether to write bounded finish-stage timing (off by default)."""
