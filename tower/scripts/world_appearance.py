@@ -118,7 +118,7 @@ def main(argv=None) -> int:
                          "is `redacted` unless it is set.")
     args = ap.parse_args(argv)
     # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
-    # process's CPU speed. See tower/power_throttling.py. Outputs are unchanged.
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
     apply_world_build_power_policy("appearance")
 
     store = WorldStore(Path(args.root))

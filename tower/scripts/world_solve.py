@@ -75,7 +75,7 @@ def main(argv=None) -> int:
     parser.add_argument("--format", choices=("json", "text"), default="json")
     args = parser.parse_args(argv)
     # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
-    # process's CPU speed. See tower/power_throttling.py. Outputs are unchanged.
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
     apply_world_build_power_policy("solve")
 
     store = WorldStore(Path(args.root))

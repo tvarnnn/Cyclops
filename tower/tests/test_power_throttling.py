@@ -1,14 +1,18 @@
 """`TOWER_WORLD_NO_POWER_THROTTLING`: World Builder processes opt out of Windows EcoQoS. Default off.
 
 The call happens when the switch is on (on Windows), never when it is off, and a
-failure is logged, never raised. Every World Builder entry point makes the call
-right after parsing its arguments, before any work.
+failure is reported, never raised. Every World Builder process makes the call in
+its `main()` before any work; the list of those processes is DERIVED from the
+spawn sites (`TOWER_ROOT / "scripts" / "world_*.py"` in the Tower and in each
+script it reaches), so a new child that skips the call fails a test.
 """
 
+import ast
 import ctypes
 import importlib.util
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -143,6 +147,24 @@ def test_an_exception_is_logged_never_raised(caplog):
     assert "OSError" in caplog.text
 
 
+def test_success_is_reported_through_configured_logging(caplog):
+    with caplog.at_level(logging.INFO, logger="tower.power_throttling"):
+        assert pt.opt_out_of_power_throttling("builder", kernel32=_FakeKernel32()) is True
+    assert "builder: opted out of power throttling" in caplog.text
+
+
+def test_without_logging_the_report_goes_to_stderr_never_stdout(monkeypatch, capsys):
+    # The solve, surface, appearance and finisher scripts configure no logging: a logger.info
+    # would vanish there. Their stderr is their log; their stdout can be a parsed summary.
+    monkeypatch.setattr(logging.getLogger(), "handlers", [])
+    assert pt.opt_out_of_power_throttling("solve", kernel32=_FakeKernel32()) is True
+    assert pt.opt_out_of_power_throttling("solve", kernel32=_FakeKernel32(ok=0)) is False
+    out = capsys.readouterr()
+    assert out.out == ""
+    assert "solve: opted out of power throttling" in out.err
+    assert "solve: could not opt out of power throttling" in out.err
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="the off-Windows path")
 def test_off_windows_the_real_opt_out_fails_soft(caplog):
     # No kernel32 here: ctypes.WinDLL does not exist. Logged, False, no raise.
@@ -173,7 +195,46 @@ def test_on_windows_the_process_reads_back_as_opted_out():
     assert out.stdout.strip().splitlines()[-1] == "[true, 1, 0]"
 
 
-# -- every World Builder entry point calls it, right after its arguments, before any work ----
+# -- every World Builder process calls it, before any work ---------------------------
+
+# How the Tower and the World Builder name a child process: `TOWER_ROOT / "scripts" / "<x>.py"`.
+_SPAWN = re.compile(r'"scripts"\s*/\s*"(world_\w+\.py)"')
+
+
+def _spawned_world_builder_scripts() -> set:
+    """Every `world_*.py` the Tower spawns, and every one THOSE spawn, transitively.
+
+    Starts at `tower/main.py` (the capture worker and the recovery finisher). The
+    `world_` prefix is the World Builder's: the Tower's other workers
+    (`object_memory_session.py`) are another cartridge's.
+    """
+    seen, todo = set(), [TOWER_ROOT / "tower" / "main.py"]
+    while todo:
+        for name in _SPAWN.findall(todo.pop().read_text(encoding="utf-8")):
+            if name not in seen:
+                seen.add(name)
+                todo.append(TOWER_ROOT / "scripts" / name)
+    return seen
+
+
+# A CLI the owner and the harnesses run directly; nothing spawns it.
+_CLI_SCRIPTS = {"world_appearance.py"}
+
+
+def test_the_spawn_scan_finds_the_known_children():
+    # A floor, so a scan that silently matched nothing cannot pass the tests below.
+    assert {"world_build_session.py", "world_finish_pending.py", "world_solve.py",
+            "world_surface.py", "world_masks_at_stop.py"} <= _spawned_world_builder_scripts()
+
+
+@pytest.mark.parametrize("name", sorted(_spawned_world_builder_scripts() | _CLI_SCRIPTS))
+def test_every_world_builder_process_calls_the_policy_in_main(name):
+    tree = ast.parse((TOWER_ROOT / "scripts" / name).read_text(encoding="utf-8"))
+    main = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "main")
+    calls = [n for n in ast.walk(main) if isinstance(n, ast.Call)
+             and getattr(n.func, "id", None) == "apply_world_build_power_policy"]
+    assert len(calls) == 1, f"{name}: main() must call apply_world_build_power_policy once"
+
 
 class _Called(Exception):
     pass
@@ -186,13 +247,22 @@ def _load_script(name):
     return module
 
 
-@pytest.mark.parametrize("script, role, argv", [
+_BEHAVIOUR_CASES = [
     ("world_build_session", "builder", ["--synthetic"]),
     ("world_solve", "solve", ["--world", "w", "--session", "s"]),
     ("world_surface", "surface", ["--world", "w"]),
     ("world_appearance", "appearance", ["--world", "w"]),
     ("world_finish_pending", "finisher", []),
-])
+    ("world_masks_at_stop", "masks", ["--world", "w", "--session", "s"]),
+]
+
+
+def test_the_behaviour_cases_cover_every_world_builder_process():
+    covered = {f"{script}.py" for script, _role, _argv in _BEHAVIOUR_CASES}
+    assert _spawned_world_builder_scripts() | _CLI_SCRIPTS <= covered
+
+
+@pytest.mark.parametrize("script, role, argv", _BEHAVIOUR_CASES)
 def test_every_entry_point_applies_the_policy_before_any_work(monkeypatch, tmp_path, script, role, argv):
     module = _load_script(script)
     seen = []
