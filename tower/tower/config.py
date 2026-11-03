@@ -1032,6 +1032,60 @@ def world_masks_at_stop_setting() -> bool:
     return _flag(WORLD_MASKS_AT_STOP_ENV, default=False)
 
 
+# THE LIVE SURFACE'S MASKS, REUSED AT STOP (`world_builder/masks_at_stop.py`, "LIVE MASKS"). During
+# a walk the session records redaction `none`, so the live surface child keys its OneFormer masks
+# under the re-redaction label and the final build, keyed under the real label written at Stop,
+# never finds them. With this on, a LIVE surface build appends to a journal beside its masks how
+# each one was computed (device, fp16, library versions, calibration) and the digest of the file it
+# wrote; the masks-at-Stop worker then stages, under the final key, every live OneFormer mask whose
+# inputs are provably the final's (same stored bytes, untouched by the re-redaction; same key apart
+# from the label; same mode and calibration), and computes only the rest. Acts only together with
+# `TOWER_WORLD_MASKS_AT_STOP` (the worker and the promotion are its): with that off, a live build
+# journals nothing either. Off: no journal, no reuse.
+WORLD_MASKS_LIVE_REUSE_ENV = "TOWER_WORLD_MASKS_LIVE_REUSE"
+
+
+def world_masks_live_reuse_setting() -> bool:
+    """`TOWER_WORLD_MASKS_LIVE_REUSE`: reuse the live surface's OneFormer masks at Stop. Off."""
+    return _flag(WORLD_MASKS_LIVE_REUSE_ENV, default=False)
+
+
+# THE MASKS-AT-STOP WORKER'S CPU THREADS. Its detectors run on the GPU, yet torch's default intra-op
+# pool (one OpenMP worker per logical CPU, twenty on the Tower) keeps ~16 cores spinning between
+# kernel launches -- the effect `TOWER_CV_TORCH_THREADS` caps for the CV Lab -- and the worker runs
+# beside the final solve, whose matching wants every core. A positive integer N starts the worker
+# with OMP_NUM_THREADS = MKL_NUM_THREADS = N. Measured at N = 4 ONLY (walk 10.2: ~3.4 cores instead
+# of ~16, the same masks per second, the staged masks byte-identical to an uncapped computation).
+# Byte identity is a measurement, not a property of torch's CPU kernels (some take another path at
+# 1 thread than at 2+), so any other N needs its own comparison (`l1b_verify_reuse.py`) before use.
+# Unset, blank, 0 or garbage: the worker's environment is untouched, as before.
+WORLD_MASKS_AT_STOP_THREADS_ENV = "TOWER_WORLD_MASKS_AT_STOP_THREADS"
+
+
+def world_masks_at_stop_threads_setting() -> int:
+    """`TOWER_WORLD_MASKS_AT_STOP_THREADS`: the worker's CPU thread cap; 0 = torch's default."""
+    return _non_negative_int(os.environ.get(WORLD_MASKS_AT_STOP_THREADS_ENV), default=0)
+
+
+# EVIDENCE FOR THE MASKS AT STOP. FOR VERIFICATION RUNS ONLY (test Towers, replays): never on the live
+# Tower. The final build prunes `dense/<sid>/work`, masks and fill masks included, once its appearance
+# is built, so nothing promoted could be checked afterwards. With this on (and
+# `TOWER_WORLD_MASKS_AT_STOP`), `promote` HARD-LINKS every mask it moves into the cache, and that
+# frame's final fill mask, into `<store root>/masks_at_stop/evidence-<world+session digest>/`, one
+# `promoted.jsonl` line each (where it came from: the worker or the live surface; the stage's
+# execution mode), and its own counts in `promote.json`. No copy fallback: a link that fails is a
+# `kept: false` line, which the verification counts as a shortfall. The verification script
+# (`l1b_verify_reuse.py`) recomputes those masks cold, byte-compares them and then removes the
+# evidence it checked; `masks_at_stop.discard_session` sweeps any evidence untouched for 7 days.
+# Linked, the evidence holds the walk's masks after the prune (~0.1-0.3 GB). Off: nothing kept.
+WORLD_MASKS_AT_STOP_EVIDENCE_ENV = "TOWER_WORLD_MASKS_AT_STOP_EVIDENCE"
+
+
+def world_masks_at_stop_evidence_setting() -> bool:
+    """`TOWER_WORLD_MASKS_AT_STOP_EVIDENCE`: keep every promoted mask for verification. Off."""
+    return _flag(WORLD_MASKS_AT_STOP_EVIDENCE_ENV, default=False)
+
+
 # The PREVIEW (WORLD-BUILDER-WORLDS.md §4a `basis`, rule 8). Read per request by the render revision
 # route. Off: the revision body is byte for byte as before (no `basis` key).
 WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"
