@@ -182,9 +182,24 @@ def test_evidence_cull_stands_down_under_reduced_precision_products(monkeypatch)
     args = (V, F, views, K, lambda d: torch.full_like(d, .1),
             S.SurfaceParams(min_support_frames=1), torch.device("cpu"))
     _, culled = _cull_run(monkeypatch, "on", *args, chunk=g)
-    monkeypatch.setattr(torch, "get_float32_matmul_precision", lambda: "high")
-    _, uncut = _cull_run(monkeypatch, "on", *args, chunk=g)
+    _, uncut = _cull_run(monkeypatch, "off", *args, chunk=g)
     assert len(culled) < len(uncut)
+
+    def refuses():
+        raise RuntimeError("mix of the legacy and new APIs")
+
+    for patch in (lambda: "high", lambda: "medium", refuses):
+        monkeypatch.setattr(torch, "get_float32_matmul_precision", patch)
+        assert not S._float32_products_are_ieee()
+        out, seen = _cull_run(monkeypatch, "on", *args, chunk=g)
+        assert len(seen) == len(uncut)
+    monkeypatch.undo()
+    assert S._float32_products_are_ieee()
+    # torch >= 2.9's per-backend setting, faked: setting it for real would
+    # leave the process's precision state mixed for the tests after this one
+    from types import SimpleNamespace
+    monkeypatch.setattr(torch.backends.cuda, "matmul", SimpleNamespace(fp32_precision="tf32"))
+    assert not S._float32_products_are_ieee()
 
 
 def _views_tensors(views, device="cpu"):

@@ -2194,6 +2194,26 @@ def _face_group_bounds(P, group):
     return centres, np.linalg.norm(lohi[:, 1] - centres, axis=1)
 
 
+def _float32_products_are_ieee() -> bool:
+    """Whether float32 matrix products run in IEEE float32 on every backend,
+    which `_frustum_face_runs` needs. False under TF32 or bfloat16 (the legacy
+    `allow_tf32` / `set_float32_matmul_precision` or the newer `fp32_precision`
+    settings), and when torch refuses to say (it raises once the two APIs were
+    mixed): the cull then stands down rather than fail the build."""
+    import torch
+
+    try:
+        if torch.get_float32_matmul_precision() != "highest":
+            return False
+    except RuntimeError:
+        return False
+    for backend in (torch.backends, getattr(torch.backends.cuda, "matmul", None),
+                    getattr(getattr(torch.backends, "mkldnn", None), "matmul", None)):
+        if backend is not None and getattr(backend, "fp32_precision", "none") not in ("ieee", "none"):
+            return False
+    return True
+
+
 def _frustum_face_runs(centres, radii, group, n_faces, R, t, K, H, W):
     """The face-index runs [a, b) whose groups MAY vote in the frame posed
     (R, t), or None for "test every face".
@@ -2315,13 +2335,12 @@ def evidence_filter(V, F, views, K, trunc_at, params: SurfaceParams, device=None
     # (`_frustum_face_runs`); only proven for IEEE float32 matrix products.
     group_centres = group_radii = None
     if world_mesh_evidence_cull_setting():
-        precision = torch.get_float32_matmul_precision()
-        if (fx > 0 and fy > 0 and np.isfinite((fx, fy, cx, cy)).all()
-                and precision == "highest"):
+        ieee = _float32_products_are_ieee()
+        if fx > 0 and fy > 0 and np.isfinite((fx, fy, cx, cy)).all() and ieee:
             group_centres, group_radii = _face_group_bounds(P, CULL_GROUP_FACES)
         else:
             logger.info("[Tower][WorldBuilder][surface] evidence cull stands down "
-                        "(float32 matmul precision %r, fx %s, fy %s)", precision, fx, fy)
+                        "(IEEE float32 products %s, fx %s, fy %s)", ieee, fx, fy)
     projected = 0       # face x frame projections the cull let through (log only)
     weak_idx = None
     if weak is not None:
