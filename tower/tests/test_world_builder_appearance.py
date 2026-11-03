@@ -1169,9 +1169,12 @@ def test_encode_pool_size_keeps_the_cpu_budget_and_bounds_astc_threads():
     # The Tower: 20 cores, ASTC gets 8 native threads per compress, 359x639 frames.
     assert AP.encode_pool_size(20, 8, True, 359, 639) == (8, 2)
     assert AP.encode_pool_size(20, 8, False, 359, 639) == (8, 0)
-    # Asked for more: capped by the cores; ASTC still never above the cores.
-    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=16) == (16, 2)
-    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=64) == (20, 2)
+    # Asked for more: capped by the cores and the memory budget; ASTC still
+    # never more native threads than cores.
+    fit = AP.ENCODE_POOL_MEMORY // (359 * 639 * AP.ENCODE_BYTES_PER_TEXEL)
+    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=12) == (min(12, fit), 2)
+    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=64) == (min(20, fit), 2)
+    assert AP.encode_pool_size(20, 8, True, 64, 64, requested=64) == (20, 2)
     assert AP.encode_pool_size(20, 8, True, 359, 639, requested=1) == (1, 1)
     # Two cores: one native ASTC thread, one image at a time.
     assert AP.encode_pool_size(2, 1, True, 359, 639) == (1, 1)
