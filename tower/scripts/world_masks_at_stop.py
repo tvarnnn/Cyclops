@@ -30,6 +30,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 from tower.world_builder import masks_at_stop  # noqa: E402
 from tower.world_builder.store import WorldStore  # noqa: E402
 
@@ -72,6 +73,9 @@ def main(argv=None) -> int:
                         datefmt="%H:%M:%S")
     for noisy in ("PIL", "urllib3", "httpx", "huggingface_hub"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
+    apply_world_build_power_policy("masks")
     store = WorldStore(Path(args.root))
     sources = masks_at_stop.read_sources(store, args.world, args.session)
     try:

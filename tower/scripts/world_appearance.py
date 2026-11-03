@@ -34,6 +34,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
+from tower.power_throttling import apply_world_build_power_policy  # noqa: E402
 from tower.world_builder.appearance import AppearanceParams  # noqa: E402
 from tower.world_builder.appearance_pipeline import (  # noqa: E402
     STATE_OK,
@@ -116,6 +117,9 @@ def main(argv=None) -> int:
                          "Unset, the value of TOWER_WORLD_RAW_IMAGERY decides, and that "
                          "is `redacted` unless it is set.")
     args = ap.parse_args(argv)
+    # TOWER_WORLD_NO_POWER_THROTTLING (default off): never let Windows throttle this
+    # process's CPU speed. See tower/power_throttling.py. Computes nothing differently.
+    apply_world_build_power_policy("appearance")
 
     store = WorldStore(Path(args.root))
     sessions = [args.session] if args.session else _sessions_with_solves(store, args.world)
