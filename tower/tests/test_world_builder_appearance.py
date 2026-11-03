@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import pathlib
+import threading
 import time
 
 import cv2
@@ -1121,6 +1122,95 @@ def test_the_phone_tier_is_capped_and_the_rest_is_kept_for_the_tower(world):
     # coverage is small; three keyframes must still keep most of what all see.
     assert cov["all"]["seen1"] > 0
     assert cov["phone"]["seen1"] >= 0.9 * cov["all"]["seen1"]
+
+
+@pytest.fixture
+def analytic_proxy(monkeypatch):
+    # The synthetic fixture's box has an exact analytic depth. This keeps the
+    # encode tests runnable on Macs whose Open3D wheel cannot load libusb.
+    class Caster:
+        def __init__(self, _V, _F):
+            pass
+
+        def depth(self, R, t, K, width, height):
+            return _render_box_depth(R, t, K, width, height)
+
+    monkeypatch.setattr(A, "ProxyCaster", Caster)
+
+
+def test_encode_pool_switch_defaults_off_and_workers_are_configurable(monkeypatch):
+    from tower.config import get_settings
+
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", raising=False)
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", raising=False)
+    assert get_settings().world_appearance_encode_pool is False
+    assert get_settings().world_appearance_encode_workers == 0
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "on")
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "3")
+    assert get_settings().world_appearance_encode_pool is True
+    assert get_settings().world_appearance_encode_workers == 3
+
+
+def test_encode_pool_off_keeps_the_serial_artifact(world, monkeypatch, analytic_proxy):
+    monkeypatch.setattr(AP.time, "time", lambda: 1234567890.0)
+    monkeypatch.setattr(AP.time, "time_ns", lambda: 1234567890000000000)
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", raising=False)
+    params = A.AppearanceParams(selection_samples=4000, chunk_slots=2, phone_budget=3)
+    assert world.build(params=params, redactor_factory=_never_redact).state == AP.STATE_OK
+    root = AP.appearance_dir(world.store, WORLD, SESSION)
+    serial = (root / "manifest.json").read_bytes()
+
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "false")
+    assert world.build(params=params, redactor_factory=_never_redact, force=True).state == AP.STATE_OK
+    assert (root / "manifest.json").read_bytes() == serial
+
+
+def test_encode_pool_matches_every_multichunk_blob_digest_and_manifest(
+        world, monkeypatch, analytic_proxy):
+    monkeypatch.setattr(AP.time, "time", lambda: 1234567890.0)
+    monkeypatch.setattr(AP.time, "time_ns", lambda: 1234567890000000000)
+    monkeypatch.setattr(AP.os, "cpu_count", lambda: 8)
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "2")
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "false")
+    params = A.AppearanceParams(selection_samples=4000, chunk_slots=2, phone_budget=3)
+    assert world.build(params=params, redactor_factory=_never_redact).state == AP.STATE_OK
+    root = AP.appearance_dir(world.store, WORLD, SESSION)
+    serial = (root / "manifest.json").read_bytes()
+    chunks = {c["digest"]: (root / AP._file_name("chunk", c["digest"])).read_bytes()
+              for c in world.manifest()["chunks"]}
+    assert len(chunks) > 2
+
+    real_astc = A.encode_astc
+    worker_contexts = {}
+
+    def record_astc(rgba, quality, threads, *, contexts=None):
+        worker_contexts[threading.get_ident()] = contexts
+        return real_astc(rgba, quality, threads, contexts=contexts)
+
+    monkeypatch.setattr(A, "encode_astc", record_astc)
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "true")
+    assert world.build(params=params, redactor_factory=_never_redact, force=True).state == AP.STATE_OK
+    if A.astc_available()[0]:
+        assert worker_contexts and all(contexts is not None for contexts in worker_contexts.values())
+        assert len({id(contexts) for contexts in worker_contexts.values()}) == len(worker_contexts)
+    assert (root / "manifest.json").read_bytes() == serial
+    assert {c["digest"]: (root / AP._file_name("chunk", c["digest"])).read_bytes()
+            for c in world.manifest()["chunks"]} == chunks
+
+
+@pytest.mark.parametrize("pool", ["false", "true"])
+def test_encode_pool_worker_error_is_the_serial_error(world, monkeypatch, analytic_proxy, pool):
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", pool)
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "2")
+    monkeypatch.setattr(AP.os, "cpu_count", lambda: 8)
+
+    def fail(_rgba, _quality):
+        raise RuntimeError("WebP worker failure")
+
+    monkeypatch.setattr(A, "encode_webp", fail)
+    result = world.build(redactor_factory=_never_redact)
+    assert result.state == AP.STATE_FAILED and result.detail == "WebP worker failure"
+    assert world.manifest() is None
 
 
 # ---------------------------------------------------------------------------

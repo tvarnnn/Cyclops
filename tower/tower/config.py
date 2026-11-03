@@ -524,6 +524,10 @@ class Settings:
     # saw. It runs after each surface build in the same child, needs the
     # surface, and costs about 40 s of mostly-CPU work on a 400-keyframe walk.
     world_appearance: bool = True
+    # Parallel per-frame appearance encodes. Off preserves the serial codec
+    # path; 0 workers chooses a bounded count from CPU and frame size.
+    world_appearance_encode_pool: bool = False
+    world_appearance_encode_workers: int = 0
 
     # Finishing photographic work that was INTERRUPTED. ON, and the default is
     # the decision.
@@ -615,6 +619,8 @@ def get_settings() -> Settings:
         world_densify=_flag("TOWER_WORLD_DENSIFY", default=False),
         world_surface=_flag("TOWER_WORLD_SURFACE", default=True),
         world_appearance=_flag("TOWER_WORLD_APPEARANCE", default=True),
+        world_appearance_encode_pool=world_appearance_encode_pool_setting(),
+        world_appearance_encode_workers=world_appearance_encode_workers_setting(),
         world_finish_pending=_flag("TOWER_WORLD_FINISH_PENDING", default=True),
         world_relocalizer=world_relocalizer_setting(),
         scene_understanding=_scene_enabled(scene_mode),
@@ -844,6 +850,16 @@ def _flag(name: str, *, default: bool) -> bool:
     # silently disable a cartridge whose flag defaults ON. A spelling of
     # true must never mean false.
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def world_appearance_encode_pool_setting() -> bool:
+    """The appearance child reads this directly from its inherited environment."""
+    return _flag("TOWER_WORLD_APPEARANCE_ENCODE_POOL", default=False)
+
+
+def world_appearance_encode_workers_setting() -> int:
+    """0 selects the bounded automatic worker count."""
+    return _non_negative_int(os.environ.get("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS"), default=0)
 
 
 # The final solve's two settings, by name. Public, and read through the two

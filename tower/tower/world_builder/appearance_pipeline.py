@@ -33,12 +33,17 @@ import json
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
+from threading import local
 
 import numpy as np
 
 from tower.storage import write_bytes_atomic, write_json_atomic
+from tower.config import (world_appearance_encode_pool_setting,
+                          world_appearance_encode_workers_setting)
 from tower.world_builder import appearance as A
 from tower.world_builder import raw_imagery as RAWIMG
 
@@ -590,6 +595,13 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     _status(root, state=STATE_RUNNING, stage=STAGE_ENCODE, params_digest=pdigest)
     astc_ok, astc_why = A.astc_available()
     threads = max(1, min(8, (os.cpu_count() or 2) // 2))
+    pool_on = world_appearance_encode_pool_setting()
+    # ASTC already uses `threads` native workers per image. Bound concurrent
+    # images by CPU and by 256 MiB for their RGBA and codec working copies.
+    workers = min(world_appearance_encode_workers_setting() or 4,
+                  max(1, (os.cpu_count() or 2) // (threads if astc_ok else 1)),
+                  max(1, (256 * 1024 * 1024) // max(1, W * H * 16))) if pool_on else 1
+    worker_astc = local()
     phone = [frames[i] for i in order]
     tower = sorted((fr for i, fr in enumerate(frames) if i not in rank),
                    key=lambda fr: fr.source.ki)
@@ -597,12 +609,25 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
     chunks: list[dict] = []
     written: list[str] = []
 
+    def encode_frame(fr, encoding):
+        rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
+        if encoding == A.ENC_ASTC:
+            # A worker reuses only its own ASTC context; native contexts are
+            # never compressed from two Python threads at once.
+            return A.encode_astc(rgba, params.astc_quality, threads,
+                                 contexts=worker_astc.__dict__)
+        return A.encode_webp(rgba, params.webp_quality)
+
     def emit(group, encoding, tier):
-        blobs = []
-        for fr in group:
-            rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
-            blobs.append(A.encode_astc(rgba, params.astc_quality, threads)
-                         if encoding == A.ENC_ASTC else A.encode_webp(rgba, params.webp_quality))
+        if pool is None:
+            blobs = []
+            for fr in group:
+                rgba = A.rgba_for(fr.source.rgb, fr.transparent_core, params.alpha_feather_px)
+                blobs.append(A.encode_astc(rgba, params.astc_quality, threads)
+                             if encoding == A.ENC_ASTC else A.encode_webp(rgba, params.webp_quality))
+        else:
+            # map yields in input order, regardless of worker completion order.
+            blobs = list(pool.map(lambda fr: encode_frame(fr, encoding), group))
         buf = A.pack_chunk(encoding, W, H, blobs)
         digest = content_digest(buf)
         name = _file_name("chunk", digest)
@@ -613,18 +638,19 @@ def _build(store, world_id, session_id, root, params, should_stop, progress, for
         for slot, fr in enumerate(group):
             entry_chunks.setdefault(fr.source.ki, {})[encoding] = {"digest": digest, "slot": slot}
 
-    step = max(1, params.chunk_slots)
-    for c0 in range(0, len(phone), step):
-        if _stopped(should_stop):
-            return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
-        group = phone[c0:c0 + step]
-        if astc_ok:
-            emit(group, A.ENC_ASTC, A.TIER_PHONE)
-        emit(group, A.ENC_WEBP, A.TIER_PHONE)
-    for c0 in range(0, len(tower), step):
-        if _stopped(should_stop):
-            return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
-        emit(tower[c0:c0 + step], A.ENC_WEBP, A.TIER_TOWER)
+    with (ThreadPoolExecutor(max_workers=workers) if pool_on else nullcontext()) as pool:
+        step = max(1, params.chunk_slots)
+        for c0 in range(0, len(phone), step):
+            if _stopped(should_stop):
+                return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
+            group = phone[c0:c0 + step]
+            if astc_ok:
+                emit(group, A.ENC_ASTC, A.TIER_PHONE)
+            emit(group, A.ENC_WEBP, A.TIER_PHONE)
+        for c0 in range(0, len(tower), step):
+            if _stopped(should_stop):
+                return _stop(root, STAGE_ENCODE, seconds, discard=(root, written))
+            emit(tower[c0:c0 + step], A.ENC_WEBP, A.TIER_TOWER)
     proxy_name = _file_name("proxy", proxy_digest)
     _write_once(root / proxy_name, proxy_bytes)
     written.append(proxy_name)
