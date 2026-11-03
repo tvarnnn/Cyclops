@@ -627,6 +627,11 @@ CHILD_TERMINATE_TIMEOUT_S = 5.0
 # The raw stdout of a final-solve child whose summary did not parse, kept beside the solve.
 FINAL_SOLVE_STDOUT_FILENAME = "final_solve.stdout"
 CHILD_POLL_S = 0.25
+# `TOWER_WORLD_BG_STOP_AT_MATCH`'s deferred map (`BackgroundSolver.run_final`) is bounded by the time
+# the default path would have given the ended child to map (up to the cap), plus this: a fresh child
+# pays the interpreter start, the pycolmap import and the keyframe read the ended child had already
+# paid (about 1-3 s measured on the Tower; 0.8 s from launch to a solve's first probe on 10.2).
+DEFERRED_MAP_START_ALLOWANCE_S = 10.0
 
 
 def python_executable() -> str:
@@ -870,6 +875,10 @@ class BackgroundSolver:
         self._stop_at_match = stop_at_match
         self._match_token = None
         self._match_root = None
+        # The background child ended at its marker, owed a deferred map if the final publishes nothing.
+        self._deferred = None
+        # The descendants a background child had when the wait ended it: gone before the final starts.
+        self._ended_family = []
 
     @property
     def running(self) -> bool:
@@ -1153,9 +1162,14 @@ class BackgroundSolver:
         `should_stop` ends the wait early the same way.
 
         AT ITS MATCHING COMMIT (`TOWER_WORLD_BG_STOP_AT_MATCH`, on only). A background child
-        whose marker says its database writes are committed is ended at once, inside the same
-        cap: what it would still do is map, and the final solve never uses that map, while it
-        reads the database as committed (`matching_marker.py`). No marker is the wait above.
+        whose marker says its database writes are committed is ended at once, INSIDE the same cap
+        (the cap is checked first, so a marker seen at or past it is the cap's kill, as today):
+        what it would still do is map, and the final solve never uses that map, while it reads the
+        database as committed (`matching_marker.py`). With the switch on, the wait remembers the
+        descendants of a child it ends, and `run_final` waits (bounded) for them to be gone before
+        the final solve opens the database; a child ended at its marker is waited for here, before
+        its committed database is snapshotted for the deferred map `run_final` may owe. A hard stop
+        is today's (never waited for). No marker is the wait above.
         """
         if self._child is None:
             return True
@@ -1170,37 +1184,241 @@ class BackgroundSolver:
                     )
                     self._terminate_child()
                     return False
-                marker = self._matching_committed() if self._match_token is not None else None
-                if marker is not None:
-                    digest = marker.get("digest") if isinstance(marker.get("digest"), dict) else {}
-                    committed_at = marker.get("committed_at")
-                    logger.info(
-                        "[Tower][WorldBuilder] background solve pid %s ended at its matching "
-                        "commit, %.1fs into a wait of up to %ss (committed %ss before): its map "
-                        "is never used and its database is committed (content %s, %s verified "
-                        "pairs; TOWER_WORLD_BG_STOP_AT_MATCH)",
-                        self._child.pid, time.monotonic() - entered, timeout,
-                        (round(time.time() - committed_at, 1)
-                         if isinstance(committed_at, (int, float)) else None),
-                        digest.get("content"), digest.get("verified_pairs"),
-                    )
-                    self._terminate_child()
-                    return False
                 if deadline is not None and time.monotonic() >= deadline:
                     logger.warning(
                         "[Tower][WorldBuilder] background solve pid %s still running after "
                         "%ss; terminating it so the final solve owns the workspace",
                         self._child.pid, timeout,
                     )
+                    if self._stop_at_match:
+                        self._ended_family = self._family(self._child)
                     self._terminate_child()
+                    return False
+                marker = self._matching_committed() if self._match_token is not None else None
+                if marker is not None:
+                    self._end_at_commit(marker, entered=entered, deadline=deadline, timeout=timeout)
                     return False
                 time.sleep(CHILD_POLL_S)
             return True
         finally:
             self._reap()
 
+    def _end_at_commit(self, marker: dict, *, entered: float, deadline, timeout) -> None:
+        """End the running background child at its marker (switch on): verified, then snapshot the
+        committed database and remember the deferred map it may be owed (`run_final`)."""
+        from tower.world_builder import matching_marker  # noqa: PLC0415
+
+        now_mono, now_wall = time.monotonic(), time.time()
+        committed_ago = max(0.0, now_wall - float(marker["committed_at"]))
+        pid = self._child.pid
+        digest = marker.get("digest") if isinstance(marker.get("digest"), dict) else {}
+        logger.info(
+            "[Tower][WorldBuilder] background solve pid %s ended at its matching commit, %.1fs "
+            "into a wait of up to %ss (committed %.1fs before): its map is never used and its "
+            "database is committed (%s keyframes%s; TOWER_WORLD_BG_STOP_AT_MATCH)",
+            pid, now_mono - entered, timeout, committed_ago, len(marker["keyframe_ids"]),
+            f", content {digest.get('content')}, {digest.get('verified_pairs')} verified pairs"
+            if digest else "",
+        )
+        child = self._child
+        family = self._family(child)
+        self._terminate_child()
+        gone = self._await_gone(child, family)
+        snapshot = matching_marker.snapshot_horizon(self._match_root)
+        # What the default path would have given this child to map: from its commit to the cap.
+        budget = None if deadline is None else max(0.0, deadline - (now_mono - committed_ago))
+        self._deferred = None if snapshot is None else {
+            "token": marker["token"], "snapshot": str(snapshot), "pid": pid,
+            "keyframe_ids": list(marker["keyframe_ids"]), "solve": marker.get("solve") or {},
+            "budget_s": budget, "descendants_gone": gone,
+        }
+        if snapshot is None:
+            logger.error("[Tower][WorldBuilder] no snapshot of background solve pid %s's committed "
+                         "database: no deferred map is possible if the final publishes nothing", pid)
+
+    @staticmethod
+    def _family(child) -> list:
+        """The live descendants of `child` (psutil handles, which carry their creation time, so a
+        reused pid is never mistaken for one). Empty for a stand-in or an ended child."""
+        if not isinstance(child, subprocess.Popen) or child.poll() is not None:
+            return []
+        try:
+            import psutil  # noqa: PLC0415
+
+            return psutil.Process(child.pid).children(recursive=True)
+        except Exception:  # noqa: BLE001 -- gone already, or psutil cannot see it
+            return []
+
+    def _terminate_child_verified(self) -> bool:
+        """`_terminate_child`, then `_await_gone` for the child and its descendants."""
+        child = self._child
+        if child is None:
+            return True
+        family = self._family(child)
+        self._terminate_child()
+        return self._await_gone(child, family)
+
+    @staticmethod
+    def _await_gone(child, family) -> bool:
+        """A bounded wait until `child` and every process in `family` is gone, killing stragglers
+        once (switch on only: the final solve must not open a database one of them may still
+        hold). True when all are gone; False is logged, and the caller goes on as it always has."""
+        alive = []
+        try:
+            import psutil  # noqa: PLC0415
+
+            _gone, alive = psutil.wait_procs(family, timeout=CHILD_TERMINATE_TIMEOUT_S)
+            for proc in alive:
+                try:
+                    proc.kill()
+                except Exception:  # noqa: BLE001 -- gone in between
+                    pass
+            _gone, alive = psutil.wait_procs(alive, timeout=CHILD_TERMINATE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 -- cannot tell: say so below
+            alive = list(family)
+        child_alive = child is not None and child.poll() is None
+        if alive or child_alive:
+            logger.warning(
+                "[Tower][WorldBuilder] an ended solve child (pid %s): %s descendant(s) %s still "
+                "alive %ss after it was ended; going on as always",
+                getattr(child, "pid", None), len(alive) + int(child_alive),
+                [getattr(p, "pid", None) for p in alive], 2 * CHILD_TERMINATE_TIMEOUT_S)
+            return False
+        return True
+
     def run_final(self, store: WorldStore, sources: dict, *, should_stop=None,
                   phase_env: dict | None = None) -> dict:
+        """The finalization solve (`_run_final`), then -- `TOWER_WORLD_BG_STOP_AT_MATCH` only, when
+        the background child was ended at its marker -- what that early end owes.
+
+        NEVER AN OLDER WORLD THAN THE SWITCH OFF. Off, the ended child would have mapped inside
+        the cap and, had it finished, published its solution before the final solve ran; a final
+        that then published nothing (failed, withheld, found nothing) left THAT solution standing.
+        So when the final publishes nothing, the child's committed horizon is mapped now from its
+        snapshot and published as the child would have (`_run_deferred_map`), within the time the
+        default path would have given it; past that, the default path's cap would have killed it
+        too. A solved final makes the snapshot moot. A HARD STOP (Tower shutdown: SIGTERM, SIGINT,
+        SIGBREAK) is today's: nothing is mapped after one, the builder leaves at once. Off,
+        `_deferred` is never set and this is `_run_final` exactly.
+        """
+        if self._ended_family:
+            # Before the final solve opens the database (switch on): the descendants of the child
+            # the wait ended at the cap are gone, or a bounded wait says why not.
+            family, self._ended_family = self._ended_family, []
+            self._await_gone(None, family)
+        report = self._run_final(store, sources, should_stop=should_stop, phase_env=phase_env)
+        if self._deferred is not None:
+            report = self._settle_deferred(store, report, should_stop)
+        return report
+
+    def _settle_deferred(self, store: WorldStore, report: dict, should_stop) -> dict:
+        from tower.world_builder import matching_marker  # noqa: PLC0415
+
+        deferred, self._deferred = self._deferred, None
+        try:
+            if report.get("solved"):
+                return report
+            if report.get("interrupted") or (should_stop is not None and should_stop()):
+                logger.warning(
+                    "[Tower][WorldBuilder] hard stop: the deferred map of background solve pid %s "
+                    "is not run (nothing is mapped after a hard stop); the last background "
+                    "solution stands", deferred["pid"])
+                report["deferred_background_map"] = {"ran": False, "published": False,
+                                                     "why": "hard stop"}
+                return report
+            report["deferred_background_map"] = self._run_deferred_map(store, deferred,
+                                                                        should_stop)
+            return report
+        finally:
+            matching_marker.discard_snapshot(self._match_root or Path(deferred["snapshot"]).parent)
+
+    def _run_deferred_map(self, store: WorldStore, deferred: dict, should_stop) -> dict:
+        """Map and publish the ended child's committed horizon (`world_solve.py --deferred-map`),
+        bounded by `budget_s` + `DEFERRED_MAP_START_ALLOWANCE_S`; a hard stop ends it as it ends
+        any child. Returns what happened (`ran`, `published`, `seconds`, `why` / `summary`)."""
+        from tower.storage import write_json_atomic  # noqa: PLC0415
+        from tower.world_builder import global_solve, matching_marker  # noqa: PLC0415
+
+        workspace = global_solve.workspace_for(store, self.world_id, self.session_id)
+        order = workspace.root / matching_marker.DEFERRED_ORDER_FILENAME
+        bound = (None if deferred["budget_s"] is None
+                 else deferred["budget_s"] + DEFERRED_MAP_START_ALLOWANCE_S)
+        started = time.monotonic()
+        logger.warning(
+            "[Tower][WorldBuilder] the final solve published nothing: mapping background solve "
+            "pid %s's committed horizon (%s keyframes) as the default path could have, within %s s",
+            deferred["pid"], len(deferred["keyframe_ids"]),
+            None if bound is None else round(bound, 1))
+        try:
+            write_json_atomic(order, {
+                "record": matching_marker.DEFERRED_ORDER_RECORD, "token": deferred["token"],
+                "database": deferred["snapshot"], "keyframe_ids": deferred["keyframe_ids"],
+                "solve": deferred["solve"]})
+            argv = [python_executable(), str(self.script), "--root", str(self.root),
+                    "--world", self.world_id, "--session", self.session_id,
+                    "--deferred-map", str(order)]
+            if self.threads is not None:
+                argv += ["--threads", str(self.threads)]
+            self._log = open(workspace.root / "solve.log", "ab")
+            self._child = self._spawn(
+                argv, cwd=str(TOWER_ROOT), stdout=subprocess.PIPE, stderr=self._log,
+                env=child_environment(), stdin=subprocess.DEVNULL)
+        except Exception as error:  # noqa: BLE001 -- the final's report stands
+            logger.exception("[Tower][WorldBuilder] the deferred map could not start")
+            if self._log is not None:
+                self._log.close()
+                self._log = None
+            return {"ran": False, "published": False, "why": f"{type(error).__name__}: {error}"}
+        child = self._child
+        chunks: list[bytes] = []
+
+        def drain() -> None:
+            try:
+                chunks.append(child.stdout.read())
+            except Exception:  # noqa: BLE001
+                pass
+
+        reader = threading.Thread(target=drain, name="world-builder-deferred-map-stdout",
+                                  daemon=True)
+        reader.start()
+        why = None
+        try:
+            while child.poll() is None:
+                if should_stop is not None and should_stop():
+                    why = "hard stop"
+                elif bound is not None and time.monotonic() - started >= bound:
+                    why = (f"not mapped within {round(bound, 1)} s, the time the default path "
+                           "gave the child before its cap")
+                if why is not None:
+                    logger.warning("[Tower][WorldBuilder] deferred map pid %s ended: %s",
+                                   child.pid, why)
+                    self._terminate_child_verified()
+                    break
+                time.sleep(CHILD_POLL_S)
+        finally:
+            reader.join(timeout=2.0)
+            self._reap()
+            self._completed_unseen = False   # not a background solve landing
+        seconds = round(time.monotonic() - started, 1)
+        if why is not None:
+            return {"ran": True, "published": False, "seconds": seconds, "why": why}
+        try:
+            summary = json.loads(b"".join(chunks).decode("utf-8", errors="replace").strip() or "{}")
+        except ValueError:
+            summary = {}
+        published = bool(summary.get("solved"))
+        logger.warning(
+            "[Tower][WorldBuilder] deferred map of background solve pid %s: published=%s "
+            "solver=%s posed=%s/%s components=%s in %.1fs%s", deferred["pid"], published,
+            summary.get("solver"), summary.get("keyframes_posed"), summary.get("keyframes"),
+            len(summary.get("components") or []), seconds,
+            "" if published else f" ({summary.get('reason') or 'no summary'})")
+        return {"ran": True, "published": published, "seconds": seconds,
+                "summary": {k: summary.get(k) for k in ("solver", "keyframes", "keyframes_posed",
+                                                         "reason")}}
+
+    def _run_final(self, store: WorldStore, sources: dict, *, should_stop=None,
+                   phase_env: dict | None = None) -> dict:
         """The finalization solve, as a child, until it ends or a stop arrives.
 
         Returns the child's own summary (`solved`, `solver`, `components`,

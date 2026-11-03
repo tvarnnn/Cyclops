@@ -80,6 +80,15 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+IDS = ["s:00000000", "s:00000001", "s:00000002"]
+
+
+def _ctx(ids=IDS) -> dict:
+    """What `solve` hands `on_matched`: the horizon's keyframes and the solve's timings so far."""
+    return {"keyframe_ids": list(ids), "prepare_s": 0.1, "extract_s": 0.2, "match_s": 0.3,
+            "images_undistorted": len(ids), "threads": 18, "database_existed": True}
+
+
 # ---------------------------------------------------------------------------
 # the setting
 # ---------------------------------------------------------------------------
@@ -108,12 +117,13 @@ def test_the_switch_is_off_unless_said(monkeypatch, value, on):
 def test_the_marker_belongs_to_the_launch_that_wrote_it(tmp_path):
     root = _workspace(tmp_path)
     _colmap_like_database(root / "database.db")
-    MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db")
+    MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db", _ctx())
     record = MM.read(root, "t1")
     assert record["record"] == MM.MARKER_RECORD and record["token"] == "t1"
-    assert record["pid"] == os.getpid()
-    assert record["digest"] == global_solve.database_digest(root / "database.db")
-    assert "files" not in record                     # the probe is off
+    assert record["pid"] == os.getpid() and record["writer_free"] is True
+    assert record["keyframe_ids"] == IDS and record["solve"]["match_s"] == 0.3
+    # The probe off: no digest anywhere (R2 #3 / R1 N1), so no file hashes either.
+    assert "digest" not in record and "files" not in record
     assert MM.read(root, "t2") is None               # another launch's marker
     assert MM.read(root, None) is None and MM.read(root, "") is None
     MM.clear(root)
@@ -122,13 +132,46 @@ def test_the_marker_belongs_to_the_launch_that_wrote_it(tmp_path):
     MM.clear(root)                                   # clearing nothing is fine
 
 
-@pytest.mark.parametrize("body", ["{\"record\": \"wb-bg-matching-committed/1\", \"tok",
-                                  "[]", json.dumps({"record": "other/1", "token": "t1"}),
-                                  json.dumps({"token": "t1"})])
-def test_a_torn_or_foreign_marker_is_no_marker(tmp_path, body):
+_WHOLE = {"record": MM.MARKER_RECORD, "token": "t1", "pid": 7, "committed_at": 1.0,
+          "writer_free": True, "keyframe_ids": IDS}
+
+
+@pytest.mark.parametrize("body", [
+    "{\"record\": \"wb-bg-matching-committed/2\", \"tok", "[]",
+    json.dumps({"record": "other/1", "token": "t1"}), json.dumps({"token": "t1"}),
+    json.dumps(dict(_WHOLE, record="wb-bg-matching-committed/1")),     # the round-1 marker
+    json.dumps({k: v for k, v in _WHOLE.items() if k != "writer_free"}),
+    json.dumps(dict(_WHOLE, writer_free=False)),
+    json.dumps({k: v for k, v in _WHOLE.items() if k != "keyframe_ids"}),
+    json.dumps(dict(_WHOLE, keyframe_ids=["s:1"])),
+    json.dumps(dict(_WHOLE, pid="7")),
+    json.dumps(dict(_WHOLE, digest=None)),                                # a digest, but no valid one
+    json.dumps(dict(_WHOLE, digest={"error": "boom"})),
+])
+def test_a_torn_foreign_or_incomplete_marker_is_no_marker(tmp_path, body):
     root = _workspace(tmp_path)
     root.mkdir(parents=True)
     MM.marker_path(root).write_text(body, encoding="utf-8")
+    assert MM.read(root, "t1") is None
+
+
+def test_a_whole_marker_is_read(tmp_path):
+    root = _workspace(tmp_path)
+    root.mkdir(parents=True)
+    MM.marker_path(root).write_text(json.dumps(_WHOLE), encoding="utf-8")
+    assert MM.read(root, "t1") == _WHOLE
+
+
+def test_read_never_raises_even_when_the_file_system_does(tmp_path, monkeypatch):
+    """R1 N2: `exists()` itself can raise (a delete-pending file on Windows): no marker, no error."""
+    root = _workspace(tmp_path)
+    root.mkdir(parents=True)
+    MM.marker_path(root).write_text(json.dumps(_WHOLE), encoding="utf-8")
+
+    def refuse(self, *a, **k):
+        raise PermissionError("delete pending")
+
+    monkeypatch.setattr(Path, "exists", refuse)
     assert MM.read(root, "t1") is None
 
 
@@ -153,8 +196,38 @@ def test_a_marker_that_cannot_be_written_is_no_marker_and_no_error(tmp_path, mon
         raise PermissionError("held")
 
     monkeypatch.setattr(storage, "write_json_atomic", refuse)
-    MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db")
+    MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db", _ctx())
     assert MM.read(root, "t1") is None
+
+
+def test_a_database_still_held_by_a_writer_is_no_marker(tmp_path):
+    """R2 #3: the marker means the matching call returned AND no connection holds the database
+    for writing. A writer still in a transaction: fail closed."""
+    root = _workspace(tmp_path)
+    _colmap_like_database(root / "database.db")
+    holder = sqlite3.connect(root / "database.db")
+    try:
+        holder.execute("begin immediate")
+        MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db",
+                                                                          _ctx())
+        assert not MM.marker_path(root).exists()
+    finally:
+        holder.rollback()
+        holder.close()
+    MM.ChildHook(root, token="t1", probe=False, final=False).matched(root / "database.db", _ctx())
+    assert MM.read(root, "t1") is not None
+
+
+@pytest.mark.parametrize("bad", [None, {"error": "OperationalError: locked"}, {"content": ""}])
+def test_in_probe_mode_a_digest_that_cannot_be_taken_is_no_marker(tmp_path, monkeypatch, bad):
+    root = _workspace(tmp_path)
+    _colmap_like_database(root / "database.db")
+    monkeypatch.setattr(MM, "_digest", lambda _db: bad)
+    MM.ChildHook(root, token="t1", probe=True, final=False).matched(root / "database.db", _ctx())
+    assert not MM.marker_path(root).exists()
+    # The probe still says what happened.
+    (record,) = [json.loads(l) for l in (root / MM.PROBE_FILENAME).read_text().splitlines()]
+    assert record["stage"] == "matched" and record["digest"] == bad
 
 
 def test_no_token_and_no_probe_is_no_hook(tmp_path, monkeypatch):
@@ -178,7 +251,7 @@ def test_the_probes_record_the_database_byte_for_byte(tmp_path):
     _colmap_like_database(database)
     hook = MM.ChildHook(root, token="t1", probe=True, final=False)
     hook.opened()
-    hook.matched(database)
+    hook.matched(database, _ctx())
     hook.finished()
     records = [json.loads(line) for line in
                (root / MM.PROBE_FILENAME).read_text(encoding="utf-8").splitlines()]
@@ -217,6 +290,7 @@ class _FakeColmap(types.ModuleType):
     def __init__(self):
         super().__init__("pycolmap")
         self.calls = []
+        self.mapped = []
         self.__version__ = "fake"
         self.logging = types.SimpleNamespace(minloglevel=0)
         self.CameraMode = types.SimpleNamespace(SINGLE="SINGLE")
@@ -233,11 +307,12 @@ class _FakeColmap(types.ModuleType):
     def match_sequential(self, database_path, **_k):
         self.calls.append("match_sequential")
 
-    def global_mapping(self, *_a, **_k):
+    def global_mapping(self, database_path, image_path, output_path, **_k):
         self.calls.append("global_mapping")
+        self.mapped.append((Path(database_path), Path(output_path)))
         return {}
 
-    def incremental_mapping(self, *_a, **_k):
+    def incremental_mapping(self, database_path, image_path, output_path, **_k):
         self.calls.append("incremental_mapping")
         return {}
 
@@ -287,12 +362,19 @@ def test_the_hook_runs_once_after_every_database_write_and_before_mapping(sessio
     colmap = _FakeColmap()
     seen = []
 
-    def on_matched(database_path):
-        seen.append((Path(database_path), list(colmap.calls)))
+    def on_matched(database_path, context):
+        seen.append((Path(database_path), list(colmap.calls), context))
         time.sleep(0.3)
 
     summary = _bg_solve(session, colmap, monkeypatch, on_matched=on_matched)
-    assert seen == [(session.workspace.database_path, ["extract_features", "match_sequential"])]
+    ((database, calls, context),) = seen
+    assert (database, calls) == (session.workspace.database_path,
+                                 ["extract_features", "match_sequential"])
+    # What a deferred map of this horizon needs: the keyframes this solve read, in its order.
+    keyframes = session.store.read_keyframes(session.world_id, session.session_id)
+    assert context["keyframe_ids"] == [k.keyframe_id for k in keyframes]
+    assert set(context) == {"keyframe_ids", "prepare_s", "extract_s", "match_s",
+                            "images_undistorted", "threads", "database_existed"}
     assert colmap.calls == ["extract_features", "match_sequential", "global_mapping",
                             "incremental_mapping"]
     # The hook's own time counts in neither match_s nor map_s.
@@ -313,7 +395,7 @@ def test_without_a_hook_the_solve_is_what_it_was(session, monkeypatch, tmp_path)
     _bg_solve(session, plain, monkeypatch)
     without = published()
     hooked = _FakeColmap()
-    _bg_solve(session, hooked, monkeypatch, on_matched=lambda _p: None)
+    _bg_solve(session, hooked, monkeypatch, on_matched=lambda _p, _c: None)
     assert hooked.calls == plain.calls
     assert published() == without
 
@@ -332,7 +414,8 @@ def _world_solve_kwargs(monkeypatch, tmp_path, argv):
     def fake_solve(store, world, session, **kwargs):
         captured.update(kwargs)
         if "on_matched" in kwargs:
-            kwargs["on_matched"](global_solve.workspace_for(store, world, session).database_path)
+            kwargs["on_matched"](global_solve.workspace_for(store, world, session).database_path,
+                                 _ctx())
         return {"solved": False, "reason": "fake"}
 
     monkeypatch.setattr(world_solve.global_solve, "solve", fake_solve)
@@ -397,9 +480,18 @@ STUB = textwrap.dedent(r'''
     token = os.environ.get(MM.TOKEN_ENV)
     if mode == "foreign-marker":
         token = "not-this-launch"
+    if mode == "grandchild":
+        # A descendant that holds the database open (a reader), as a mapper helper might.
+        import subprocess
+        gc = subprocess.Popen([sys.executable, "-c", "import sqlite3,sys,time; c=sqlite3.connect(sys.argv[1]); "
+                               "c.execute('select count(*) from images').fetchone(); time.sleep(60)",
+                               str(root / "database.db")])
+        (root / "grandchild.pid").write_text(str(gc.pid))
     if mode != "no-marker":
         probe = os.environ.get("TOWER_WORLD_BG_STOP_AT_MATCH_PROBE") == "on"
-        MM.ChildHook(root, token=token, probe=probe, final=False).matched(root / "database.db")
+        ids = ["s:00000000", "s:00000001", "s:00000002"]
+        MM.ChildHook(root, token=token, probe=probe, final=False).matched(
+            root / "database.db", {"keyframe_ids": ids, "match_s": 1.5, "threads": 18})
     # "Mapping": a reader holds the database, and nothing more is written.
     reader = sqlite3.connect(root / "database.db")
     reader.execute("select count(*) from two_view_geometries").fetchone()
@@ -446,13 +538,20 @@ def test_stop_ends_the_child_at_its_matching_commit(tmp_path, monkeypatch, caplo
         assert time.monotonic() - started < 15.0          # nowhere near the cap
         assert child.poll() is not None and not solver.running
         assert "ended at its matching commit" in caplog.text
-        # The database the final solve opens is the one the child committed: digest and bytes.
         marker = MM.read(root, spawned[0][MM.TOKEN_ENV])
         database = root / "database.db"
-        assert global_solve.database_digest(database) == marker["digest"]
-        assert marker["digest"]["verified_pairs"] == 1
+        assert global_solve.database_digest(database)["verified_pairs"] == 1
         with sqlite3.connect(database) as con:
             assert con.execute("pragma quick_check").fetchone() == ("ok",)
+        # The committed horizon is kept for a deferred map: a snapshot equal to what the final
+        # opens, the child's keyframes, and the time the default path would have given it.
+        snapshot = MM.snapshot_path(root)
+        assert global_solve.database_digest(snapshot) == global_solve.database_digest(database)
+        deferred = solver._deferred
+        assert deferred["snapshot"] == str(snapshot) and deferred["keyframe_ids"] == IDS
+        assert deferred["token"] == marker["token"] and deferred["descendants_gone"] is True
+        # From its commit to the cap: the 60-s cap plus the time it committed before the wait began.
+        assert 59.0 < deferred["budget_s"] < 80.0
     finally:
         solver.close()
 
@@ -574,7 +673,7 @@ def test_the_final_child_is_never_ended_at_a_marker(tmp_path, monkeypatch):
         assert solver.wait(60.0) is False
         final = tmp_path / "final_stub.py"
         final.write_text("import json, time\ntime.sleep(1.0)\n"
-                         "print(json.dumps({'solved': False, 'reason': 'stub'}))\n")
+                         "print(json.dumps({'solved': True, 'reason': 'stub'}))\n")
         solver.script = final
         started = time.monotonic()
         report = solver.run_final(_Store(tmp_path), {})
@@ -582,6 +681,293 @@ def test_the_final_child_is_never_ended_at_a_marker(tmp_path, monkeypatch):
         assert solver._match_token is None
     finally:
         solver.close()
+
+
+def test_the_cap_is_checked_before_a_marker(tmp_path, monkeypatch, caplog):
+    """R2 #2: at or past the cap a marker is not an early commit; it is the cap's kill, as today,
+    and owes no deferred map (the default path's cap kills the child too)."""
+    caplog.set_level(logging.INFO, logger="tower.world_build_session")
+    solver, root, _ = _launch(tmp_path, monkeypatch, "marker")
+    try:
+        _wait_for(MM.marker_path(root))
+        assert solver.wait(0.0) is False
+        assert "still running after" in caplog.text and "matching commit" not in caplog.text
+        assert solver._deferred is None and not MM.snapshot_path(root).exists()
+    finally:
+        solver.close()
+
+
+def _grandchild(root: Path):
+    import psutil
+
+    _wait_for(root / "grandchild.pid")
+    return psutil.Process(int((root / "grandchild.pid").read_text()))
+
+
+def test_every_descendant_is_gone_before_the_wait_returns_at_a_marker(tmp_path, monkeypatch):
+    """R2 #4: a child that spawned a grandchild holding the database: when the wait returns, the
+    grandchild has exited too, before the snapshot and before any final solve."""
+    solver, root, _ = _launch(tmp_path, monkeypatch, "grandchild")
+    try:
+        grandchild = _grandchild(root)
+        _wait_for(MM.marker_path(root))
+        assert grandchild.is_running()
+        assert solver.wait(60.0) is False
+        assert not grandchild.is_running()
+        assert solver._deferred["descendants_gone"] is True
+    finally:
+        solver.close()
+        if grandchild.is_running():
+            grandchild.kill()
+
+
+def test_every_descendant_is_gone_before_the_final_after_a_cap_kill(tmp_path, monkeypatch):
+    """R2 #4, the cap's kill: the wait remembers the family, and `run_final` waits (bounded)
+    for it before the final solve starts -- a final that records whether it is still alive."""
+    solver, root, _ = _launch(tmp_path, monkeypatch, "grandchild")
+    try:
+        grandchild = _grandchild(root)
+        _wait_for(MM.marker_path(root))
+        assert solver.wait(0.0) is False                    # the cap, first
+        assert solver._ended_family and solver._deferred is None
+        final = tmp_path / "final_stub.py"
+        final.write_text(textwrap.dedent(f'''
+            import json, psutil
+            print(json.dumps({{"solved": True, "grandchild_alive": psutil.pid_exists({grandchild.pid})
+                              and psutil.Process({grandchild.pid}).is_running()}}))
+        '''))
+        solver.script = final
+        report = solver.run_final(_Store(tmp_path), {})
+        assert report["solved"] is True and report["grandchild_alive"] is False
+        assert solver._ended_family == []
+    finally:
+        solver.close()
+        if grandchild.is_running():
+            grandchild.kill()
+
+
+def test_the_switch_off_never_waits_for_descendants(tmp_path, monkeypatch):
+    solver, root, _ = _launch(tmp_path, monkeypatch, "grandchild", stop_at_match=False)
+    try:
+        grandchild = _grandchild(root)
+        assert solver.wait(0.5) is False
+        assert solver._ended_family == [] and solver._deferred is None
+    finally:
+        solver.close()
+        if grandchild.is_running():
+            grandchild.kill()
+
+
+# ---------------------------------------------------------------------------
+# never an older world: the deferred map (manager's decision 1, round 2)
+# ---------------------------------------------------------------------------
+
+# A final solve that ends as WB_L2_FINAL says, and the deferred map (`--deferred-map <order>`),
+# which records its order and publishes (prints solved) after WB_L2_DEFERRED_SLEEP seconds.
+FINAL_STUB = textwrap.dedent(r'''
+    import json, os, sys, time
+    from pathlib import Path
+    argv = sys.argv[1:]
+    root = Path(os.environ["WB_L2_WORKSPACE"])
+    if "--deferred-map" in argv:
+        order = json.loads(Path(argv[argv.index("--deferred-map") + 1]).read_text())
+        with (root / "deferred_calls.jsonl").open("a") as fh:
+            fh.write(json.dumps({"order": order, "argv": argv,
+                                 "snapshot_exists": Path(order["database"]).is_file()}) + "\n")
+        time.sleep(float(os.environ.get("WB_L2_DEFERRED_SLEEP", "0")))
+        print(json.dumps({"solved": True, "solver": "glomap", "keyframes": len(order["keyframe_ids"]),
+                          "keyframes_posed": 2, "components": [{"id": 0}]}))
+        sys.exit(0)
+    mode = os.environ["WB_L2_FINAL"]
+    if mode == "solved":
+        print(json.dumps({"solved": True, "solver": "glomap", "components": []}))
+    elif mode == "failed":
+        sys.exit(3)
+    elif mode == "withheld":
+        print(json.dumps({"solved": False, "withheld": True, "reason": "withheld by the guard"}))
+    elif mode == "nothing":
+        print(json.dumps({"solved": False, "reason": "fewer than two readable frames"}))
+    elif mode == "hang":
+        time.sleep(60)
+''')
+
+
+def _ended_at_marker(tmp_path, monkeypatch, final_mode):
+    solver, root, spawned = _launch(tmp_path, monkeypatch, "marker")
+    _wait_for(MM.marker_path(root))
+    assert solver.wait(60.0) is False and solver._deferred is not None
+    final = tmp_path / "final_stub.py"
+    final.write_text(FINAL_STUB, encoding="utf-8")
+    solver.script = final
+    monkeypatch.setenv("WB_L2_FINAL", final_mode)
+    return solver, root
+
+
+def _deferred_calls(root: Path) -> list:
+    path = root / "deferred_calls.jsonl"
+    return [json.loads(l) for l in path.read_text().splitlines()] if path.exists() else []
+
+
+def test_a_solved_final_owes_nothing(tmp_path, monkeypatch):
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "solved")
+    try:
+        report = solver.run_final(_Store(tmp_path), {})
+        assert report["solved"] is True and "deferred_background_map" not in report
+        assert _deferred_calls(root) == []
+        assert not MM.snapshot_path(root).exists() and solver._deferred is None
+    finally:
+        solver.close()
+
+
+@pytest.mark.parametrize("final_mode", ["failed", "withheld", "nothing"])
+def test_a_final_that_publishes_nothing_gets_the_ended_childs_map(tmp_path, monkeypatch,
+                                                                   final_mode):
+    """The default path could have left the ended child's solution standing; so the deferred map
+    runs, on the committed snapshot, with exactly the child's keyframes, and publishes."""
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, final_mode)
+    try:
+        report = solver.run_final(_Store(tmp_path), {})
+        assert not report.get("solved")
+        assert report.get("withheld") is (True if final_mode == "withheld" else None)
+        ((call,),) = [_deferred_calls(root)]
+        assert call["snapshot_exists"] is True
+        assert call["order"]["record"] == MM.DEFERRED_ORDER_RECORD
+        assert call["order"]["database"] == str(MM.snapshot_path(root))
+        assert call["order"]["keyframe_ids"] == IDS and call["order"]["solve"]["match_s"] == 1.5
+        assert "--deferred-map" in call["argv"] and "--final" not in call["argv"]
+        outcome = report["deferred_background_map"]
+        assert outcome["ran"] is True and outcome["published"] is True
+        assert outcome["summary"]["keyframes"] == 3
+        # Afterwards nothing is left of it but what it published.
+        assert not MM.snapshot_path(root).exists()
+        assert not (root / MM.DEFERRED_ORDER_FILENAME).exists()
+        assert solver._deferred is None and not solver.finished()
+    finally:
+        solver.close()
+
+
+def test_a_hard_stop_maps_nothing_as_today(tmp_path, monkeypatch):
+    """A hard stop (Tower shutdown) during the final: the final is interrupted as today, nothing is
+    mapped after it, and the builder goes on at once."""
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "hang")
+    started = time.monotonic()
+    try:
+        report = solver.run_final(_Store(tmp_path), {},
+                                  should_stop=lambda: time.monotonic() - started > 1.0)
+        assert report["interrupted"] is True and report["solved"] is False
+        assert report["deferred_background_map"] == {"ran": False, "published": False,
+                                                     "why": "hard stop"}
+        assert _deferred_calls(root) == [] and time.monotonic() - started < 15.0
+        assert not MM.snapshot_path(root).exists()
+    finally:
+        solver.close()
+
+
+def test_a_hard_stop_during_the_deferred_map_ends_it(tmp_path, monkeypatch):
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    monkeypatch.setenv("WB_L2_DEFERRED_SLEEP", "60")
+    try:
+        report = solver.run_final(
+            _Store(tmp_path), {}, should_stop=lambda: len(_deferred_calls(root)) > 0)
+        outcome = report["deferred_background_map"]
+        assert outcome["ran"] is True and outcome["published"] is False
+        assert outcome["why"] == "hard stop" and not solver.running
+    finally:
+        solver.close()
+
+
+def test_a_deferred_map_past_the_default_paths_time_is_ended(tmp_path, monkeypatch):
+    """Bounded by the time the default path gave the child (its commit to the cap) plus the start
+    allowance: past that the default path's cap would have killed it too."""
+    import scripts.world_build_session as builder
+
+    solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
+    monkeypatch.setenv("WB_L2_DEFERRED_SLEEP", "60")
+    monkeypatch.setattr(builder, "DEFERRED_MAP_START_ALLOWANCE_S", 0.0)
+    solver._deferred["budget_s"] = 1.5
+    started = time.monotonic()
+    try:
+        report = solver.run_final(_Store(tmp_path), {})
+        outcome = report["deferred_background_map"]
+        assert outcome["published"] is False and "not mapped within 1.5 s" in outcome["why"]
+        assert time.monotonic() - started < 20.0 and not solver.running
+    finally:
+        solver.close()
+
+
+def test_the_switch_off_never_owes_a_deferred_map(tmp_path, monkeypatch):
+    solver, root, _ = _launch(tmp_path, monkeypatch, "marker", stop_at_match=False)
+    try:
+        _wait_for(root / "child_env.json")
+        assert solver.wait(0.5) is False and solver._deferred is None
+        final = tmp_path / "final_stub.py"
+        final.write_text(FINAL_STUB, encoding="utf-8")
+        solver.script = final
+        monkeypatch.setenv("WB_L2_FINAL", "failed")
+        report = solver.run_final(_Store(tmp_path), {})
+        assert "deferred_background_map" not in report and _deferred_calls(root) == []
+    finally:
+        solver.close()
+
+
+def test_the_deferred_map_maps_the_snapshot_with_the_childs_keyframes(session, monkeypatch):
+    """`global_solve.map_committed_horizon`: the snapshot, not the walk database; exactly the
+    horizon's keyframes (not the ones the final added); its own scratch, `sparse/` untouched;
+    published as a background solve would be."""
+    _bg_solve(session, _FakeColmap(), monkeypatch)            # camera.json, images, a database
+    colmap = _FakeColmap()
+    monkeypatch.setitem(sys.modules, "pycolmap", colmap)
+    ws = session.workspace
+    keyframes = session.store.read_keyframes(session.world_id, session.session_id)
+    horizon = [k.keyframe_id for k in keyframes[:3]]
+    snapshot = ws.root / MM.SNAPSHOT_FILENAME
+    snapshot.write_bytes(ws.database_path.read_bytes())
+    (ws.sparse_dir / "final-model").mkdir(parents=True, exist_ok=True)
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id, database_path=snapshot,
+        keyframe_ids=horizon, num_threads=18, context={"match_s": 1.5, "threads": 18})
+    assert colmap.mapped and colmap.mapped[0][0] == snapshot
+    assert colmap.mapped[0][1] == ws.root / global_solve.DEFERRED_SPARSE_DIRNAME
+    assert not (ws.root / global_solve.DEFERRED_SPARSE_DIRNAME).exists()
+    assert (ws.sparse_dir / "final-model").is_dir()
+    assert summary["solved"] is True and summary["keyframes"] == 3
+    published = json.loads(ws.solution_path.read_text(encoding="utf-8"))
+    assert published["keyframe_ids"] == horizon
+    assert published["solve"]["deferred_map"] is True and published["solve"]["final"] is False
+    assert published["solve"]["seed"] is None and published["timing"]["match_s"] == 1.5
+    from tower.world_builder.store import compute_input_digest
+    assert published["input_digest"] == compute_input_digest(keyframes[:3])
+
+
+def test_the_deferred_map_refuses_keyframes_no_longer_in_the_session(session, monkeypatch):
+    monkeypatch.setitem(sys.modules, "pycolmap", _FakeColmap())
+    summary = global_solve.map_committed_horizon(
+        session.store, session.world_id, session.session_id,
+        database_path=session.workspace.database_path, keyframe_ids=["nope:1", "nope:2"])
+    assert summary["solved"] is False and "not in the session" in summary["reason"]
+
+
+def test_world_solve_deferred_map_hands_the_order_over(monkeypatch, tmp_path):
+    import scripts.world_solve as world_solve
+
+    captured = {}
+
+    def fake(store, world, session, **kwargs):
+        captured.update(kwargs, world=world, session=session)
+        return {"solved": True}
+
+    monkeypatch.setattr(world_solve.global_solve, "map_committed_horizon", fake)
+    monkeypatch.setattr(world_solve.global_solve, "solve",
+                        lambda *a, **k: pytest.fail("a deferred map is not a solve"))
+    order = tmp_path / "order.json"
+    order.write_text(json.dumps({"record": MM.DEFERRED_ORDER_RECORD, "token": "t",
+                                 "database": str(tmp_path / "snap.db"), "keyframe_ids": IDS,
+                                 "solve": {"match_s": 1.5}}))
+    assert world_solve.main(["--root", str(tmp_path), "--world", "w", "--session", "s",
+                             "--deferred-map", str(order)]) == 0
+    assert captured["database_path"] == tmp_path / "snap.db"
+    assert captured["keyframe_ids"] == IDS and captured["context"] == {"match_s": 1.5}
+    assert captured["num_threads"] == world_solve.background_threads()
 
 
 # ---------------------------------------------------------------------------
