@@ -210,8 +210,24 @@ class TestTheTrianglesGradeThemselves:
     def test_packed_edge_key_checks_int64_capacity(self):
         key = np.array([[9_999_998, 9_999_999]], np.int64)
         assert S._packed_edge_keys(key, 10_000_000)[0] == 99_999_989_999_999
-        with pytest.raises(AssertionError, match="int64"):
+        # the largest n whose n**2 - 1 fits int64 passes; the next one raises
+        assert S._packed_edge_keys(key, 3_037_000_499)[0] == 9_999_998 * 3_037_000_499 + 9_999_999
+        with pytest.raises(OverflowError, match="int64"):
             S._packed_edge_keys(key, 3_037_000_500)
+
+    def test_packed_edge_key_guard_survives_python_O(self):
+        """The guard is a raise, so `python -O` (which strips asserts) keeps it."""
+        import os
+        import subprocess
+        import sys
+
+        code = ("import numpy as np; from tower.world_builder import surface as S\n"
+                "try:\n    S._packed_edge_keys(np.zeros((1, 2), np.int64), 3_037_000_500)\n"
+                "except OverflowError:\n    raise SystemExit(0)\nraise SystemExit(1)\n")
+        env = dict(os.environ, PYTHONPATH=os.pathsep.join(p for p in sys.path if p))
+        r = subprocess.run([sys.executable, "-O", "-c", code], env=env, capture_output=True,
+                           text=True, timeout=120)
+        assert r.returncode == 0, r.stderr
 
     def test_a_stretched_triangle_scores_below_an_equilateral_one(self):
         square = S.mesh_geometry_components(*_grid())["shape"]

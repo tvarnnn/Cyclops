@@ -3040,8 +3040,10 @@ def face_evidence_components(*, sup, thru, wmin, parallax, resid_rms,
 
 
 def _packed_edge_keys(key, n):
-    # max(lo * n + hi) is n**2 - 1; reject meshes that could wrap int64.
-    assert n * n <= np.iinfo(np.int64).max, "edge key exceeds int64"
+    # max(lo * n + hi) is n**2 - 1; reject meshes that could wrap int64. A raise,
+    # not an assert: `python -O` strips asserts, and a wrapped key would merge edges.
+    if n * n > np.iinfo(np.int64).max:
+        raise OverflowError(f"edge key exceeds int64 for {n} vertices")
     return key[:, 0] * np.int64(n) + key[:, 1]
 
 
