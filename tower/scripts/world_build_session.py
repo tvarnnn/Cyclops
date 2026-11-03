@@ -73,6 +73,7 @@ import itertools
 import json
 import logging
 import os
+import shutil
 import signal
 import sqlite3
 import subprocess
@@ -816,6 +817,108 @@ class BackgroundSurface:
         if self._log is not None:
             self._log.close()
             self._log = None
+
+
+class MasksAtStop:
+    """The final build's transient masks, staged by a CHILD while the final solve runs.
+
+    `TOWER_WORLD_MASKS_AT_STOP`, default off (`world_builder/masks_at_stop.py`). After Stop
+    the builder waits for the background solve and then runs the final one, both CPU work on
+    this Tower, while the GPU sits idle; the masks the surface and appearance stages compute
+    afterwards are most of what a keyframe needs from the GPU. This child computes them in
+    that window into a staging directory, never into the cache; the final surface stage
+    takes each one only if its inputs are the stage's own.
+
+    Started once `stop_session` has written the label the final build reads, and only when
+    a final solve and a surface will follow. Terminated by `close()` in the builder's
+    `finally`, before the surface needs the card; its writes are atomic, so a kill at any
+    moment leaves whole files or none. Nothing it does is load-bearing: a child that fails
+    to start, crashes, or is slow leaves the stage to compute what is missing, as without it.
+    Below-normal priority on Windows, like the live surface: the final solve wins the CPU.
+    """
+
+    def __init__(self, *, root: Path, world_id: str, session_id: str,
+                 script: Path | None = None, spawn=None):
+        self.root = root
+        self.world_id = world_id
+        self.session_id = session_id
+        self.script = (Path(script) if script is not None
+                       else TOWER_ROOT / "scripts" / "world_masks_at_stop.py")
+        self._spawn = spawn if spawn is not None else subprocess.Popen
+        self._child = None
+        self._log = None
+        self._staging = None
+
+    @classmethod
+    def start_if_on(cls, store: WorldStore, *, root: Path, world_id: str, session_id: str,
+                    sources: dict, wanted: bool, spawn=None):
+        """The started worker, or None: the switch is off, nothing will be built after the
+        final solve (`wanted`), the final solve uses the GPU itself (solve masks, or the
+        evidence gate's depth stage: the worker would slow the critical path), or the child
+        could not be started (logged)."""
+        from tower.config import (  # noqa: PLC0415
+            world_masks_at_stop_setting,
+            world_solve_gate_setting,
+            world_solve_masks_setting,
+        )
+
+        if not wanted or not world_masks_at_stop_setting():
+            return None
+        if world_solve_masks_setting() or world_solve_gate_setting():
+            logger.info("[Tower][WorldBuilder] masks at Stop: not started, the final solve uses "
+                        "the GPU itself (TOWER_WORLD_SOLVE_MASKS / TOWER_WORLD_SOLVE_GATE)")
+            return None
+        worker = cls(root=root, world_id=world_id, session_id=session_id, spawn=spawn)
+        return worker if worker.start(store, sources) else None
+
+    def start(self, store: WorldStore, sources: dict) -> bool:
+        from tower.world_builder import masks_at_stop  # noqa: PLC0415
+
+        try:
+            staging = self._staging = masks_at_stop.staging_dir(store, self.world_id, self.session_id)
+            staging.mkdir(parents=True, exist_ok=True)
+            masks_at_stop.write_sources(staging, sources)
+            self._log = open(masks_at_stop.log_path(store, self.world_id, self.session_id), "ab")
+            argv = [python_executable(), str(self.script), "--root", str(self.root),
+                    "--world", self.world_id, "--session", self.session_id,
+                    "--parent-pid", str(os.getpid())]
+            extra = {}
+            if os.name == "nt":
+                extra["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            self._child = self._spawn(
+                argv, cwd=str(TOWER_ROOT), stdout=self._log, stderr=subprocess.STDOUT,
+                env=child_environment(), stdin=subprocess.DEVNULL, **extra,
+            )
+        except Exception:  # noqa: BLE001 -- an optimisation, never a reason to lose the walk
+            logger.exception("[Tower][WorldBuilder] masks at Stop: the worker did not start")
+            self.close()
+            return False
+        logger.info("[Tower][WorldBuilder] masks at Stop: worker started (pid %s)",
+                    self._child.pid)
+        return True
+
+    def close(self, discard: bool = False) -> None:
+        """Terminate the child (its staged files are whole), never raising. `discard`: no
+        surface stage will run for this session (no solved final, a hard stop, an error), so
+        the staged masks are removed rather than left in the depth work (~0.5 GB on 10.2)."""
+        if self._child is not None:
+            try:
+                if self._child.poll() is None:
+                    _terminate_process_tree(self._child)
+                logger.info("[Tower][WorldBuilder] masks at Stop: worker ended (exit %s)",
+                            self._child.returncode)
+            except Exception:  # noqa: BLE001 -- teardown must not mask the real exit
+                logger.exception("[Tower][WorldBuilder] masks at Stop: could not end the worker")
+            self._child = None
+        if self._log is not None:
+            try:
+                self._log.close()
+            except OSError:
+                pass
+            self._log = None
+        if discard and self._staging is not None:
+            shutil.rmtree(self._staging, ignore_errors=True)
+            self._staging = None
 
 
 class BackgroundSolver:
@@ -2495,6 +2598,8 @@ def main(argv=None) -> int:
     # constructed when background solves are on. With `--solve-every 0` there
     # is one solve, at the end, and nothing to show during the walk.
     surfacer = None
+    # `TOWER_WORLD_MASKS_AT_STOP` (default off): started after Stop, closed in the `finally`.
+    masks_at_stop = None
     if args.surface and background_solves:
         surfacer = BackgroundSurface(
             root=args.root.resolve(), world_id=world_id, session_id=session_id,
@@ -2778,6 +2883,10 @@ def main(argv=None) -> int:
             # What this builder is doing from here to the lock's release, for the phone
             # (T-UX1). Stamped with this process and the `pending` block just written.
             phase = finish_phase.PhaseWriter.for_builder(store, world_id, session_id)
+        # The final build's masks, staged on the idle GPU while the final solve runs.
+        masks_at_stop = MasksAtStop.start_if_on(
+            store, root=args.root.resolve(), world_id=world_id, session_id=session_id,
+            sources=sources, wanted=solver is not None and args.surface and not stop_request.hard)
 
         # -- finalization: the lock is still held, the record says pending --
         if solver is None:
@@ -2933,6 +3042,11 @@ def main(argv=None) -> int:
             # one: whatever it was part-way through is replaced by the final
             # build below, and leaving it holding the GPU would slow that down.
             surfacer.close()
+        if masks_at_stop is not None:
+            # The final solve has returned (or the walk is ending): the card is the stage's. The
+            # staged masks stay only for the surface stage that is about to run.
+            masks_at_stop.close(discard=not (args.surface and finalization_state == FINALIZATION_COMPLETE
+                                             and final_solve_state == FINAL_SOLVE_SOLVED))
         if solver is not None:
             solver.close()
         try:

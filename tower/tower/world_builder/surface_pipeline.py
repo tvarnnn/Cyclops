@@ -983,6 +983,16 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
     try:
         policy = A.resolve_label_policy(store, world_id, session_id,
                                         imagery_source=imagery_source)
+        from tower.config import world_masks_at_stop_setting  # noqa: PLC0415
+
+        if world_masks_at_stop_setting():
+            # Masks staged after Stop (`masks_at_stop.py`) become cache hits here, each only
+            # if its inputs are this build's own. Off: not called at all.
+            from tower.world_builder.masks_at_stop import promote_quietly  # noqa: PLC0415
+
+            promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
+                            align_records=records, solution=solution, intrinsics=intrinsics,
+                            params=tparams, policy=policy)
         return T.ensure_transient_masks(
             store, world_id, session_id, [(ki, frames.kids[ki]) for ki, *_ in frames.items],
             intrinsics=intrinsics, camera=solution.camera, align_records=records,
