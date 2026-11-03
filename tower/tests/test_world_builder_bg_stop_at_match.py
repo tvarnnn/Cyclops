@@ -782,9 +782,13 @@ FINAL_STUB = textwrap.dedent(r'''
             sys.path.insert(0, os.environ["WB_L2_TOWER"])
             from tower.world_builder import matching_marker as MM
             if dmode == "claim-early":
+                # Claimed, and then a gap before the write (Codex round 4, #2): the window in which
+                # a builder that reported at once would report before the publication lands.
                 assert MM.claim_publish(order["claim"], "deferred-map")
-                (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "deferred"}))
                 (root / "deferred_started").write_text("1")
+                time.sleep(3)
+                (root / "solution.json").write_text(json.dumps({"solved_at": time.time(), "who": "deferred"}))
+                (root / "deferred_done").write_text("1")
                 time.sleep(60)
             (root / "deferred_started").write_text("1")
             deadline = time.time() + 30
@@ -862,6 +866,8 @@ def test_a_final_that_publishes_nothing_gets_the_ended_childs_map(tmp_path, monk
         assert call["order"]["database"] == str(MM.snapshot_path(root))
         assert call["order"]["keyframe_ids"] == IDS and call["order"]["solve"]["match_s"] == 1.5
         assert call["order"]["standing_solved_at"] is None   # nothing stood at the snapshot
+        import re
+        assert re.fullmatch(r"bg_deferred_map\.[0-9a-f]{32}\.claim", Path(call["order"]["claim"]).name)
         assert "--deferred-map" in call["argv"] and "--final" not in call["argv"]
         outcome = report["deferred_background_map"]
         assert outcome["ran"] is True and outcome["published"] is True
@@ -1012,7 +1018,7 @@ def test_a_deferred_child_that_survives_the_stop_cannot_publish(tmp_path, monkey
         outcome = report["deferred_background_map"]
         assert outcome["published"] is False and outcome["revoked"] is True
         assert outcome["confirmed_gone"] is False
-        claim = root / MM.PUBLISH_CLAIM_FILENAME
+        (claim,) = list(root.glob("bg_deferred_map.*.claim"))
         assert "builder-revoked" in claim.read_text()
         (root / "go").write_text("1")                                   # the survivor carries on
         survivor[0].wait(timeout=30)
@@ -1026,24 +1032,52 @@ def test_a_deferred_child_that_survives_the_stop_cannot_publish(tmp_path, monkey
         solver.close()
 
 
-def test_a_deferred_child_that_claimed_first_is_reported_as_published(tmp_path, monkeypatch):
-    """The other side of the claim: a child that had claimed (and written) before the stop was
-    publishing; the builder cannot revoke it and reports what `solution.json` says."""
+def test_a_deferred_child_that_claimed_first_is_not_reported_until_it_is_gone(tmp_path,
+                                                                               monkeypatch):
+    """Codex round 4, #2: a child that claimed the publication and is stopped BEFORE it writes. The
+    builder reports nothing until the child is confirmed gone: on Windows its Job Object confirms it
+    (the kill lands before the write: `published` False, and the write never comes); without a job
+    (POSIX, the dev platform) it cannot be confirmed: `published` is None (unknown), the claim stays,
+    and whatever lands on disk is what stands."""
     solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
     monkeypatch.setenv("WB_L2_DEFERRED_MODE", "claim-early")
-    monkeypatch.setattr(solver, "_terminate_child_verified", lambda: False)
+    real_verified = solver._terminate_child_verified
+    monkeypatch.setattr(solver, "_terminate_child_verified", lambda: False)   # not confirmed
+    deferred_child = []
+    real_spawn = solver._spawn
+
+    def spawn(argv, **kwargs):
+        child = real_spawn(argv, **kwargs)
+        if "--deferred-map" in argv:
+            deferred_child.append(child)
+        return child
+
+    solver._spawn = spawn
     try:
         report = solver.run_final(_Store(tmp_path), {},
                                   should_stop=lambda: (root / "deferred_started").exists())
         outcome = report["deferred_background_map"]
-        assert outcome["published"] is True and "already claimed" in outcome["why"]
-        assert json.loads((root / "solution.json").read_text())["who"] == "deferred"
+        assert "already claimed" in outcome["why"] and "revoked" not in outcome
+        (claim,) = list(root.glob("bg_deferred_map.*.claim"))
+        assert "deferred-map" in claim.read_text()
+        if os.name == "nt":
+            assert outcome["published"] is False and outcome["confirmed_gone"] is True
+            time.sleep(5)
+            assert not (root / "solution.json").exists()
+        else:
+            assert outcome["published"] is None and outcome["confirmed_gone"] is False
+            assert claim.exists()
     finally:
+        for child in deferred_child:
+            if child.poll() is None:
+                child.kill()
+        solver._terminate_child_verified = real_verified
         solver.close()
 
 
 def test_the_claim_is_taken_once(tmp_path):
-    claim = tmp_path / MM.PUBLISH_CLAIM_FILENAME
+    claim = MM.claim_path(tmp_path, "r1")
+    assert claim.name == "bg_deferred_map.r1.claim"
     assert MM.claim_publish(claim, "deferred-map") is True
     assert MM.claim_publish(claim, "builder-revoked") is False
     assert "deferred-map" in claim.read_text()
@@ -1056,7 +1090,7 @@ def test_a_revoked_deferred_map_publishes_nothing(session, monkeypatch):
     ws = session.workspace
     standing = json.loads(ws.solution_path.read_text(encoding="utf-8"))["solved_at"]
     before = ws.solution_path.read_bytes()
-    claim = ws.root / MM.PUBLISH_CLAIM_FILENAME
+    claim = MM.claim_path(ws.root, "r1")
     assert MM.claim_publish(claim, "builder-revoked")
     monkeypatch.setitem(sys.modules, "pycolmap", _FakeColmap())
     ids = [k.keyframe_id for k in session.store.read_keyframes(session.world_id,
@@ -1142,6 +1176,73 @@ def test_the_job_confirms_a_grandchild_nobody_enumerated_is_gone(tmp_path):
         job.close()
         if child.poll() is None:
             child.kill()
+
+
+def test_a_child_that_cannot_be_contained_runs_as_today(tmp_path, monkeypatch):
+    """Codex round 4, #1, the fallback: a switch-on child started suspended that cannot be put in a
+    Job Object (here: no job on this platform) is killed before it ran a line and launched again as
+    today -- without a token, so it is never ended early."""
+    import scripts.world_build_session as builder
+
+    monkeypatch.setattr(builder, "_suspended_launch", lambda: True)
+    root = _workspace(tmp_path)
+    _colmap_like_database(root / "database.db")
+    stub = tmp_path / "stub_solve.py"
+    stub.write_text(STUB, encoding="utf-8")
+    monkeypatch.setenv("WB_L2_TOWER", str(TOWER_DIR))
+    monkeypatch.setenv("WB_L2_WORKSPACE", str(root))
+    monkeypatch.setenv("WB_L2_MODE", "marker")
+    spawned = []
+
+    def spawn(argv, **kwargs):
+        flags = kwargs.pop("creationflags", 0)    # recorded; the stand-in child starts normally
+        child = subprocess.Popen(argv, **kwargs)
+        spawned.append((flags, kwargs.get("env"), child))
+        return child
+
+    monkeypatch.setattr("tower.process_ownership.assign_to_job", lambda child: None)
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s", every=1,
+                              capture_dirs=[], script=stub, spawn=spawn, stop_at_match=True)
+    try:
+        assert solver.maybe_launch(_Store(tmp_path), accepted=5, sources={}) is True
+        assert len(spawned) == 2
+        (flags0, env0, first), (flags1, env1, second) = spawned
+        assert flags0 == builder.CREATE_SUSPENDED and MM.TOKEN_ENV in env0
+        first.wait(timeout=10)                                   # killed
+        assert flags1 == 0 and MM.TOKEN_ENV not in env1 and env1 == child_environment()
+        assert solver._match_token is None and solver._match_job is None
+        assert solver._child is second
+        _wait_for(root / "child_env.json")
+        assert solver.wait(1.0) is False                         # today's: the cap, no marker
+        assert not MM.marker_path(root).exists() or MM.read(root, None) is None
+    finally:
+        solver.close()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows: CREATE_SUSPENDED + Job Objects")
+def test_a_suspended_launch_leaves_no_process_outside_the_job(tmp_path, monkeypatch):
+    """Codex round 4, #1: the child starts suspended, joins its job, and only then runs -- so a
+    grandchild it spawns on its very first line is in the job too (no launch race)."""
+    root = _workspace(tmp_path)
+    root.mkdir(parents=True)
+    stub = tmp_path / "stub_solve.py"
+    stub.write_text("import subprocess, sys, time\n"
+                    "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+                    "time.sleep(60)\n", encoding="utf-8")
+    solver = BackgroundSolver(root=tmp_path, world_id="w", session_id="s", every=1,
+                              capture_dirs=[], script=stub, stop_at_match=True)
+    try:
+        assert solver.maybe_launch(_Store(tmp_path), accepted=5, sources={}) is True
+        job = solver._match_job
+        assert job is not None and solver._match_token is not None
+        deadline = time.monotonic() + 20
+        while (job.active_processes() or 0) < 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert job.active_processes() == 2                       # it ran, and its grandchild is in
+        assert solver._terminate_child_verified() is True
+        assert job.active_processes() == 0
+    finally:
+        solver.close()
 
 
 def test_the_switch_off_never_owes_a_deferred_map(tmp_path, monkeypatch):

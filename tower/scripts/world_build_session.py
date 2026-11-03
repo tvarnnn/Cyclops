@@ -632,6 +632,14 @@ CHILD_POLL_S = 0.25
 # pays the interpreter start, the pycolmap import and the keyframe read the ended child had already
 # paid (about 1-3 s measured on the Tower; 0.8 s from launch to a solve's first probe on 10.2).
 DEFERRED_MAP_START_ALLOWANCE_S = 10.0
+# Windows `CREATE_SUSPENDED`: a switch-on solve child starts with its main thread suspended, is put in
+# its Job Object, and only then resumed -- so no process of it can ever exist outside the job.
+CREATE_SUSPENDED = 0x00000004
+
+
+def _suspended_launch() -> bool:
+    """Whether solve children can be started suspended and contained (Windows)."""
+    return os.name == "nt"
 
 
 def python_executable() -> str:
@@ -992,11 +1000,14 @@ class BackgroundSolver:
             self.stop_background(store)
             return False
         env = child_environment()
+        suspend = False
         if self._stop_at_match:
             env = self._match_environment(workspace.root, env)
+            suspend = not self._final_immediate and _suspended_launch()
         self._child = self._spawn(
             self._argv(final=False), cwd=str(TOWER_ROOT), stdout=self._log,
             stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL,
+            **({"creationflags": CREATE_SUSPENDED} if suspend else {}),
         )
         if self._final_immediate:
             from tower.process_ownership import assign_to_job  # noqa: PLC0415
@@ -1006,10 +1017,18 @@ class BackgroundSolver:
             self._background_job = assign_to_job(self._child)
             self._track_background_descendants(self._child)
         elif self._stop_at_match:
-            from tower.process_ownership import assign_to_job  # noqa: PLC0415
-
-            # Windows (None elsewhere): the kernel then answers "is every process of it gone".
-            self._match_job = assign_to_job(self._child)
+            # Windows: started suspended, put in its Job Object, then resumed -- the kernel then
+            # answers "is every process of it gone". Containment that fails kills the suspended
+            # child (it never ran a line) and launches it as today: no token, so no early end.
+            self._match_job, contained = self._contained(self._child, suspend)
+            if not contained:
+                logger.warning("[Tower][WorldBuilder] the background solve could not be contained in "
+                               "a Job Object; it runs as today (no early end at Stop)")
+                self._match_token = None
+                self._child = self._spawn(
+                    self._argv(final=False), cwd=str(TOWER_ROOT), stdout=self._log,
+                    stderr=subprocess.STDOUT, env=child_environment(), stdin=subprocess.DEVNULL,
+                )
         if self._final_immediate and self._capture_stopped is not None and self._capture_stopped():
             self.stop_background(store)
             return False
@@ -1020,6 +1039,35 @@ class BackgroundSolver:
             self._launches, accepted, self._child.pid,
         )
         return True
+
+    @staticmethod
+    def _contained(child, suspended: bool):
+        """(the child's Job Object or None, whether the child may run). A child started SUSPENDED
+        (Windows) is assigned to a job and only then resumed, so every process it ever spawns is in
+        the job; if either step fails it is killed before it ran a line, and `(None, False)` tells the
+        caller to fall back. Not suspended (POSIX, the dev and test platform), the job is whatever
+        `assign_to_job` gives (None there) and the psutil path stands in."""
+        from tower.process_ownership import assign_to_job  # noqa: PLC0415
+
+        job = assign_to_job(child)
+        if not suspended:
+            return job, True
+        if job is not None:
+            try:
+                import psutil  # noqa: PLC0415
+
+                psutil.Process(child.pid).resume()
+                return job, True
+            except Exception:  # noqa: BLE001 -- not resumed: killed below, never ran
+                logger.exception("[Tower][WorldBuilder] could not resume a contained solve child")
+        try:
+            child.kill()
+            child.wait(timeout=CHILD_TERMINATE_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 -- best effort; it never ran a line
+            pass
+        if job is not None:
+            job.close()
+        return None, False
 
     def _match_environment(self, workspace_root: Path, env: dict) -> dict:
         """`env` plus a fresh token for the background child about to start, whose marker
@@ -1320,8 +1368,11 @@ class BackgroundSolver:
         if child is None:
             return True
         family, enumerated = self._family(child)
+        job = self._match_job
+        if job is not None and not job.closed:
+            job.terminate()
         self._terminate_child()
-        return self._await_gone(child, family, enumerated=enumerated)
+        return self._await_gone(child, family, enumerated=enumerated, job=job)
 
     def _await_gone(self, child, family, *, enumerated: bool = True, job=None) -> bool:
         """A bounded wait until `child` and every process of it is gone (switch on only: the final
@@ -1440,18 +1491,25 @@ class BackgroundSolver:
         bounded by `budget_s` + `DEFERRED_MAP_START_ALLOWANCE_S`; a hard stop ends it as it ends
         any child. Returns what happened (`ran`, `published`, `seconds`, `why` / `summary`).
 
+        CONTAINED LIKE THE BACKGROUND CHILD: started suspended, in its own Job Object, then resumed
+        (Windows); a child that cannot be contained is killed before it runs and there is no deferred
+        map (today has none).
+
         A CHILD ENDED HERE CAN NEVER PUBLISH AFTERWARDS. Its publication is decided by an exclusive
-        claim (`matching_marker.claim_publish`, the order's `claim`): the child takes it right before
-        writing; after a stop or the bound, the builder takes it first -- REVOKES -- whatever the kill
-        achieved. If the child had already claimed, it was publishing: the answer is then what
-        `solution.json` says (`published` None when that cannot be known yet). The claim file is
-        removed only once the child is confirmed gone; otherwise it stays as the revocation."""
+        claim on a file of THIS RUN's own (`matching_marker.claim_path`, the order's `claim`): the
+        child takes it right before writing; after a stop or the bound, the builder takes it first --
+        REVOKES -- whatever the kill achieved. If the child had already claimed, the builder reports
+        nothing until the child is CONFIRMED GONE (bounded): then from `solution.json`; never
+        confirmed, `published` is None (unknown), whatever is on disk stands, and nothing else
+        publishes. A claim file is removed only once its child is confirmed gone; otherwise it stays."""
+        import uuid  # noqa: PLC0415
+
         from tower.storage import write_json_atomic  # noqa: PLC0415
         from tower.world_builder import global_solve, matching_marker  # noqa: PLC0415
 
         workspace = global_solve.workspace_for(store, self.world_id, self.session_id)
         order = workspace.root / matching_marker.DEFERRED_ORDER_FILENAME
-        claim = workspace.root / matching_marker.PUBLISH_CLAIM_FILENAME
+        claim = matching_marker.claim_path(workspace.root, uuid.uuid4().hex)
         bound = (None if deferred["budget_s"] is None
                  else deferred["budget_s"] + DEFERRED_MAP_START_ALLOWANCE_S)
         started = time.monotonic()
@@ -1460,8 +1518,8 @@ class BackgroundSolver:
             "pid %s's committed horizon (%s keyframes) as the default path could have, within %s s",
             deferred["pid"], len(deferred["keyframe_ids"]),
             None if bound is None else round(bound, 1))
+        suspend = _suspended_launch()
         try:
-            claim.unlink(missing_ok=True)
             write_json_atomic(order, {
                 "record": matching_marker.DEFERRED_ORDER_RECORD, "token": deferred["token"],
                 "database": deferred["snapshot"], "keyframe_ids": deferred["keyframe_ids"],
@@ -1475,7 +1533,13 @@ class BackgroundSolver:
             self._log = open(workspace.root / "solve.log", "ab")
             self._child = self._spawn(
                 argv, cwd=str(TOWER_ROOT), stdout=subprocess.PIPE, stderr=self._log,
-                env=child_environment(), stdin=subprocess.DEVNULL)
+                env=child_environment(), stdin=subprocess.DEVNULL,
+                **({"creationflags": CREATE_SUSPENDED} if suspend else {}))
+            self._match_job, contained = self._contained(self._child, suspend)
+            if not contained:
+                self._reap()
+                return {"ran": False, "published": False,
+                        "why": "the deferred map could not be contained in a Job Object"}
         except Exception as error:  # noqa: BLE001 -- the final's report stands
             logger.exception("[Tower][WorldBuilder] the deferred map could not start")
             if self._log is not None:
@@ -1483,6 +1547,7 @@ class BackgroundSolver:
                 self._log = None
             return {"ran": False, "published": False, "why": f"{type(error).__name__}: {error}"}
         child = self._child
+        job = self._match_job
         chunks: list[bytes] = []
 
         def drain() -> None:
@@ -1495,7 +1560,7 @@ class BackgroundSolver:
                                   daemon=True)
         reader.start()
         why = None
-        gone = True
+        outcome = None
         try:
             while child.poll() is None:
                 if should_stop is not None and should_stop():
@@ -1504,39 +1569,46 @@ class BackgroundSolver:
                     why = (f"not mapped within {round(bound, 1)} s, the time the default path "
                            "gave the child before its cap")
                 if why is not None:
-                    logger.warning("[Tower][WorldBuilder] deferred map pid %s ended: %s",
-                                   child.pid, why)
-                    gone = self._terminate_child_verified()
                     break
                 time.sleep(CHILD_POLL_S)
+            if why is not None:
+                logger.warning("[Tower][WorldBuilder] deferred map pid %s ended: %s", child.pid, why)
+                gone = self._terminate_child_verified()
+                if matching_marker.claim_publish(claim, "builder-revoked"):
+                    outcome = {"published": False, "revoked": True}
+                else:
+                    # The child had claimed first: it is, or was, publishing. Nothing is reported
+                    # until it is confirmed gone.
+                    if not gone:
+                        gone = self._await_gone(child, [], enumerated=False, job=job)
+                    if gone:
+                        outcome = {"published": (matching_marker.standing_solved_at(workspace.root)
+                                                 != deferred["standing_solved_at"]),
+                                   "why_more": "the child had already claimed its publication"}
+                    else:
+                        outcome = {"published": None,
+                                   "why_more": "the child had already claimed its publication "
+                                               "and is not confirmed gone: unknown"}
+            else:
+                # Ended on its own: confirmed gone only when the kernel says so (its job).
+                gone = job is not None and self._await_gone(child, [], enumerated=False, job=job)
+            if gone:
+                claim.unlink(missing_ok=True)
+            elif claim.exists():
+                logger.error("[Tower][WorldBuilder] deferred map pid %s is not confirmed gone; its "
+                             "claim %s stays", child.pid, claim.name)
         finally:
             reader.join(timeout=2.0)
             self._reap()
             self._completed_unseen = False   # not a background solve landing
         seconds = round(time.monotonic() - started, 1)
         if why is not None:
-            if matching_marker.claim_publish(claim, "builder-revoked"):
-                if gone:
-                    claim.unlink(missing_ok=True)
-                else:
-                    logger.error("[Tower][WorldBuilder] deferred map pid %s is not confirmed gone; "
-                                 "its publication is revoked (%s stays)", child.pid, claim.name)
-                return {"ran": True, "published": False, "seconds": seconds, "why": why,
-                        "revoked": True, "confirmed_gone": gone}
-            # The child had claimed first: it was publishing when it was ended.
-            if not gone:
-                deadline = time.monotonic() + CHILD_TERMINATE_TIMEOUT_S
-                while child.poll() is None and time.monotonic() < deadline:
-                    time.sleep(0.05)
-            changed = (matching_marker.standing_solved_at(workspace.root)
-                       != deferred["standing_solved_at"])
-            confirmed = child.poll() is not None
-            if confirmed:
-                claim.unlink(missing_ok=True)
-            return {"ran": True, "published": True if changed else (False if confirmed else None),
-                    "seconds": seconds, "why": f"{why}; the child had already claimed its publication",
-                    "confirmed_gone": confirmed}
-        claim.unlink(missing_ok=True)
+            out = {"ran": True, "published": outcome["published"], "seconds": seconds,
+                   "why": why + (f"; {outcome['why_more']}" if "why_more" in outcome else ""),
+                   "confirmed_gone": gone}
+            if outcome.get("revoked"):
+                out["revoked"] = True
+            return out
         try:
             summary = json.loads(b"".join(chunks).decode("utf-8", errors="replace").strip() or "{}")
         except ValueError:

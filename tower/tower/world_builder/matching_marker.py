@@ -74,10 +74,12 @@ DATABASE_FILENAME = "database.db"
 SNAPSHOT_FILENAME = "database.bg-horizon.db"
 DEFERRED_ORDER_FILENAME = "bg_deferred_map.json"
 DEFERRED_ORDER_RECORD = "wb-bg-deferred-map/1"
-# WHO MAY PUBLISH THE DEFERRED MAP, decided once by an exclusive create (`claim_publish`): the deferred
+# WHO MAY PUBLISH ONE DEFERRED MAP, decided once by an exclusive create (`claim_publish`): the deferred
 # child claims it right before it publishes, and the builder claims it to REVOKE the publication when
-# it ended the child and could not confirm the child is gone. Whoever creates the file first wins.
-PUBLISH_CLAIM_FILENAME = "bg_deferred_map.claim"
+# it ended the child. Whoever creates the file first wins. ONE FILE PER RUN (`claim_path`, the run's
+# own token), so no later run can ever remove an earlier run's revocation.
+def claim_path(workspace_root, run: str) -> Path:
+    return Path(workspace_root) / f"bg_deferred_map.{run}.claim"
 # The database and the companions SQLite may leave beside it. `-shm` is a shared-memory index
 # (rebuilt by the next opener), so only its size is recorded.
 _COMPANIONS = ("", "-wal", "-journal", "-shm")
