@@ -1047,8 +1047,8 @@ def test_a_deferred_child_that_survives_the_stop_cannot_publish(tmp_path, monkey
 def test_a_deferred_child_that_claimed_first_is_not_reported_until_it_is_gone(tmp_path,
                                                                                monkeypatch):
     """Codex round 4, #2: a child that claimed the publication and is stopped BEFORE it writes. The
-    builder reports nothing until the child is confirmed gone: on Windows its Job Object confirms it
-    (the kill lands before the write: `published` False, and the write never comes); without a job
+    builder reports nothing until the child is confirmed gone: on Windows its Job Object confirms it,
+    and the report is then exactly what is on disk, with nothing landing afterwards; without a job
     (POSIX, the dev platform) it cannot be confirmed: `published` is None (unknown), the claim stays,
     and whatever lands on disk is what stands."""
     solver, root = _ended_at_marker(tmp_path, monkeypatch, "failed")
@@ -1071,16 +1071,23 @@ def test_a_deferred_child_that_claimed_first_is_not_reported_until_it_is_gone(tm
         outcome = report["deferred_background_map"]
         assert "already claimed" in outcome["why"] and "revoked" not in outcome
         claims = list(root.glob("bg_deferred_map.*.claim"))
+
+        def on_disk() -> bool:
+            path = root / "solution.json"
+            return path.exists() and json.loads(path.read_text())["who"] == "deferred"
+
         if os.name == "nt":
-            assert outcome["published"] is False and outcome["confirmed_gone"] is True
-            assert claims == []                                  # confirmed gone: its claim swept
-            time.sleep(5)
-            assert not (root / "solution.json").exists()
+            # Its Job Object confirms it gone (the bounded wait terminates the job), and only THEN is
+            # the outcome read: the report is what is on disk, and nothing lands afterwards.
+            assert outcome["confirmed_gone"] is True and claims == []
+            reported = outcome["published"]
+            assert reported is on_disk()
+            time.sleep(4)
+            assert on_disk() is reported
         else:
+            assert outcome["published"] is None and outcome["confirmed_gone"] is False
             (claim,) = claims
             assert "deferred-map" in claim.read_text()
-            assert outcome["published"] is None and outcome["confirmed_gone"] is False
-            assert claim.exists()
     finally:
         for child in deferred_child:
             if child.poll() is None:
