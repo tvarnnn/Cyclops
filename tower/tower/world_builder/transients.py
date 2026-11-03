@@ -89,6 +89,7 @@ from typing import Callable
 
 import numpy as np
 
+from tower.config import world_mask_skip_sync_check_setting
 from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
@@ -490,6 +491,31 @@ def _autocast(enabled: bool):
     return torch.autocast("cuda", dtype=torch.float16)
 
 
+@contextlib.contextmanager
+def _skip_deformable_attention_sync_check(enabled: bool):
+    """Supported check switch avoids a GPU-to-host shape validation."""
+    if not enabled or not world_mask_skip_sync_check_setting():
+        yield
+        return
+    import transformers  # noqa: PLC0415
+
+    # The Tower recorded 5.16.1; the profile's source lines match 5.17.0.
+    # Both versions use this flag for the same deformable-attention check.
+    if transformers.__version__ not in ("5.16.1", "5.17.0"):
+        yield
+        return
+    key = "TRANSFORMERS_DISABLE_TORCH_CHECK"
+    previous = os.environ.get(key)
+    os.environ[key] = "1"
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = previous
+
+
 class GroundingDinoSamBackend(ComponentBackend):
     component = COMPONENT_GDSAM
 
@@ -536,7 +562,8 @@ class GroundingDinoSamBackend(ComponentBackend):
                 with torch.inference_mode():
                     inp = dproc(images=img, text=params.gdino_prompt, return_tensors="pt").to(dev)
                     with _autocast(fp16):
-                        out = dmodel(**inp)
+                        with _skip_deformable_attention_sync_check(fp16):
+                            out = dmodel(**inp)
                     if fp16:
                         out.logits = out.logits.float()
                         out.pred_boxes = out.pred_boxes.float()
@@ -643,7 +670,8 @@ class OneFormerBackend(ComponentBackend):
                 with torch.inference_mode():
                     inp = proc(images=img, task_inputs=["panoptic"], return_tensors="pt").to(dev)
                     with _autocast(fp16):
-                        out = model(**inp)
+                        with _skip_deformable_attention_sync_check(fp16):
+                            out = model(**inp)
                     if fp16:
                         out.class_queries_logits = out.class_queries_logits.float()
                         out.masks_queries_logits = out.masks_queries_logits.float()

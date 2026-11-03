@@ -13,6 +13,7 @@ directly in those tests so they do not also need a CUDA device.
 
 from __future__ import annotations
 
+import os
 import sys
 import types
 
@@ -149,7 +150,7 @@ def _patch_autocast(monkeypatch):
     return state
 
 
-def _run_gdsam(monkeypatch, fp16: bool):
+def _run_gdsam(monkeypatch, fp16: bool, check_env=None):
     """Runs `GroundingDinoSamBackend.run()` on one synthetic frame with every
     transformers class and the model fetch faked. Returns
     (gdino_call_log, sam_call_log, cast_log, results) where the call logs
@@ -163,6 +164,8 @@ def _run_gdsam(monkeypatch, fp16: bool):
 
     def gdino_call(**kwargs):
         gdino_calls.append(autocast_state["active"])
+        if check_env is not None:
+            check_env.append(os.environ.get("TRANSFORMERS_DISABLE_TORCH_CHECK"))
         return types.SimpleNamespace(
             logits=_FT(tag="logits", log=cast_log),
             pred_boxes=_FT(tag="pred_boxes", log=cast_log),
@@ -170,6 +173,8 @@ def _run_gdsam(monkeypatch, fp16: bool):
 
     def sam_call(**kwargs):
         sam_calls.append(autocast_state["active"])
+        if check_env is not None:
+            check_env.append(os.environ.get("TRANSFORMERS_DISABLE_TORCH_CHECK"))
         return types.SimpleNamespace(
             pred_masks=_FT(np.zeros((1, 1, 8, 8), dtype=bool), tag="pred_masks", log=cast_log),
         )
@@ -192,6 +197,7 @@ def _run_gdsam(monkeypatch, fp16: bool):
     smodel = _Model(sam_call)
 
     fake_transformers = types.ModuleType("transformers")
+    fake_transformers.__version__ = "5.16.1"
     fake_transformers.AutoProcessor = types.SimpleNamespace(from_pretrained=lambda *a, **kw: dproc)
     fake_transformers.GroundingDinoForObjectDetection = types.SimpleNamespace(
         from_pretrained=lambda *a, **kw: dmodel)
@@ -206,7 +212,7 @@ def _run_gdsam(monkeypatch, fp16: bool):
     return gdino_calls, sam_calls, cast_log, results
 
 
-def _run_oneformer(monkeypatch, fp16: bool):
+def _run_oneformer(monkeypatch, fp16: bool, check_env=None):
     """Same shape as `_run_gdsam` for `OneFormerBackend.run()`."""
     autocast_state = _patch_autocast(monkeypatch)
     monkeypatch.setattr(T, "_fp16_enabled", lambda dev: fp16)
@@ -216,6 +222,8 @@ def _run_oneformer(monkeypatch, fp16: bool):
 
     def model_call(**kwargs):
         model_calls.append(autocast_state["active"])
+        if check_env is not None:
+            check_env.append(os.environ.get("TRANSFORMERS_DISABLE_TORCH_CHECK"))
         return types.SimpleNamespace(
             class_queries_logits=_FT(tag="class_queries_logits", log=cast_log),
             masks_queries_logits=_FT(tag="masks_queries_logits", log=cast_log),
@@ -228,6 +236,7 @@ def _run_oneformer(monkeypatch, fp16: bool):
     model = _Model(model_call)
 
     fake_transformers = types.ModuleType("transformers")
+    fake_transformers.__version__ = "5.16.1"
     fake_transformers.OneFormerForUniversalSegmentation = types.SimpleNamespace(
         from_pretrained=lambda *a, **kw: model)
     fake_transformers.OneFormerProcessor = types.SimpleNamespace(from_pretrained=lambda *a, **kw: proc)
@@ -288,3 +297,56 @@ def test_oneformer_forward_call_runs_inside_autocast_when_on(monkeypatch):
 def test_oneformer_outputs_are_cast_to_float_before_post_process(monkeypatch):
     _, cast_log, _ = _run_oneformer(monkeypatch, fp16=True)
     assert cast_log == ["class_queries_logits", "masks_queries_logits"]
+
+
+def test_sync_check_switch_scoped_to_cuda_detector_forwards(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
+    monkeypatch.delenv("TRANSFORMERS_DISABLE_TORCH_CHECK", raising=False)
+    checks = []
+    _run_gdsam(monkeypatch, fp16=True, check_env=checks)
+    _run_oneformer(monkeypatch, fp16=True, check_env=checks)
+    assert checks == ["1", None, "1"]  # SAM's forward keeps its checks.
+    assert "TRANSFORMERS_DISABLE_TORCH_CHECK" not in os.environ
+
+
+def test_sync_check_switch_is_noop_on_cpu_or_other_transformers(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
+    monkeypatch.delenv("TRANSFORMERS_DISABLE_TORCH_CHECK", raising=False)
+    checks = []
+    _run_oneformer(monkeypatch, fp16=False, check_env=checks)
+    assert checks == [None]
+    monkeypatch.setattr(sys.modules["transformers"], "__version__", "5.18.0")
+    with T._skip_deformable_attention_sync_check(True):
+        assert "TRANSFORMERS_DISABLE_TORCH_CHECK" not in os.environ
+
+
+def test_sync_check_switch_restores_prior_value_on_error(monkeypatch):
+    monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
+    monkeypatch.setenv("TRANSFORMERS_DISABLE_TORCH_CHECK", "0")
+    _run_oneformer(monkeypatch, fp16=False)
+    try:
+        with T._skip_deformable_attention_sync_check(True):
+            assert os.environ["TRANSFORMERS_DISABLE_TORCH_CHECK"] == "1"
+            raise RuntimeError("forward failed")
+    except RuntimeError:
+        pass
+    assert os.environ["TRANSFORMERS_DISABLE_TORCH_CHECK"] == "0"
+
+
+def test_sync_check_switch_defaults_off_and_works_with_installed_transformers(monkeypatch):
+    import pytest
+    import torch
+    import transformers
+    from transformers.utils import torch_compilable_check
+
+    monkeypatch.delenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", raising=False)
+    monkeypatch.delenv("TRANSFORMERS_DISABLE_TORCH_CHECK", raising=False)
+    assert T.world_mask_skip_sync_check_setting() is False
+    with pytest.raises(ValueError):
+        torch_compilable_check(torch.tensor(False), "bad shape")
+    monkeypatch.setenv("TOWER_WORLD_MASK_SKIP_SYNC_CHECK", "on")
+    assert transformers.__version__ in ("5.16.1", "5.17.0")
+    with T._skip_deformable_attention_sync_check(True):
+        torch_compilable_check(torch.tensor(False), "bad shape")
+    with pytest.raises(ValueError):
+        torch_compilable_check(torch.tensor(False), "bad shape")
