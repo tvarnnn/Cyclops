@@ -3,16 +3,16 @@
 
 The child `world_build_session.MasksAtStop` starts after Stop when
 `TOWER_WORLD_MASKS_AT_STOP` is on; the builder terminates it when the final
-solve has returned. Everything it writes goes to
-`<world>/dense/<session>/work/masks_at_stop/`, never into the mask cache: the
+solve has returned. Everything it writes goes to a run
+directory under `<store root>/masks_at_stop/`, never into the mask cache: the
 final surface stage moves a staged mask into the cache only after checking it
 against its own inputs (`world_builder/masks_at_stop.py`).
 
     .venv\\Scripts\\python.exe scripts/world_masks_at_stop.py --root <root> --world <id> --session <id> [--parent-pid N]
 
-Reads the raw-frame paths the builder handed it from `sources.json` in the
-staging directory (the same dict the final solve's `sources.json` is written
-from). `--parent-pid`: stop at the next keyframe once that process is gone (the
+Reads the raw-frame paths the builder handed it from
+`masks_at_stop.sources_path` (the same dict the final solve's `sources.json` is
+written from). `--parent-pid`: stop at the next keyframe once that process is gone (the
 builder passes its own; under the Tower's supervisor its Job Object ends this
 child anyway, but a builder run by hand or by a harness has no such job). Exit 0
 whatever it managed to stage; 1 only when it crashed.
@@ -73,12 +73,7 @@ def main(argv=None) -> int:
     for noisy in ("PIL", "urllib3", "httpx", "huggingface_hub"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     store = WorldStore(Path(args.root))
-    staging = masks_at_stop.staging_dir(store, args.world, args.session)
-    try:
-        sources = json.loads((staging / masks_at_stop.SOURCES_FILENAME).read_text(encoding="utf-8"))
-        sources = dict(sources.get("sources") or {})
-    except (OSError, ValueError, AttributeError):
-        sources = {}
+    sources = masks_at_stop.read_sources(store, args.session)
     try:
         summary = masks_at_stop.prefill(store, args.world, args.session, sources=sources,
                                         should_stop=parent_gone(args.parent_pid))
