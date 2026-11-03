@@ -39,7 +39,16 @@ import pytest
 
 import tests.test_world_builder_appearance as TWA
 import tests.test_world_builder_photos_after_stop_identity as ID
+import tests.wb_world_id_leak as LEAK
 from tests.test_world_builder_appearance import SESSION, TRUSTED, UNGATED, World, _never_redact
+
+# At collection, never inside a test. Every scenario patches `TWA.WORLD` to HEX,
+# and a module imported for the first time inside that window copies HEX for good:
+# this one binds `WORLD` by value and as `write_components`' default, and the
+# patch's undo restores only `TWA` and `ID`. Imported lazily, it moved the photos
+# identity file's seven area scenarios onto world HEX whenever this file ran
+# first. `test_the_world_id_patch_leaves_no_copy_behind` pins it.
+from tests.test_world_builder_components_areas import _entries, write_components
 from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import raw_imagery as RAWIMG
@@ -127,7 +136,6 @@ def _then(make, *steps):
 def _with_area(make, raw: bool):
     """`make`, then an area built by the real pipeline through `AreaStore`."""
     def run(tmp_path, log):
-        from tests.test_world_builder_components_areas import _entries, write_components
         from tower.world_builder import components as C
 
         w = make(tmp_path, log)
@@ -214,6 +222,23 @@ def test_every_other_payload_is_byte_identical_to_ba5f138(name, tmp_path, monkey
     moved = [variant for variant, value in sorted(_variants(raw_env, raw_artifact).items())
              if _observe(w, log, monkeypatch, value) != expected]
     assert moved == [], f"{name}: the payload moved under {moved}"
+
+
+def _enter_the_area_import_path(halt):
+    """An area scenario up to its first use of the world, where `halt` stops it:
+    whatever it imports on the way, it imports under the scenario's patch."""
+    _with_area(halt, raw=False)(None, [])
+
+
+def test_the_world_id_patch_leaves_no_copy_behind():
+    """In a fresh interpreter, so the answer does not depend on test order: this
+    file's patch of `WORLD`, around an area scenario's imports, leaves no module
+    holding HEX once undone (tests/wb_world_id_leak.py). One that did would serve
+    its own tests world HEX; this file, run first, used to fail the photos
+    identity file's seven area scenarios that way."""
+    found = LEAK.copies_left_by(__name__, (TWA.__name__, ID.__name__))
+    assert found["components_areas"] == dict.fromkeys(LEAK.COPIES, found["original"])
+    assert found["copies_of_hex"] == []
 
 
 def test_the_scenarios_cover_both_sides_of_the_list():
