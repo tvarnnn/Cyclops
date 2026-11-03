@@ -33,13 +33,13 @@ import hashlib
 import json
 import os
 import shutil
-import sys
 from pathlib import Path
 
 import pytest
 
 import tests.test_world_builder_appearance as TWA
 import tests.test_world_builder_photos_after_stop_identity as ID
+import tests.wb_world_id_leak as LEAK
 from tests.test_world_builder_appearance import SESSION, TRUSTED, UNGATED, World, _never_redact
 
 # At collection, never inside a test. Every scenario patches `TWA.WORLD` to HEX,
@@ -47,7 +47,7 @@ from tests.test_world_builder_appearance import SESSION, TRUSTED, UNGATED, World
 # this one binds `WORLD` by value and as `write_components`' default, and the
 # patch's undo restores only `TWA` and `ID`. Imported lazily, it moved the photos
 # identity file's seven area scenarios onto world HEX whenever this file ran
-# first. `test_the_patched_world_id_was_copied_nowhere` pins it.
+# first. `test_the_world_id_patch_leaves_no_copy_behind` pins it.
 from tests.test_world_builder_components_areas import _entries, write_components
 from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
@@ -224,31 +224,21 @@ def test_every_other_payload_is_byte_identical_to_ba5f138(name, tmp_path, monkey
     assert moved == [], f"{name}: the payload moved under {moved}"
 
 
-def _copies_of(value: str) -> list[str]:
-    """Every global, and every function default, of a loaded `tests.*` module that
-    holds `value`, outside the modules that spell it themselves (`HEX`): what a
-    patch to `value` left behind after its undo."""
-    def holds(v):
-        return isinstance(v, str) and v == value
-
-    out = []
-    for name, module in sorted(sys.modules.items()):
-        if not name.startswith("tests.") or module is None or holds(getattr(module, "HEX", None)):
-            continue
-        for attr, v in list(vars(module).items()):
-            defaults = [*(getattr(v, "__defaults__", None) or ()),
-                        *(getattr(v, "__kwdefaults__", None) or {}).values()]
-            if holds(v) or any(holds(d) for d in defaults):
-                out.append(f"{name}.{attr}")
-    return out
+def _enter_the_area_import_path(halt):
+    """An area scenario up to its first use of the world, where `halt` stops it:
+    whatever it imports on the way, it imports under the scenario's patch."""
+    _with_area(halt, raw=False)(None, [])
 
 
-def test_the_patched_world_id_was_copied_nowhere():
-    """Runs after the scenarios (file order): their `WORLD` patch is undone, and
-    no other test module may still hold HEX. One that does serves its own tests
-    world HEX -- this file, run first, used to fail the photos identity file's
-    seven area scenarios that way (see the components-areas import above)."""
-    assert _copies_of(HEX) == []
+def test_the_world_id_patch_leaves_no_copy_behind():
+    """In a fresh interpreter, so the answer does not depend on test order: this
+    file's patch of `WORLD`, around an area scenario's imports, leaves no module
+    holding HEX once undone (tests/wb_world_id_leak.py). One that did would serve
+    its own tests world HEX; this file, run first, used to fail the photos
+    identity file's seven area scenarios that way."""
+    found = LEAK.copies_left_by(__name__, (TWA.__name__, ID.__name__))
+    assert found["components_areas"] == dict.fromkeys(LEAK.COPIES, found["original"])
+    assert found["copies_of_hex"] == []
 
 
 def test_the_scenarios_cover_both_sides_of_the_list():

@@ -19,6 +19,7 @@ import shutil
 import pytest
 
 import tests.test_world_builder_appearance as TWA
+import tests.wb_world_id_leak as LEAK
 from tests.test_world_builder_appearance import SESSION, World, _app, _never_redact
 
 # At collection, never inside a test: the `world` fixture patches `TWA.WORLD` to
@@ -26,7 +27,6 @@ from tests.test_world_builder_appearance import SESSION, World, _app, _never_red
 # keep HEX for good (as `WORLD` and as `write_components`' default) -- run before
 # the photos identity file, that failed its seven area scenarios.
 from tests.test_world_builder_components_areas import _entries, write_components
-from tests.test_world_builder_raw_allowlist_identity import _copies_of
 from tower.world_builder import appearance as A
 from tower.world_builder import appearance_pipeline as AP
 from tower.world_builder import raw_imagery as RAWIMG
@@ -412,7 +412,16 @@ def test_the_build_clis_resolve_redacted_with_the_list_set(monkeypatch):
     assert RAWIMG.imagery_source_from_env() == RED
 
 
-def test_the_patched_world_id_was_copied_nowhere():
-    """Runs last (file order): the `world` fixture's `WORLD` patch is undone, and no
-    other test module may still hold HEX (see the components-areas import above)."""
-    assert _copies_of(HEX) == []
+def _enter_the_area_import_path(halt):
+    """`_raw_area` up to its first use of the world, where `halt` stops it."""
+    _raw_area(halt)
+
+
+def test_the_world_id_patch_leaves_no_copy_behind():
+    """In a fresh interpreter, so the answer does not depend on test order: the
+    `world` fixture's patch of `WORLD`, around the area path's imports, leaves no
+    module holding HEX once undone (tests/wb_world_id_leak.py; see the
+    components-areas import above)."""
+    found = LEAK.copies_left_by(__name__, (TWA.__name__,))
+    assert found["components_areas"] == dict.fromkeys(LEAK.COPIES, found["original"])
+    assert found["copies_of_hex"] == []
