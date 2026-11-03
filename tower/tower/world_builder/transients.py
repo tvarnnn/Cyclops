@@ -82,6 +82,7 @@ import io
 import json
 import logging
 import os
+import threading
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -89,6 +90,7 @@ from typing import Callable
 
 import numpy as np
 
+from tower.config import world_mask_skip_sync_check_setting
 from tower.world_builder import stage_timing
 
 logger = logging.getLogger(__name__)
@@ -490,6 +492,59 @@ def _autocast(enabled: bool):
     return torch.autocast("cuda", dtype=torch.float16)
 
 
+_SYNC_CHECK_ENV = "TRANSFORMERS_DISABLE_TORCH_CHECK"
+_SYNC_CHECK_VERSIONS = ("5.16.1", "5.17.0")
+_sync_check_lock = threading.Lock()
+_sync_check_depth = 0
+_sync_check_previous: str | None = None
+_sync_check_version_logged = False
+
+
+@contextlib.contextmanager
+def _skip_deformable_attention_sync_check(enabled: bool):
+    """Supported check switch avoids a GPU-to-host shape validation.
+
+    The variable is PROCESS-WIDE (transformers reads it at every check), so
+    while any guarded forward runs, every `torch_compilable_check` in this
+    process is skipped. The processes that run these forwards (the build's
+    surface and appearance stages, the live surface child, the solve's
+    masks, the masks-at-stop child) run them one at a time on one thread and
+    no other transformers model. Overlapping entries from several threads
+    still leave the variable as it was: the first entry saves it, the last
+    exit restores it."""
+    global _sync_check_depth, _sync_check_previous, _sync_check_version_logged
+    if not enabled or not world_mask_skip_sync_check_setting():
+        yield
+        return
+    import transformers  # noqa: PLC0415
+
+    # The Tower recorded 5.16.1; the profile's source lines match 5.17.0.
+    # Both versions use this flag for the same deformable-attention check.
+    if transformers.__version__ not in _SYNC_CHECK_VERSIONS:
+        if not _sync_check_version_logged:
+            _sync_check_version_logged = True
+            logger.info("transients: TOWER_WORLD_MASK_SKIP_SYNC_CHECK is on but transformers %s "
+                        "is not one of %s; the checks run as before",
+                        transformers.__version__, ", ".join(_SYNC_CHECK_VERSIONS))
+        yield
+        return
+    with _sync_check_lock:
+        if _sync_check_depth == 0:
+            _sync_check_previous = os.environ.get(_SYNC_CHECK_ENV)
+            os.environ[_SYNC_CHECK_ENV] = "1"
+        _sync_check_depth += 1
+    try:
+        yield
+    finally:
+        with _sync_check_lock:
+            _sync_check_depth -= 1
+            if _sync_check_depth == 0:
+                if _sync_check_previous is None:
+                    os.environ.pop(_SYNC_CHECK_ENV, None)
+                else:
+                    os.environ[_SYNC_CHECK_ENV] = _sync_check_previous
+
+
 class GroundingDinoSamBackend(ComponentBackend):
     component = COMPONENT_GDSAM
 
@@ -541,7 +596,8 @@ class GroundingDinoSamBackend(ComponentBackend):
                 with torch.inference_mode():
                     inp = dproc(images=img, text=params.gdino_prompt, return_tensors="pt").to(dev)
                     with _autocast(fp16):
-                        out = dmodel(**inp)
+                        with _skip_deformable_attention_sync_check(fp16):
+                            out = dmodel(**inp)
                     if fp16:
                         out.logits = out.logits.float()
                         out.pred_boxes = out.pred_boxes.float()
@@ -652,7 +708,8 @@ class OneFormerBackend(ComponentBackend):
                 with torch.inference_mode():
                     inp = proc(images=img, task_inputs=["panoptic"], return_tensors="pt").to(dev)
                     with _autocast(fp16):
-                        out = model(**inp)
+                        with _skip_deformable_attention_sync_check(fp16):
+                            out = model(**inp)
                     if fp16:
                         out.class_queries_logits = out.class_queries_logits.float()
                         out.masks_queries_logits = out.masks_queries_logits.float()
