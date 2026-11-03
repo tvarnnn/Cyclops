@@ -268,17 +268,22 @@ class TestThroughTheStage:
                                                                           monkeypatch):
         monkeypatch.delenv(WORLD_SURFACE_BOUND_FIX_ENV, raising=False)
         store = _with_far_frame(tmp_path)
-        free = SP.surfacify(store, WORLD, SESSION, params=_params())
+        # The consistency field would pull the stretched frame back towards its
+        # (unstretched) anchors; this test is about the budget, so it is off.
+        params = dict(depth_consistency=False)
+        free = SP.surfacify(store, WORLD, SESSION, params=_params(**params))
         assert free.state == SP.STATE_OK, free.detail
         free_voxel = _manifest(store)["voxel"]
         budget = free.blocks // 2
 
-        old = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget))
+        old = SP.surfacify(store, WORLD, SESSION, force=True,
+                           params=_params(max_blocks=budget, **params))
         assert old.state == SP.STATE_OK, old.detail
         assert json.loads(old.detail)["voxel_coarsened_by"] > 1.0, "the old answer: the room"
 
         monkeypatch.setenv(WORLD_SURFACE_BOUND_FIX_ENV, "on")
-        new = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget))
+        new = SP.surfacify(store, WORLD, SESSION, force=True,
+                           params=_params(max_blocks=budget, **params))
         assert new.state == SP.STATE_OK, new.detail
         man = _manifest(store)
         assert json.loads(new.detail)["voxel_coarsened_by"] == 1.0

@@ -1247,7 +1247,9 @@ def _spare_the_room(keys, nkey, *, voxel: float, centres, params: SurfaceParams,
          within that same band. The allocation subsamples a frame's pixels (to
          60,000: one in three at the corpus' 359 x 639 frames), whose spacing
          stays under a block's edge out to ~6 scene depths, and each sample
-         keys its whole band besides, so the count is the frames' own.
+         keys its whole band besides, so the count is the frames' own. What
+         can go besides is a cube straddling such a block's boundary with a kept
+         one: one voxel deep, at the edge of a surface only one frame measured.
       2. While still over the budget: blocks whose centre lies farther than the
          scene-relative far bound -- `max_depth_frac` x the scene scale, the
          reach `_fusion_bound` grows every camera by -- plus half a block

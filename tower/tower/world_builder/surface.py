@@ -640,7 +640,8 @@ class SurfaceParams:
          (`SurfaceVolume.blocks_for_depth`), a frame supports a face only
          within that same band (`evidence_filter`), and a face fewer than
          `min_support_frames` distinct frames support is removed. So no face
-         such a block could hold would ship.
+         whose centroid such a block holds would ship; what can go is a cube
+         straddling its boundary with a kept block, one voxel deep.
       2. blocks farther than the scene-relative far bound (`max_depth_frac` x
          the scene scale, the same reach `_fusion_bound` grows every camera
          by) from EVERY fused camera: the far periphery, which no place the
