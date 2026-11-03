@@ -840,7 +840,8 @@ class BackgroundSolver:
     def __init__(self, *, root: Path, world_id: str, session_id: str, every: int,
                  capture_dirs, threads: int | None = None, script: Path | None = None,
                  spawn=None, final_immediate: bool = False, capture_stopped=None,
-                 fallback_wait_seconds: float = DEFAULT_SOLVE_WAIT_SECONDS):
+                 fallback_wait_seconds: float = DEFAULT_SOLVE_WAIT_SECONDS,
+                 stop_at_match: bool = False):
         self.root = root
         self.world_id = world_id
         self.session_id = session_id
@@ -864,6 +865,11 @@ class BackgroundSolver:
         self._background_descendants = {}
         self._descendant_thread = None
         self._descendant_stop = threading.Event()
+        # `TOWER_WORLD_BG_STOP_AT_MATCH` (`matching_marker.py`): the token given to the background
+        # child now running, and its workspace. None with the switch off, and for a final child.
+        self._stop_at_match = stop_at_match
+        self._match_token = None
+        self._match_root = None
 
     @property
     def running(self) -> bool:
@@ -969,9 +975,12 @@ class BackgroundSolver:
         if self._final_immediate and self._capture_stopped is not None and self._capture_stopped():
             self.stop_background(store)
             return False
+        env = child_environment()
+        if self._stop_at_match:
+            env = self._match_environment(workspace.root, env)
         self._child = self._spawn(
             self._argv(final=False), cwd=str(TOWER_ROOT), stdout=self._log,
-            stderr=subprocess.STDOUT, env=child_environment(), stdin=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT, env=env, stdin=subprocess.DEVNULL,
         )
         if self._final_immediate:
             from tower.process_ownership import assign_to_job  # noqa: PLC0415
@@ -990,6 +999,28 @@ class BackgroundSolver:
             self._launches, accepted, self._child.pid,
         )
         return True
+
+    def _match_environment(self, workspace_root: Path, env: dict) -> dict:
+        """`env` plus a fresh token for the background child about to start, whose marker
+        (`matching_marker.py`) the wait then accepts; any earlier marker goes first. Switch on
+        only (`TOWER_WORLD_BG_STOP_AT_MATCH`)."""
+        import uuid  # noqa: PLC0415
+
+        from tower.world_builder import matching_marker  # noqa: PLC0415
+
+        matching_marker.clear(workspace_root)
+        self._match_token = uuid.uuid4().hex
+        self._match_root = Path(workspace_root)
+        return {**env, matching_marker.TOKEN_ENV: self._match_token}
+
+    def _matching_committed(self) -> dict | None:
+        """The marker the running background child wrote at its matching commit, when it is
+        THIS child's (its token), else None. Never raises."""
+        if self._match_token is None or self._match_root is None:
+            return None
+        from tower.world_builder import matching_marker  # noqa: PLC0415
+
+        return matching_marker.read(self._match_root, self._match_token)
 
     def _track_background_descendants(self, child) -> None:
         """Remember descendants while the parent still has a process tree."""
@@ -1120,16 +1151,38 @@ class BackgroundSolver:
         database, one `sparse/` tree it deletes first), and an abandoned
         child still mapping into it is a corruption waiting to happen.
         `should_stop` ends the wait early the same way.
+
+        AT ITS MATCHING COMMIT (`TOWER_WORLD_BG_STOP_AT_MATCH`, on only). A background child
+        whose marker says its database writes are committed is ended at once, inside the same
+        cap: what it would still do is map, and the final solve never uses that map, while it
+        reads the database as committed (`matching_marker.py`). No marker is the wait above.
         """
         if self._child is None:
             return True
-        deadline = None if timeout is None else time.monotonic() + timeout
+        entered = time.monotonic()
+        deadline = None if timeout is None else entered + timeout
         try:
             while self._child.poll() is None:
                 if should_stop is not None and should_stop():
                     logger.warning(
                         "[Tower][WorldBuilder] background solve pid %s terminated: "
                         "a stop was requested", self._child.pid,
+                    )
+                    self._terminate_child()
+                    return False
+                marker = self._matching_committed() if self._match_token is not None else None
+                if marker is not None:
+                    digest = marker.get("digest") if isinstance(marker.get("digest"), dict) else {}
+                    committed_at = marker.get("committed_at")
+                    logger.info(
+                        "[Tower][WorldBuilder] background solve pid %s ended at its matching "
+                        "commit, %.1fs into a wait of up to %ss (committed %ss before): its map "
+                        "is never used and its database is committed (content %s, %s verified "
+                        "pairs; TOWER_WORLD_BG_STOP_AT_MATCH)",
+                        self._child.pid, time.monotonic() - entered, timeout,
+                        (round(time.time() - committed_at, 1)
+                         if isinstance(committed_at, (int, float)) else None),
+                        digest.get("content"), digest.get("verified_pairs"),
                     )
                     self._terminate_child()
                     return False
@@ -1175,6 +1228,8 @@ class BackgroundSolver:
         if self._final_immediate and not self._background_closed:
             self.stop_background(store)
         self._final_started = True
+        # The final child is never ended at a marker: forget the last background child's token.
+        self._match_token = None
 
         started = time.perf_counter()
         # WALL CLOCK, for the identity of what the child publishes: its `solved_at`
@@ -2474,6 +2529,13 @@ def main(argv=None) -> int:
     capture_dirs = [d for d in (args.follow_capture, args.frames) if d is not None]
     # `on`: start the final solve at capture Stop, stopping the background solve, instead of after it. Default off.
     final_immediate = os.environ.get("TOWER_WORLD_FINAL_IMMEDIATE") == "on"
+    # `on`: at Stop, end the background solve at its matching commit (cap unchanged). Default off.
+    from tower.config import world_bg_stop_at_match_setting  # noqa: PLC0415
+
+    stop_at_match = world_bg_stop_at_match_setting()
+    if stop_at_match and args.solve:
+        logger.info("[Tower][WorldBuilder] TOWER_WORLD_BG_STOP_AT_MATCH on: at Stop the background "
+                    "solve ends at its matching commit (cap %ss)", args.solve_wait_seconds)
     def capture_stopped() -> bool:
         follower = capture_handle.get("follower")
         return bool(args.follow_capture and follower is not None
@@ -2489,6 +2551,7 @@ def main(argv=None) -> int:
             capture_dirs=capture_dirs, script=args.solve_script,
             final_immediate=final_immediate, capture_stopped=capture_stopped,
             fallback_wait_seconds=args.solve_wait_seconds,
+            **({"stop_at_match": True} if stop_at_match else {}),
         )
     background_solves = args.solve and args.solve_every > 0
     # The live surface needs a global solve to exist at all, so it is only

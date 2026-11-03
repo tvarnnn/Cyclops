@@ -1205,6 +1205,7 @@ def solve(
     gate: bool | None = None,
     consensus: int | None = None,
     should_stop=None,
+    on_matched=None,
 ) -> dict:
     """Reconstruct a session's keyframes into one global solution, and publish it.
 
@@ -1274,6 +1275,13 @@ def solve(
     (`coherence_publish.gate_by_consensus`). None reads
     `TOWER_WORLD_SOLVE_CONSENSUS` for a gated final solve (1, a single
     draw, by default); it needs a seeded solve.
+
+    `on_matched`: called with the database this solve maps once everything the solve writes
+    into its feature databases is written (extraction, matching, the mask filter, the revisit
+    import), before mapping: from there a background solve only reads them (it maps, then
+    publishes with no gate). None, the default, calls
+    nothing. `scripts/world_solve.py` passes it only for `TOWER_WORLD_BG_STOP_AT_MATCH`'s marker
+    and its probes (`matching_marker.py`); it must not raise, and it changes nothing published.
 
     TWO OPTIONS, BOTH OFF BY DEFAULT, BOTH FOR THE FINAL SOLVE
     (`resolve_run_options`; the settings are `world_solve_masks` and
@@ -1552,6 +1560,13 @@ def solve(
             frozen = False
             frozen_refusal = FROZEN_REFUSAL_CHANGED_UNDER_THE_SOLVE
     matched = time.perf_counter()
+    # The hook's own seconds count in neither `match_s` nor `map_s` (0.0 without one).
+    hook_s = 0.0
+    if on_matched is not None:
+        # Every write this solve makes into its databases is behind it; from here a background
+        # solve maps (reads) and publishes. Its "matching committed" marker (`matching_marker.py`).
+        on_matched(database_path)
+        hook_s = time.perf_counter() - matched
 
     # ONE thread when seeded: GLOMAP is reproducible only then.
     map_threads = 1 if seeded else threads
@@ -1567,7 +1582,7 @@ def solve(
         "prepare_s": round(prepared - started, 3),
         "extract_s": round(extracted - froze, 3),
         "match_s": round(matched - extracted, 3),
-        "map_s": round(mapped - matched, 3),
+        "map_s": round(mapped - matched - hook_s, 3),
         "images_undistorted": written,
         "final": bool(final),
     }

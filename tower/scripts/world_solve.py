@@ -33,7 +33,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tower.artifact_paths import artifact_root_arg  # noqa: E402
-from tower.world_builder import finish_phase, global_solve  # noqa: E402
+from tower.world_builder import finish_phase, global_solve, matching_marker  # noqa: E402
 from tower.world_builder.store import WorldStore, compute_input_digest  # noqa: E402
 
 
@@ -83,6 +83,12 @@ def main(argv=None) -> int:
     phase = (finish_phase.writer_from_environment(store, args.world, args.session)
              if args.final else None)
     token = finish_phase.install(phase)
+    # `TOWER_WORLD_BG_STOP_AT_MATCH` (`matching_marker.py`): a background child the builder gave a
+    # token marks its matching commit, and `..._PROBE` records the database. None -- no token and
+    # no probe, which is every run with both off -- is exactly the call this always made.
+    hook = matching_marker.for_child(store, args.world, args.session, final=args.final)
+    if hook is not None:
+        hook.opened()
     try:
         summary = global_solve.solve(
             store, args.world, args.session,
@@ -92,9 +98,12 @@ def main(argv=None) -> int:
             min_image_observations=args.min_image_observations,
             loop_detection=args.loop_detection,
             input_digest=compute_input_digest(keyframes),
+            **(hook.solve_kwargs() if hook is not None else {}),
         )
     finally:
         finish_phase.uninstall(token)
+    if hook is not None:
+        hook.finished()
     if args.format == "json":
         print(json.dumps(summary, indent=2))
     else:
