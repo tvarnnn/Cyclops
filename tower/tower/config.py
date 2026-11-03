@@ -1032,6 +1032,23 @@ def world_masks_at_stop_setting() -> bool:
     return _flag(WORLD_MASKS_AT_STOP_ENV, default=False)
 
 
+# THE LIVE SURFACE'S MASKS, REUSED AT STOP (`world_builder/masks_at_stop.py`, "LIVE MASKS"). During
+# a walk the session records redaction `none`, so the live surface child keys its OneFormer masks
+# under the re-redaction label and the final build, keyed under the real label written at Stop,
+# never finds them. With this on, a LIVE surface build appends to a journal beside its masks how
+# each one was computed (device, fp16, library versions, calibration) and the digest of the file it
+# wrote; the masks-at-Stop worker then stages, under the final key, every live OneFormer mask whose
+# inputs are provably the final's (same stored bytes, untouched by the re-redaction; same key apart
+# from the label; same mode and calibration), and computes only the rest. Only has an effect with
+# `TOWER_WORLD_MASKS_AT_STOP` on (the worker and the promotion are its). Off: no journal, no reuse.
+WORLD_MASKS_LIVE_REUSE_ENV = "TOWER_WORLD_MASKS_LIVE_REUSE"
+
+
+def world_masks_live_reuse_setting() -> bool:
+    """`TOWER_WORLD_MASKS_LIVE_REUSE`: reuse the live surface's OneFormer masks at Stop. Off."""
+    return _flag(WORLD_MASKS_LIVE_REUSE_ENV, default=False)
+
+
 # The PREVIEW (WORLD-BUILDER-WORLDS.md §4a `basis`, rule 8). Read per request by the render revision
 # route. Off: the revision body is byte for byte as before (no `basis` key).
 WORLD_PICTURE_BASIS_ENV = "TOWER_WORLD_PICTURE_BASIS"

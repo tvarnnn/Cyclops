@@ -75,6 +75,24 @@ the builder's final stages use, `SurfaceParams().imagery_source`, which is alway
 the research bypass (`raw-local-research`) is only reachable from the standalone stage CLIs,
 which start no worker, and `promote` refuses every staged mask for such a build.
 
+LIVE MASKS (`TOWER_WORLD_MASKS_LIVE_REUSE`, default off; only with this module's switch on). During
+the walk `session.json` says redaction `none` (`stop_session` writes the real label), so the live
+surface child reads every keyframe through the re-redaction path and keys its OneFormer masks under
+`none&<redactor>`: the final build, keyed under the real label, recomputes every one of them. Yet a
+OneFormer mask is a function of the undistorted pixels alone (it never reads the fill), the
+model, gamma, threshold and execution mode; and when the re-redaction finds nothing to fill (the
+stored bytes are already redacted) the live detector saw EXACTLY the stored bytes, which the final
+reads under a trusted label. With the switch on:
+1. a live surface build appends, after each mask it writes, one line to `LIVE_JOURNAL` beside its
+   masks: the file name, the SHA-1 of the file it just wrote, the execution mode it was computed
+   in (device, fp16, torch, transformers) and the session calibration's digest;
+2. the worker, before its GPU loop, stages under the FINAL key every live OneFormer mask whose
+   journal line names the file's exact bytes, whose mode and calibration are the worker's own,
+   whose key is the final key in every field but `redaction_effective`, and whose recorded
+   `image_sha1` is the stored keyframe's SHA-1 now (the re-redaction changed nothing). The worker
+   then computes only Grounding DINO + SAM for those frames. `promote` checks a re-keyed mask
+   exactly as it checks one the worker computed.
+
 GPU. One child, models loaded one at a time inside `ensure_transient_masks` as in the stage
 (at most ~2.6 GB on the card). Chunks of `CHUNK_FRAMES`: each chunk reloads the three models
 (about 5 s on 10.2: Grounding DINO 2.9, SAM 0.6, OneFormer 1.6), and a stop in a chunk's
@@ -86,6 +104,7 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
+import io
 import json
 import logging
 import os
@@ -103,6 +122,7 @@ STAGING_DIRNAME = "masks_at_stop"
 RUN_ID_HEX = 8
 INDEX_FILENAME = "index.json"
 MODES_FILENAME = "modes.jsonl"
+LIVE_JOURNAL = "transient_live.jsonl"     # beside the live build's masks (see LIVE MASKS)
 CHUNK_FRAMES = 256
 
 LOG = "[Tower][WorldBuilder][masks-at-stop]"
@@ -221,29 +241,37 @@ def intrinsics_record(intrinsics) -> dict:
     return out
 
 
-def keyframe_order(keyframe_ids: list, solution) -> list:
+def intrinsics_digest(intrinsics) -> str:
+    """A short digest of `intrinsics_record`: the calibration a live mask was undistorted with."""
+    return hashlib.sha1(json.dumps(intrinsics_record(intrinsics), sort_keys=True).encode()).hexdigest()[:16]
+
+
+def keyframe_order(keyframe_ids: list, solution, first=frozenset()) -> list:
     """Indices into `keyframe_ids` (the final solve's `ki`), most likely needed first.
 
     The final needs the keyframes it poses in its main component (the surface fuses the
     depth-gated ones, the appearance offers a few more). At Stop the best evidence is the
     latest background solution: (1) posed in its largest component, (2) newer than it,
-    (3) posed in another of its components, (4) in it but unposed. Index order within each.
-    No solution: index order."""
+    (3) posed in another of its components, (4) in it but unposed. Index order within each,
+    except that the keyframes in `first` lead their group: those with a reusable live mask
+    (LIVE MASKS), which a live surface already gated and which need only one model more.
+    No solution: index order (`first` leading)."""
     if solution is None:
-        return list(range(len(keyframe_ids)))
-    known = set(solution.keyframe_ids)
-    groups: tuple = ([], [], [], [])
-    for ki, kid in enumerate(keyframe_ids):
-        pose = solution.poses.get(kid)
-        if kid not in known:
-            groups[1].append(ki)
-        elif not pose or pose.get("rotation") is None:
-            groups[3].append(ki)
-        elif int(pose.get("component", 0)) == 0:
-            groups[0].append(ki)
-        else:
-            groups[2].append(ki)
-    return [ki for g in groups for ki in g]
+        groups: tuple = (list(range(len(keyframe_ids))),)
+    else:
+        known = set(solution.keyframe_ids)
+        groups = ([], [], [], [])
+        for ki, kid in enumerate(keyframe_ids):
+            pose = solution.poses.get(kid)
+            if kid not in known:
+                groups[1].append(ki)
+            elif not pose or pose.get("rotation") is None:
+                groups[3].append(ki)
+            elif int(pose.get("component", 0)) == 0:
+                groups[0].append(ki)
+            else:
+                groups[2].append(ki)
+    return [ki for g in groups for lead in (True, False) for ki in g if (ki in first) == lead]
 
 
 @dataclasses.dataclass
@@ -394,6 +422,143 @@ class _HeldToCuda(T.ComponentBackend):
         return self.inner.run(items, params, noted, should_stop)
 
 
+class _LiveRecorder(T.ComponentBackend):
+    """A LIVE surface build's backend (LIVE MASKS): after the stage's `emit` has written a mask,
+    one line is appended to the journal naming that file, the SHA-1 of its bytes as just
+    written, and how it was computed. Only when the file on disk IS this write (its masks are
+    the ones just computed, its `computed_at` later than the call): a write that failed leaves
+    whatever was there before, which this computation says nothing about. A line cut by a kill
+    is no line. Without a line a mask is simply computed again at Stop."""
+
+    def __init__(self, inner, journal: Path, record: dict):
+        self.inner = inner
+        self.component = inner.component
+        self.journal = journal
+        self.record = record
+
+    def probe(self):
+        return self.inner.probe()
+
+    def run(self, items, params, emit, should_stop=None):
+        def noted(ki, hand, phone, seconds):
+            before = time.time()
+            emit(ki, hand, phone, seconds)
+            path = T.cache_path(self.journal.parent, ki, self.component)
+            try:
+                data = path.read_bytes()
+                got = _decode_component(data)
+                if (got is None or float(got[2].get("computed_at") or 0.0) < before
+                        or not np.array_equal(got[0], np.asarray(hand, bool))
+                        or not np.array_equal(got[1], np.asarray(phone, bool))):
+                    return
+                line = json.dumps(dict(self.record, f=path.name, sha1=hashlib.sha1(data).hexdigest()),
+                                  sort_keys=True)
+                with open(self.journal, "a", encoding="utf-8") as fh:
+                    fh.write(line + "\n")
+            except OSError:
+                pass
+
+        return self.inner.run(items, params, noted, should_stop)
+
+
+def _live_reuse_on() -> bool:
+    from tower.config import world_masks_live_reuse_setting  # noqa: PLC0415
+
+    return world_masks_live_reuse_setting()
+
+
+def live_recorder(factory, *, depth_dir, mode: dict, intrinsics):
+    """`factory` with every backend journaling its masks (LIVE MASKS). `mode`: the execution mode
+    of the detectors `factory` builds (`execution_mode(device)` of the device the stage decided)."""
+    journal = Path(depth_dir) / LIVE_JOURNAL
+    record = dict(mode, intr=intrinsics_digest(intrinsics))
+    return lambda component: _LiveRecorder(factory(component), journal, record)
+
+
+def _read_live_journal(depth_dir: Path) -> dict:
+    """`{mask file name: its newest COMPLETE journal line}` (newline-terminated, as `_read_modes`)."""
+    out = {}
+    try:
+        text = (Path(depth_dir) / LIVE_JOURNAL).read_text(encoding="utf-8")
+    except OSError:
+        return out
+    for line in text.split("\n")[:-1]:
+        try:
+            rec = json.loads(line)
+            out[rec.pop("f")] = rec
+        except (ValueError, KeyError, AttributeError, TypeError):
+            continue
+    return out
+
+
+def _decode_component(data: bytes):
+    """(hand, phone, key record) of a mask file's bytes, or None, as `transients.read_component`."""
+    try:
+        with np.load(io.BytesIO(data), allow_pickle=False) as z:
+            record = json.loads(bytes(z["key"]).decode())
+            hs, ws = (int(v) for v in z["shape"])
+            hand = np.unpackbits(z["hand"], axis=-1)[..., :ws].astype(bool)
+            phone = np.unpackbits(z["phone"], axis=-1)[..., :ws].astype(bool)
+    except Exception:  # noqa: BLE001 -- unreadable is not reusable
+        return None
+    if not isinstance(record, dict) or hand.shape != (hs, ws) or phone.shape != (hs, ws):
+        return None
+    return hand, phone, record
+
+
+def live_reusable(store, world_id: str, session_id: str, *, keyframe_ids: list, image_set,
+                  params: T.TransientParams, policy, mode: dict, intrinsics, shape) -> dict:
+    """`{ki: (hand, phone, image_sha1)}`: the live surface's OneFormer masks that are the final
+    build's own but for the label in their key (LIVE MASKS). Each must pass, in this order:
+    a complete journal line for its file; the line's execution mode and calibration equal to
+    `mode` (the worker's) and `intrinsics`; the file's bytes now hashing to the line's SHA-1
+    (the very file that computation wrote); shape `shape` (the final camera); every field of the
+    final key -- the keyframe id at this `ki`, the stored keyframe's SHA-1 now, the rule, the
+    models -- but `redaction_effective` equal; a label other than the final's (an equal one is a
+    plain cache hit for the stage); and `image_sha1`, the bytes the live detector actually read,
+    equal to the stored keyframe's SHA-1 (the re-redaction filled nothing). Read only."""
+    from tower.world_builder.dense_pipeline import dense_dir  # noqa: PLC0415
+
+    component = T.COMPONENT_ONEFORMER
+    if component not in params.components:
+        return {}
+    depth = dense_dir(store, world_id, session_id) / "work" / "depth"
+    want = dict(mode, intr=intrinsics_digest(intrinsics))
+    out: dict = {}
+    for name, rec in _read_live_journal(depth).items():
+        try:
+            ki = int(name.split("_", 1)[0])
+            if name != T.cache_path(depth, ki, component).name or not 0 <= ki < len(keyframe_ids):
+                continue
+        except ValueError:
+            continue
+        if any(rec.get(k) != v for k, v in want.items()):
+            continue
+        try:
+            data = (depth / name).read_bytes()
+        except OSError:
+            continue
+        if hashlib.sha1(data).hexdigest() != rec.get("sha1"):
+            continue
+        got = _decode_component(data)
+        if got is None or got[0].shape != tuple(shape):
+            continue
+        hand, phone, live = got
+        kid = keyframe_ids[ki]
+        try:
+            sha = hashlib.sha1((image_set.directory / f"{kid.rsplit(':', 1)[-1]}.jpg").read_bytes()).hexdigest()
+        except OSError:
+            continue
+        final = T.component_key(component, params, keyframe_id=kid, source_sha1=sha,
+                                redaction_effective=policy.effective)
+        if any(live.get(k) != v for k, v in final.items() if k != "redaction_effective"):
+            continue
+        if live.get("redaction_effective") == policy.effective or live.get("image_sha1") != sha:
+            continue
+        out[ki] = (hand, phone, sha)
+    return out
+
+
 def _save_atomic(path: Path, array) -> None:
     tmp = path.with_name(f"{path.name}.{os.getpid()}.t")
     with open(tmp, "wb") as fh:
@@ -474,7 +639,17 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
     _m1, _m2, (_x, _y, rw, rh), cam = _undistort_maps(intrinsics, first.width, first.height)
     camera = {"fx": cam.fx, "fy": cam.fy, "cx": cam.cx, "cy": cam.cy, "width": rw, "height": rh}
     keyframe_ids = [k.keyframe_id for k in keyframes]
-    order = keyframe_order(keyframe_ids, load_solution(store, world_id, session_id))
+    image_set = policy.image_set
+    live = {}
+    if _live_reuse_on():
+        try:
+            live = live_reusable(store, world_id, session_id, keyframe_ids=keyframe_ids,
+                                 image_set=image_set, params=params, policy=policy, mode=mode,
+                                 intrinsics=intrinsics, shape=(rh, rw))
+        except Exception:  # noqa: BLE001 -- an optimisation: the worker computes them instead
+            logger.exception("%s %s/%s: reading the live masks failed", LOG, world_id, session_id)
+            live = {}
+    order = keyframe_order(keyframe_ids, load_solution(store, world_id, session_id), first=set(live))
     expected = _expected_fills(store, world_id, session_id, keyframe_ids, camera, intrinsics,
                                imagery_source=imagery_source)
     summary.update(intrinsics=intrinsics_record(intrinsics), camera=camera,
@@ -482,43 +657,81 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
                    expected_fills=len(expected), chunk=chunk, staged=0, chunks=0,
                    fills={"reused": 0, "fresh": 0, "none": 0})
     _write_index(run_dir, summary)
-    image_set = policy.image_set
     inner_factory = backend_factory or (lambda component: T.default_backend_factory(component, device="cuda"))
 
     def held(component):
         return _HeldToCuda(inner_factory(component), run_dir)
 
     sources = sources or {}
+    staged_frames: dict = {}
+
+    def stage_frame(ki):
+        """Keyframe `ki`'s align record with its fill staged in the run, or None; once per `ki`."""
+        if ki in staged_frames:
+            return staged_frames[ki]
+        staged_frames[ki] = None
+        kid = keyframe_ids[ki]
+        stored = image_set.directory / f"{kid.rsplit(':', 1)[-1]}.jpg"
+        try:
+            sha = hashlib.sha1(stored.read_bytes()).hexdigest()
+        except OSError:
+            return None
+        fill = None
+        got = expected.get(ki)
+        if got is not None and got[1] == sha:
+            try:
+                fill = np.load(got[0])
+                summary["fills"]["reused"] += 1
+            except (OSError, ValueError):
+                fill = None
+        if fill is None:
+            fill, data_sha = _fresh_fill(store, world_id, session_id, kid, sources.get(kid),
+                                         image_set, intrinsics, imagery_source)
+            if fill is None or data_sha != sha:
+                summary["fills"]["none"] += 1
+                return None
+            summary["fills"]["fresh"] += 1
+        _save_atomic(run_dir / f"{ki:05d}_fill.npy", np.asarray(fill, bool))
+        staged_frames[ki] = {"ki": ki, "kid": kid, "ok": True, "fill_rule": FILL_RULE, "image_sha1": sha}
+        return staged_frames[ki]
+
+    if live:
+        # LIVE MASKS: no GPU. Each reusable live OneFormer mask is staged under the final key,
+        # with its frame's fill and a mode record, exactly as if this worker had computed it;
+        # the loop below then finds it cached and runs Grounding DINO + SAM only.
+        rekeyed = 0
+        for ki in order:
+            if ki not in live:
+                continue
+            if should_stop is not None and should_stop():
+                return done("stopped", staged=0, rekeyed=rekeyed)
+            rec = stage_frame(ki)
+            hand, phone, sha = live[ki]
+            if rec is None or rec["image_sha1"] != sha:
+                continue
+            path = T.cache_path(run_dir, ki, T.COMPONENT_ONEFORMER)
+            T.write_component(path, T.component_key(T.COMPONENT_ONEFORMER, params, keyframe_id=rec["kid"],
+                                                    source_sha1=sha, redaction_effective=policy.effective),
+                              hand, phone, image_sha1=sha)
+            with open(run_dir / MODES_FILENAME, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(dict(mask_mode(mode["device"]), f=path.name)) + "\n")
+            rekeyed += 1
+        summary["rekeyed"] = rekeyed
+        _write_index(run_dir, summary)
+        logger.info("%s %s/%s: %d live OneFormer masks staged under the final key (%d reusable) in "
+                    "%.1f s since Stop", LOG, world_id, session_id, rekeyed, len(live), time.time() - t0)
+
     computed = 0
     for start in range(0, len(order), chunk):
         if should_stop is not None and should_stop():
             return done("stopped", staged=computed)
         frames, records = [], {}
         for ki in order[start:start + chunk]:
-            kid = keyframe_ids[ki]
-            stored = image_set.directory / f"{kid.rsplit(':', 1)[-1]}.jpg"
-            try:
-                sha = hashlib.sha1(stored.read_bytes()).hexdigest()
-            except OSError:
+            rec = stage_frame(ki)
+            if rec is None:
                 continue
-            fill = None
-            got = expected.get(ki)
-            if got is not None and got[1] == sha:
-                try:
-                    fill = np.load(got[0])
-                    summary["fills"]["reused"] += 1
-                except (OSError, ValueError):
-                    fill = None
-            if fill is None:
-                fill, data_sha = _fresh_fill(store, world_id, session_id, kid, sources.get(kid),
-                                             image_set, intrinsics, imagery_source)
-                if fill is None or data_sha != sha:
-                    summary["fills"]["none"] += 1
-                    continue
-                summary["fills"]["fresh"] += 1
-            _save_atomic(run_dir / f"{ki:05d}_fill.npy", np.asarray(fill, bool))
-            records[ki] = {"ki": ki, "kid": kid, "ok": True, "fill_rule": FILL_RULE, "image_sha1": sha}
-            frames.append((ki, kid))
+            records[ki] = rec
+            frames.append((ki, rec["kid"]))
         report = T.ensure_transient_masks(
             store, world_id, session_id, frames, intrinsics=intrinsics, camera=camera,
             align_records=records, depth_dir=run_dir, params=params, policy=policy,

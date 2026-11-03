@@ -847,7 +847,7 @@ def surfacify(store, world_id: str, session_id: str, *,
         frames.transients = _ensure_transients(
             store, world_id, session_id, solution, intrinsics, align, work, frames,
             tparams, should_stop, progress, transient_backend_factory,
-            imagery_source=params.imagery_source)
+            imagery_source=params.imagery_source, live=params.quality == "live")
         seconds[STAGE_TRANSIENTS] = round(time.time() - t, 2)
         if frames.transients.state == "stopped" or _stopped(should_stop):
             return _stop(root, STAGE_TRANSIENTS, seconds,
@@ -967,7 +967,7 @@ STAGE_TRANSIENTS = "transients"
 
 def _ensure_transients(store, world_id, session_id, solution, intrinsics, align, work,
                        frames, tparams, should_stop, progress, backend_factory,
-                       imagery_source: str = IMAGERY_REDACTED):
+                       imagery_source: str = IMAGERY_REDACTED, live: bool = False):
     """`transients.ensure_transient_masks` over the gated frames. Never fails
     the surface: a machine that cannot run the detector fuses without masks and
     the manifest says `unavailable`.
@@ -975,7 +975,10 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
     The detector reads its pixels through `appearance.keyframe_source`, so the
     imagery source travels with it (§6.6): the hand and phone masks of a
     research build are made from the same frames the research build fuses, and
-    they cache under a key of their own, not the redacted build's."""
+    they cache under a key of their own, not the redacted build's.
+
+    `live`: a build during the walk (`SurfaceParams.live`). Only read with
+    `TOWER_WORLD_MASKS_LIVE_REUSE` on, to journal how its masks were computed."""
     from tower.world_builder import appearance as A  # noqa: PLC0415
     from tower.world_builder import transients as T  # noqa: PLC0415
 
@@ -984,22 +987,33 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
     try:
         policy = A.resolve_label_policy(store, world_id, session_id,
                                         imagery_source=imagery_source)
-        from tower.config import world_masks_at_stop_setting  # noqa: PLC0415
+        from tower.config import (  # noqa: PLC0415
+            world_masks_at_stop_setting,
+            world_masks_live_reuse_setting,
+        )
 
-        if world_masks_at_stop_setting() and backend_factory is None:
+        # A live build journals each mask it computes (`masks_at_stop.live_recorder`), so the
+        # worker at Stop can reuse it under the final key. Off: False, and the line below is L1's.
+        journal = live and backend_factory is None and world_masks_live_reuse_setting()
+        if (world_masks_at_stop_setting() or journal) and backend_factory is None:
             # Masks staged after Stop (`masks_at_stop.py`) become cache hits here, each only
             # if its inputs are this build's own. The detector device is decided ONCE: the
             # detectors this stage builds run on it, and promotion requires the staged masks'
             # mode to be its mode, so a promoted mask is what this stage would have computed.
             # A caller's own backends (a test seam) have a device this stage cannot know:
-            # nothing is promoted for them. Off: not called at all.
+            # nothing is promoted for them, and nothing is journaled. Off: not called at all.
             from tower.world_builder import masks_at_stop as MS  # noqa: PLC0415
 
             device = MS.stage_device()
             backend_factory = functools.partial(T.default_backend_factory, device=device)
-            MS.promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
-                               align_records=records, solution=solution, intrinsics=intrinsics,
-                               params=tparams, policy=policy, mode=MS.execution_mode(device))
+            if world_masks_at_stop_setting():
+                MS.promote_quietly(store, world_id, session_id, depth_dir=work / "depth",
+                                   align_records=records, solution=solution, intrinsics=intrinsics,
+                                   params=tparams, policy=policy, mode=MS.execution_mode(device))
+            if journal:
+                backend_factory = MS.live_recorder(backend_factory, depth_dir=work / "depth",
+                                                   mode=MS.execution_mode(device),
+                                                   intrinsics=intrinsics)
         return T.ensure_transient_masks(
             store, world_id, session_id, [(ki, frames.kids[ki]) for ki, *_ in frames.items],
             intrinsics=intrinsics, camera=solution.camera, align_records=records,
