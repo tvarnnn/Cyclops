@@ -262,20 +262,31 @@ def _fresh_fill(store, world_id, session_id, kid, source_path, image_set, intrin
     return fill_u, hashlib.sha1(data).hexdigest()
 
 
-def execution_mode() -> dict:
-    """How the detector backends of THIS process would run: the device they pick
-    (`transients` backends: CUDA when available, else CPU), whether their forward calls are
-    fp16 (`transients._fp16_enabled`), and the library versions. Not part of the cache key,
-    so the worker records it and `promote` requires the stage's own to be equal."""
+def stage_device() -> str | None:
+    """The device the `transients` backends would pick now: CUDA when available, else CPU
+    (None without torch). The surface stage asks ONCE, then builds its detectors on exactly this
+    device and promotes against it, so the two can never disagree."""
+    try:
+        import torch  # noqa: PLC0415
+    except ImportError:
+        return None
+    return "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def execution_mode(device: str | None = None) -> dict:
+    """How detector backends run on `device` (None: the device they would pick now,
+    `stage_device`): the device, whether their forward calls are fp16
+    (`transients._fp16_enabled`), and the library versions. Not part of the cache key, so the
+    worker records it and `promote` requires the stage's own to be equal."""
     import importlib.metadata  # noqa: PLC0415
 
+    dev = device if device is not None else stage_device()
     try:
         import torch  # noqa: PLC0415
 
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
         torch_version = torch.__version__
     except ImportError:
-        dev, torch_version = None, None
+        torch_version = None
     try:
         transformers_version = importlib.metadata.version("transformers")
     except importlib.metadata.PackageNotFoundError:
@@ -459,7 +470,8 @@ def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: 
     None when nothing was staged. Otherwise a record of what happened, also logged:
     `promoted`, `already` (the cache held it under the final key), `refused` by reason. A
     refused mask stays where it is and the transient stage computes it as it always has.
-    `mode`: this process's `execution_mode()` (None reads it)."""
+    `mode`: the `execution_mode` of the detectors the calling stage will build -- the surface
+    stage passes the device it decided once and builds its detectors on; None reads it now."""
     from tower.world_builder import appearance as A  # noqa: PLC0415
     from tower.world_builder.dense_pipeline import FILL_RULE  # noqa: PLC0415
 
