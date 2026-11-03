@@ -2632,6 +2632,7 @@ def main(argv=None) -> int:
     # T-UX1 (WORLDS §2b): `finish_phase.PhaseWriter`, or None -- always None with
     # `TOWER_WORLD_FINISH_STAGES` off, so nothing below writes a byte. Here so `finally` sees it.
     phase = None
+    live_counters = None
     try:
         if capture_start_error is not None:
             raise capture_start_error
@@ -2876,6 +2877,13 @@ def main(argv=None) -> int:
                 "is not in it.",
                 end_reason,
             )
+        # A live capture has ended. The opt-in sampler observes this builder and
+        # its descendants through final solve, surface and appearance.
+        if args.follow_capture:
+            from tower.config import world_cpu_sampler_setting  # noqa: PLC0415
+            if world_cpu_sampler_setting():
+                from tower.world_builder.live_counters import start_if_on  # noqa: PLC0415
+                live_counters = start_if_on(store, world_id, session_id)
         summary = engine.stop_session(
             end_reason, hold_lock=True, capture_end_reason=capture_end
         )
@@ -3112,6 +3120,8 @@ def main(argv=None) -> int:
         engine.release_world(world_id)
 
     if result is None or summary is None:
+        if live_counters is not None:
+            live_counters.stop()
         return exit_code
 
     report = {
@@ -3296,6 +3306,8 @@ def main(argv=None) -> int:
                 "\nSYNTHETIC, NOT PHYSICAL: nothing here says anything about "
                 "the Ray-Ban camera."
             )
+    if live_counters is not None:
+        live_counters.stop()
     return exit_code
 
 
