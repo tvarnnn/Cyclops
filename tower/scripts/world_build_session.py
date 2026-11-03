@@ -892,7 +892,7 @@ class MasksAtStop:
 
         try:
             self._store = store
-            masks_at_stop.write_sources(store, self.session_id, sources)
+            masks_at_stop.write_sources(store, self.world_id, self.session_id, sources)
             self._log = open(masks_at_stop.log_path(store, self.world_id, self.session_id), "ab")
             argv = [python_executable(), str(self.script), "--root", str(self.root),
                     "--world", self.world_id, "--session", self.session_id,

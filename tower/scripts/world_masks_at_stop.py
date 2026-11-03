@@ -73,7 +73,7 @@ def main(argv=None) -> int:
     for noisy in ("PIL", "urllib3", "httpx", "huggingface_hub"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
     store = WorldStore(Path(args.root))
-    sources = masks_at_stop.read_sources(store, args.session)
+    sources = masks_at_stop.read_sources(store, args.world, args.session)
     try:
         summary = masks_at_stop.prefill(store, args.world, args.session, sources=sources,
                                         should_stop=parent_gone(args.parent_pid))
