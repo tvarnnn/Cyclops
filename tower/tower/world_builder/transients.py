@@ -493,6 +493,11 @@ def _autocast(enabled: bool):
 class GroundingDinoSamBackend(ComponentBackend):
     component = COMPONENT_GDSAM
 
+    def __init__(self, device: str | None = None):
+        # None, the stage: CUDA when available, else CPU (`_fp16_enabled`). "cuda": never the
+        # CPU -- a caller that needs fp16 CUDA masks or none (`masks_at_stop`) gets a failure.
+        self.device = device
+
     def probe(self) -> str | None:
         return _packages_missing("torch", "transformers", "PIL")
 
@@ -509,7 +514,7 @@ class GroundingDinoSamBackend(ComponentBackend):
             )
         except ImportError as exc:
             raise TransientDetectorUnavailable(f"transformers cannot load Grounding DINO / SAM 2 ({exc})") from None
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        dev = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         fp16 = _fp16_enabled(dev)
         lut = _gamma_lut(params.gamma)
         times = {"gdino_load": 0.0, "gdino": 0.0, "sam_load": 0.0, "sam": 0.0,
@@ -603,6 +608,10 @@ class GroundingDinoSamBackend(ComponentBackend):
 class OneFormerBackend(ComponentBackend):
     component = COMPONENT_ONEFORMER
 
+    def __init__(self, device: str | None = None):
+        # As `GroundingDinoSamBackend`: None chooses, "cuda" never falls back to the CPU.
+        self.device = device
+
     def probe(self) -> str | None:
         return _packages_missing("torch", "transformers", "PIL", "scipy")
 
@@ -617,7 +626,7 @@ class OneFormerBackend(ComponentBackend):
             )
         except ImportError as exc:
             raise TransientDetectorUnavailable(f"transformers cannot load OneFormer ({exc})") from None
-        dev = "cuda" if torch.cuda.is_available() else "cpu"
+        dev = self.device or ("cuda" if torch.cuda.is_available() else "cpu")
         fp16 = _fp16_enabled(dev)
         lut = _gamma_lut(params.gamma)
         times = {"oneformer_load": 0.0, "oneformer": 0.0, "frames": len(items)}
@@ -679,15 +688,15 @@ class DisabledBackend(ComponentBackend):
         raise TransientDetectorUnavailable(self.reason)
 
 
-def default_backend_factory(component: str) -> ComponentBackend:
+def default_backend_factory(component: str, device: str | None = None) -> ComponentBackend:
     switch = os.environ.get(ENV_SWITCH, "").strip().lower()
     if switch in ("0", "off", "false", "no"):
         return DisabledBackend(component, f"transient detection is disabled on this Tower "
                                           f"({ENV_SWITCH}={os.environ.get(ENV_SWITCH)})")
     if component == COMPONENT_GDSAM:
-        return GroundingDinoSamBackend()
+        return GroundingDinoSamBackend(device)
     if component == COMPONENT_ONEFORMER:
-        return OneFormerBackend()
+        return OneFormerBackend(device)
     raise ValueError(component)
 
 
