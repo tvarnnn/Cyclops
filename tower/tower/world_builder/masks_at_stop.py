@@ -710,11 +710,20 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
             if rec is None or rec["image_sha1"] != sha:
                 continue
             path = T.cache_path(run_dir, ki, T.COMPONENT_ONEFORMER)
-            T.write_component(path, T.component_key(T.COMPONENT_ONEFORMER, params, keyframe_id=rec["kid"],
-                                                    source_sha1=sha, redaction_effective=policy.effective),
-                              hand, phone, image_sha1=sha)
-            with open(run_dir / MODES_FILENAME, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(dict(mask_mode(mode["device"]), f=path.name)) + "\n")
+            try:
+                T.write_component(path, T.component_key(T.COMPONENT_ONEFORMER, params, keyframe_id=rec["kid"],
+                                                        source_sha1=sha, redaction_effective=policy.effective),
+                                  hand, phone, image_sha1=sha)
+                with open(run_dir / MODES_FILENAME, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(dict(mask_mode(mode["device"]), f=path.name)) + "\n")
+            except OSError:
+                # Not staged after all (a mask without its mode record would be cached for the
+                # worker yet never promoted): the GPU loop computes this frame's OneFormer.
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
             rekeyed += 1
         summary["rekeyed"] = rekeyed
         _write_index(run_dir, summary)

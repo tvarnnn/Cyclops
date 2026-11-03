@@ -394,3 +394,22 @@ def test_a_live_mask_of_other_bytes_than_the_frame_staged_is_not_reused(monkeypa
     summary, worker = _worker(world)
     assert summary["rekeyed"] == len(world.kids) - 1
     assert worker.computed(ONE) == [HAND_KI]
+
+
+def test_a_reused_mask_that_cannot_be_staged_is_computed_by_the_worker(monkeypatch, world, on):
+    """A write that fails while staging a live mask (a held file, MAX_PATH) costs that mask, not
+    the worker: it computes the frame's OneFormer itself and finishes."""
+    _live_build(monkeypatch, world)
+    real = T.write_component
+
+    def failing(p, *a, **k):
+        if p.name == T.cache_path(p.parent, HAND_KI, ONE).name and p.parent.parent.name == M.STAGING_DIRNAME:
+            raise OSError("held")
+        return real(p, *a, **k)
+
+    monkeypatch.setattr(T, "write_component", failing)
+    stub = PixelStub()
+    summary = M.prefill(world.store, WORLD, SESSION, backend_factory=stub)
+    monkeypatch.setattr(T, "write_component", real)
+    assert summary["state"] == "done" and summary["rekeyed"] == len(world.kids) - 1
+    assert stub.computed(ONE) == [HAND_KI]
