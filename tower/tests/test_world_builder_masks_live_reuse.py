@@ -615,3 +615,56 @@ def test_evidence_that_cannot_be_kept_costs_no_promotion(monkeypatch, world, on)
     stage = PixelStub()
     warm, promoted = _final(world, stage, promote=True)
     assert promoted["promoted"] == 2 * len(world.kids) and stage.calls == []
+
+
+def test_a_link_that_fails_is_a_recorded_skip_never_a_copy(monkeypatch, world, on):
+    """Evidence must not double the walk's masks on disk: no copy fallback. The skip is recorded,
+    so a verification counts it as a shortfall; the promotion is unaffected."""
+    monkeypatch.setenv(EVIDENCE, "on")
+    _live_build(monkeypatch, world)
+    _worker(world)
+
+    def no_links(src, dst):
+        raise OSError("hard links are not supported here")
+
+    monkeypatch.setattr(M.os, "link", no_links)
+    _, promoted = _final(world, PixelStub(), promote=True)
+    root = M.evidence_dir(world.store, WORLD, SESSION)
+    lines = [json.loads(x) for x in (root / M.EVIDENCE_LISTING).read_text().splitlines()]
+    assert promoted["promoted"] == len(lines) == 2 * len(world.kids)
+    assert all(x["kept"] is False and "hard links" in x["why"] for x in lines)
+    assert not list(root.glob("*.npz")) and not list(root.glob("*_fill.npy"))
+
+
+def test_the_promotion_summary_matches_its_listing(monkeypatch, world, on):
+    monkeypatch.setenv(EVIDENCE, "on")
+    _live_build(monkeypatch, world)
+    _worker(world)
+    _, promoted = _final(world, PixelStub(), promote=True)
+    root = M.evidence_dir(world.store, WORLD, SESSION)
+    summary = json.loads((root / "promote.json").read_text())
+    lines = (root / M.EVIDENCE_LISTING).read_text().splitlines()
+    assert summary["promoted"] == promoted["promoted"] == len(lines)
+    assert all(json.loads(x)["kept"] is True for x in lines)
+
+
+def test_old_evidence_is_swept_and_fresh_evidence_kept(monkeypatch, world, on):
+    """`discard_session` (run by every promotion and by the builder) sweeps evidence of any session
+    untouched for `EVIDENCE_MAX_AGE_S`; this promotion's own evidence survives its own discard."""
+    import os
+    import time
+
+    monkeypatch.setenv(EVIDENCE, "on")
+    old = M.evidence_dir(world.store, "another-world", "old-session")
+    young = M.evidence_dir(world.store, "another-world", "young-session")
+    for d, age in ((old, M.EVIDENCE_MAX_AGE_S + 3600), (young, 3600)):
+        d.mkdir(parents=True)
+        (d / M.EVIDENCE_LISTING).write_text("{}\n")
+        t = time.time() - age
+        os.utime(d / M.EVIDENCE_LISTING, (t, t))
+        os.utime(d, (t, t))
+    _live_build(monkeypatch, world)
+    _worker(world)
+    _final(world, PixelStub(), promote=True)                  # promote ends with discard_session
+    assert not old.exists() and young.exists()
+    assert (M.evidence_dir(world.store, WORLD, SESSION) / "promote.json").is_file()

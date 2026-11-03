@@ -1067,14 +1067,17 @@ def world_masks_at_stop_threads_setting() -> int:
     return _non_negative_int(os.environ.get(WORLD_MASKS_AT_STOP_THREADS_ENV), default=0)
 
 
-# EVIDENCE FOR THE MASKS AT STOP (verification runs only). The final build prunes `dense/<sid>/work`,
-# masks and fill masks included, once its appearance is built, so nothing promoted could be checked
-# afterwards. With this on (and `TOWER_WORLD_MASKS_AT_STOP`), `promote` hard-links (else copies) every
-# mask it moves into the cache, and that frame's final fill mask, into
-# `<store root>/masks_at_stop/evidence-<world+session digest>/` with one `promoted.jsonl` line each
-# (where it came from: the worker or the live surface; the stage's execution mode). A verification
-# script recomputes those masks cold and byte-compares them. Never removed by the product; ~0.1-0.3 GB
-# per walk. Off: nothing kept.
+# EVIDENCE FOR THE MASKS AT STOP. FOR VERIFICATION RUNS ONLY (test Towers, replays): never on the live
+# Tower. The final build prunes `dense/<sid>/work`, masks and fill masks included, once its appearance
+# is built, so nothing promoted could be checked afterwards. With this on (and
+# `TOWER_WORLD_MASKS_AT_STOP`), `promote` HARD-LINKS every mask it moves into the cache, and that
+# frame's final fill mask, into `<store root>/masks_at_stop/evidence-<world+session digest>/`, one
+# `promoted.jsonl` line each (where it came from: the worker or the live surface; the stage's
+# execution mode), and its own counts in `promote.json`. No copy fallback: a link that fails is a
+# `kept: false` line, which the verification counts as a shortfall. The verification script
+# (`l1b_verify_reuse.py`) recomputes those masks cold, byte-compares them and then removes the
+# evidence it checked; `masks_at_stop.discard_session` sweeps any evidence untouched for 7 days.
+# Linked, the evidence holds the walk's masks after the prune (~0.1-0.3 GB). Off: nothing kept.
 WORLD_MASKS_AT_STOP_EVIDENCE_ENV = "TOWER_WORLD_MASKS_AT_STOP_EVIDENCE"
 
 

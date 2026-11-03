@@ -152,15 +152,40 @@ def evidence_dir(store, world_id: str, session_id: str) -> Path:
     return staging_root(store) / f"evidence-{key}"
 
 
+# Evidence older than this is swept by `discard_session`. A verification run reads its evidence within
+# hours of the replay (and `l1b_verify_reuse.py` removes what it checked); a week leaves room to re-run a
+# check after a failure without letting forgotten evidence (~0.1-0.3 GB a walk) accumulate.
+EVIDENCE_MAX_AGE_S = 7 * 24 * 3600
+
+
 def _keep(src: Path, dst: Path) -> None:
-    """`dst` as a hard link to `src` (same volume), else a copy; an existing `dst` is replaced."""
+    """`dst` as a hard link to `src`. No copy fallback: evidence must not double a walk's masks on
+    disk, so a link that fails (another volume, no link support) raises and the caller records a
+    skip, which the verification counts as a shortfall."""
+    dst.unlink(missing_ok=True)
+    os.link(src, dst)
+
+
+def sweep_evidence(store, max_age_s: float = EVIDENCE_MAX_AGE_S) -> int:
+    """Remove `evidence-*` directories (any world, any session) untouched for `max_age_s`; never
+    raises. Returns how many were removed."""
     import shutil  # noqa: PLC0415
 
-    dst.unlink(missing_ok=True)
+    removed = 0
+    now = time.time()
     try:
-        os.link(src, dst)
+        candidates = [p for p in staging_root(store).iterdir() if p.is_dir() and p.name.startswith("evidence-")]
     except OSError:
-        shutil.copyfile(src, dst)
+        return 0
+    for d in candidates:
+        try:
+            newest = max([d.stat().st_mtime] + [f.stat().st_mtime for f in d.iterdir()])
+        except OSError:
+            continue
+        if now - newest > max_age_s:
+            shutil.rmtree(d, ignore_errors=True)
+            removed += 1
+    return removed
 
 
 def _is_run_name(name: str) -> bool:
@@ -243,6 +268,7 @@ def discard_session(store, world_id: str, session_id: str) -> None:
         sources_path(store, world_id, session_id).unlink(missing_ok=True)
     except OSError:
         pass
+    sweep_evidence(store)
 
 
 def log_path(store, world_id: str, session_id: str) -> Path:
@@ -912,14 +938,17 @@ def _promote_run(store, world_id, session_id, staging: Path, index: dict, *, dep
         out["promoted"] += 1
         if evidence is not None:
             evidence(target, ki, kid, component, got[2].get("staged_from") or "worker")
+    if evidence is not None:
+        _evidence_summary(store, world_id, session_id, out)
     _log_promote(world_id, session_id, out)
     return out
 
 
 def _evidence_keeper(store, world_id, session_id, depth_dir: Path, run: str, mode: dict):
     """With `TOWER_WORLD_MASKS_AT_STOP_EVIDENCE` on, a function keeping one promoted mask (and its
-    frame's final fill) in `evidence_dir` with a `promoted.jsonl` line; else None. Never raises:
-    evidence is for verification and must not cost the build anything but the copies."""
+    frame's final fill) in `evidence_dir`, hard-linked, with a `promoted.jsonl` line; else None. A link
+    that fails is not replaced by a copy: the line says `kept: false` and why, and the mask's half
+    link is removed. Never raises: evidence must not cost the build anything but links and lines."""
     from tower.config import world_masks_at_stop_evidence_setting  # noqa: PLC0415
 
     if not world_masks_at_stop_evidence_setting():
@@ -928,22 +957,37 @@ def _evidence_keeper(store, world_id, session_id, depth_dir: Path, run: str, mod
     failed = []
 
     def keep(target: Path, ki: int, kid: str, component: str, origin: str) -> None:
+        line = {"f": target.name, "ki": ki, "kid": kid, "component": component, "from": origin,
+                "run": run, "mode": mode, "kept": True}
         try:
             root.mkdir(parents=True, exist_ok=True)
-            _keep(target, root / target.name)
-            fill = root / f"{ki:05d}_fill.npy"
-            if not fill.exists():
-                _keep(Path(depth_dir) / fill.name, fill)
-            line = json.dumps({"f": target.name, "ki": ki, "kid": kid, "component": component,
-                               "from": origin, "run": run, "mode": mode}, sort_keys=True)
+            try:
+                _keep(target, root / target.name)
+                fill = root / f"{ki:05d}_fill.npy"
+                if not fill.exists():
+                    _keep(Path(depth_dir) / fill.name, fill)
+            except OSError as exc:
+                (root / target.name).unlink(missing_ok=True)
+                line.update(kept=False, why=f"{type(exc).__name__}: {exc}")
             with open(root / EVIDENCE_LISTING, "a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+                fh.write(json.dumps(line, sort_keys=True) + "\n")
         except Exception:  # noqa: BLE001 -- verification aid only
             if not failed:
                 failed.append(True)
                 logger.exception("%s %s/%s: keeping promotion evidence failed", LOG, world_id, session_id)
 
     return keep
+
+
+def _evidence_summary(store, world_id, session_id, out: dict) -> None:
+    """`promote.json` beside the evidence: this promotion's own counts, which a verification must
+    match line for line (one `promoted.jsonl` line per promoted mask). Never raises."""
+    try:
+        root = evidence_dir(store, world_id, session_id)
+        root.mkdir(parents=True, exist_ok=True)
+        _write_json(root / "promote.json", dict(out, finished_at=time.time()))
+    except Exception:  # noqa: BLE001 -- verification aid only
+        logger.exception("%s %s/%s: writing the promotion summary failed", LOG, world_id, session_id)
 
 
 def _log_promote(world_id, session_id, out) -> None:
