@@ -231,7 +231,7 @@ def _with_far_frame(tmp_path):
     align_p = store.world_dir(WORLD) / "dense" / SESSION / "align.json"
     align = json.loads(align_p.read_text())
     r = align["records"][0]
-    r["a"] = 8.0
+    r["a"] = 1.0 / 8.0          # kind "depth": z = (pred - b) / a, so 8x farther
     r["z_sparse_min"] = 8.0 * r["z_sparse_min"]
     r["z_sparse_max"] = 8.0 * r["z_sparse_max"]
     align_p.write_text(json.dumps(align))
