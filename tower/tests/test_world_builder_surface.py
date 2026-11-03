@@ -22,11 +22,23 @@ import pytest
 from tower.world_builder import surface as S
 
 
-def test_marching_cubes_pool_keeps_tile_order_and_mesh_bytes(monkeypatch):
+def _devices():
+    import torch
+
+    return ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="no CUDA device"))]
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_marching_cubes_pool_keeps_tile_order_and_mesh_bytes(monkeypatch, device):
     import threading
+
+    import torch
     from skimage import measure
 
-    vol = _fuse([(np.array([0., 0., -1.5]), np.array([0., 0., 5.]), None)])
+    vol = _fuse([(np.array([0., 0., -1.5]), np.array([0., 0., 5.]), None)], device=device)
+    tag = (torch.rand(vol.n_blocks, S.BLOCK_VOXELS,
+                      generator=torch.Generator().manual_seed(0)) < .5).to(device)
     calls = []
     original = measure.marching_cubes
 
@@ -34,18 +46,23 @@ def test_marching_cubes_pool_keeps_tile_order_and_mesh_bytes(monkeypatch):
         calls.append(threading.current_thread().name)
         return original(*args, **kwargs)
 
+    def extract():
+        # every optional output too: the tag, the strong flags, the face weights
+        out = vol.extract_mesh(.5, tile_blocks=2, tag=tag, weak_floor=0.0,
+                               return_face_weight=True)
+        return [np.asarray(a).tobytes() for a in out] + [S.write_mesh_bytes(*out[:3])]
+
     monkeypatch.setattr(measure, "marching_cubes", observed)
     monkeypatch.delenv("TOWER_WORLD_MESH_MC_POOL", raising=False)
-    old = vol.extract_mesh(.5, tile_blocks=2)
-    old_bytes = S.write_mesh_bytes(*old)
+    old = extract()
     assert calls and set(calls) == {threading.current_thread().name}
+    assert len(old[1]) > 0
     calls.clear()
     monkeypatch.setenv("TOWER_WORLD_MESH_MC_POOL", "off")
-    assert S.write_mesh_bytes(*vol.extract_mesh(.5, tile_blocks=2)) == old_bytes
+    assert extract() == old
     calls.clear()
     monkeypatch.setenv("TOWER_WORLD_MESH_MC_POOL", "on")
-    new = vol.extract_mesh(.5, tile_blocks=2)
-    assert S.write_mesh_bytes(*new) == old_bytes
+    assert extract() == old
     assert len(calls) > 1 and all(name != threading.current_thread().name for name in calls)
 
 

@@ -100,7 +100,15 @@ def _cull_run(monkeypatch, setting, *args, **kwargs):
         monkeypatch.setattr(torch.Tensor, "__matmul__", original_matmul)
 
 
-def test_evidence_cull_keeps_the_uncut_chunks_and_every_counter(monkeypatch):
+def _devices():
+    import torch
+
+    return ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
+        not torch.cuda.is_available(), reason="no CUDA device"))]
+
+
+@pytest.mark.parametrize("device", _devices())
+def test_evidence_cull_keeps_the_uncut_chunks_and_every_counter(monkeypatch, device):
     """Chunk edges that fall inside face groups (the build's 2 M chunk is no
     multiple of the 65,536-face group), a group straddling the image edge, and
     groups wholly off-image or behind: every counter bit-identical, and every
@@ -125,7 +133,7 @@ def test_evidence_cull_keeps_the_uncut_chunks_and_every_counter(monkeypatch):
     weak = np.zeros(len(F), bool)
     weak[::4099] = True
     args = (V, F, views, K, lambda d: torch.full_like(d, .1),
-            S.SurfaceParams(min_support_frames=1), torch.device("cpu"))
+            S.SurfaceParams(min_support_frames=1), torch.device(device))
     kw = dict(chunk=100_000, weak=weak, return_counters=True)
 
     off, off_seen = _cull_run(monkeypatch, "off", *args, **kw)
