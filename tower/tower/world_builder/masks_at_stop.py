@@ -115,9 +115,11 @@ def staging_root(store) -> Path:
     return Path(store.root) / STAGING_DIRNAME
 
 
-def sources_path(store, session_id: str) -> Path:
-    """The builder's `keyframe_id -> raw frame path` for one session's worker."""
-    return staging_root(store) / f"sources-{session_id}.json"
+def sources_path(store, world_id: str, session_id: str) -> Path:
+    """The builder's `keyframe_id -> raw frame path` for one session's worker, named by a short
+    digest of the world AND the session (two worlds' sessions never share or delete one)."""
+    key = hashlib.sha1(f"{world_id}/{session_id}".encode()).hexdigest()[:16]
+    return staging_root(store) / f"sources-{key}.json"
 
 
 def _is_run_name(name: str) -> bool:
@@ -167,16 +169,37 @@ def latest_run(root: Path, world_id: str, session_id: str):
     return max(runs, key=lambda r: (float(r[1].get("started_at") or 0.0), r[0].name))
 
 
+def worker_gone(index: dict) -> bool:
+    """Whether the worker that wrote `index` is known to be finished: its run ended (any state
+    but `running`), or the process the index names (pid + start time) no longer exists. Unknown
+    is NOT gone."""
+    if index.get("state") not in (None, "running"):
+        return True
+    pid, started = index.get("pid"), index.get("pid_started")
+    if pid is None or started is None:
+        return False
+    import psutil  # noqa: PLC0415
+
+    try:
+        return psutil.Process(int(pid)).create_time() != started
+    except psutil.NoSuchProcess:
+        return True
+    except (psutil.Error, ValueError, TypeError):
+        return False
+
+
 def discard_session(store, world_id: str, session_id: str) -> None:
-    """Remove this session's runs and its raw-frame paths; never raises. A run of another
-    session, or one too young to have an index, is left alone."""
+    """Remove this session's FINISHED runs (`worker_gone`) and its raw-frame paths; never raises.
+    A run whose worker may still be writing -- a termination that failed -- is left for a later
+    discard, as is a run of another session or one too young to have an index."""
     import shutil  # noqa: PLC0415
 
     root = staging_root(store)
-    for run, _index in session_runs(root, world_id, session_id):
-        shutil.rmtree(run, ignore_errors=True)
+    for run, index in session_runs(root, world_id, session_id):
+        if worker_gone(index):
+            shutil.rmtree(run, ignore_errors=True)
     try:
-        sources_path(store, session_id).unlink(missing_ok=True)
+        sources_path(store, world_id, session_id).unlink(missing_ok=True)
     except OSError:
         pass
 
@@ -331,6 +354,16 @@ def execution_mode(device: str | None = None) -> dict:
             "transformers": transformers_version}
 
 
+def _this_process() -> dict:
+    """The pid and start time `worker_gone` checks, so a cleanup never removes a live run."""
+    try:
+        import psutil  # noqa: PLC0415
+
+        return {"pid": os.getpid(), "pid_started": psutil.Process(os.getpid()).create_time()}
+    except Exception:  # noqa: BLE001 -- without them the run is never taken for finished
+        return {"pid": os.getpid(), "pid_started": None}
+
+
 def mask_mode(device: str) -> dict:
     """What a backend run on `device` computes with: the device, and whether its forward calls
     are fp16 (`transients._fp16_enabled`)."""
@@ -378,17 +411,17 @@ def _write_index(staging: Path, doc: dict) -> None:
     _write_json(staging / INDEX_FILENAME, doc)
 
 
-def write_sources(store, session_id: str, sources: dict) -> None:
+def write_sources(store, world_id: str, session_id: str, sources: dict) -> None:
     """The builder's `keyframe_id -> raw frame path`, as `run_final` hands it to the final
     solve's `sources.json`: the worker reads raw frames exactly where the depth stage will."""
-    path = sources_path(store, session_id)
+    path = sources_path(store, world_id, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     _write_json(path, {"sources": {k: str(v) for k, v in sources.items()}})
 
 
-def read_sources(store, session_id: str) -> dict:
+def read_sources(store, world_id: str, session_id: str) -> dict:
     try:
-        doc = json.loads(sources_path(store, session_id).read_text(encoding="utf-8"))
+        doc = json.loads(sources_path(store, world_id, session_id).read_text(encoding="utf-8"))
         return dict(doc.get("sources") or {})
     except (OSError, ValueError, AttributeError):
         return {}
@@ -412,7 +445,8 @@ def prefill(store, world_id: str, session_id: str, *, sources: dict | None = Non
     imagery_source = surface_params.imagery_source
     mode = execution_mode()
     summary = {"schema": SCHEMA, "run": run_dir.name, "world_id": world_id, "session_id": session_id,
-               "rule": params.rule_id(), "execution": mode, "started_at": t0, "state": "running"}
+               "rule": params.rule_id(), "execution": mode, "started_at": t0, "state": "running",
+               **_this_process()}
     _write_index(run_dir, summary)          # at once: the run is this session's from its start
 
     def done(state, detail=None, **more):
@@ -534,13 +568,15 @@ def promote(store, world_id: str, session_id: str, *, depth_dir, align_records: 
 
 
 def _read_modes(run: Path) -> dict:
-    """`{mask file name: {device, fp16}}` from the run's `modes.jsonl`; a torn line is skipped."""
+    """`{mask file name: {device, fp16}}` from the COMPLETE records of the run's `modes.jsonl`:
+    each ends with a newline, so whatever follows the last newline -- even valid JSON, a record
+    cut before its terminator -- is not a record, and its mask is not promoted."""
     out = {}
     try:
-        lines = (run / MODES_FILENAME).read_text(encoding="utf-8").splitlines()
+        text = (run / MODES_FILENAME).read_text(encoding="utf-8")
     except OSError:
         return out
-    for line in lines:
+    for line in text.split("\n")[:-1]:
         try:
             rec = json.loads(line)
             out[rec.pop("f")] = rec

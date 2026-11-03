@@ -685,7 +685,7 @@ def test_the_builder_survives_a_child_that_cannot_start(monkeypatch, world):
     worker = wbs.MasksAtStop.start_if_on(world.store, root=world.root, world_id=WORLD, session_id=SESSION,
                                          sources={"k": "p"}, wanted=True, spawn=lambda *a, **k: child)
     assert worker is not None
-    assert M.sources_path(world.store, SESSION).is_file()
+    assert M.sources_path(world.store, WORLD, SESSION).is_file()
     worker.close()
     worker.close()                                            # idempotent
     assert ended == [child]
@@ -783,7 +783,7 @@ def test_the_builder_starts_the_worker_after_stop_and_ends_it_before_the_surface
     assert code == 0
     assert order == ["stop_session", "masks.start", "run_final", "terminate", "final_surface_stages"]
     # a surface follows: what the worker was handed is kept for it
-    assert [p.name for p in (root / M.STAGING_DIRNAME).iterdir()] == [f"sources-{_session_id(root)}.json"]
+    assert [p.name for p in (root / M.STAGING_DIRNAME).iterdir()] == [_sources_name(root)]
 
 
 def test_no_surface_follows_so_the_staging_is_discarded(tmp_path, monkeypatch):
@@ -798,13 +798,13 @@ def test_a_hard_stop_starts_no_worker(tmp_path, monkeypatch):
     assert not (root / M.STAGING_DIRNAME).exists()
 
 
-def _session_id(root):
+def _sources_name(root):
     from tower.world_builder.store import WorldStore
 
     store = WorldStore(root)
     (wid,) = store.list_world_ids()
     (sid,) = store.list_session_ids(wid)
-    return sid
+    return M.sources_path(store, wid, sid).name
 
 
 # ---------------------------------------------------------------------------
@@ -820,7 +820,7 @@ def test_every_staging_path_stays_short_under_a_deep_root(tmp_path):
     data = deep.parent / (deep.name + "x" * max(0, pad)) if pad > 0 else tmp_path
     world = _with_keyframes(World(data / "world_builder"))
     assert len(str(data)) >= 120
-    M.write_sources(world.store, SESSION, {k: f"data/captures/c/frames/{i:08d}.jpg" for i, k in enumerate(world.kids)})
+    M.write_sources(world.store, WORLD, SESSION, {k: f"data/captures/c/frames/{i:08d}.jpg" for i, k in enumerate(world.kids)})
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     written = [p for p in M.staging_root(world.store).rglob("*")]
     assert len(written) > 2 * len(world.kids)
@@ -830,7 +830,7 @@ def test_every_staging_path_stays_short_under_a_deep_root(tmp_path):
         """As long as with the product's 32-hex world and session ids (the fixture's are short)."""
         text = str(path)
         extra = (32 - len(WORLD)) if f"{os.sep}worlds{os.sep}" in text else 0
-        if f"{os.sep}dense{os.sep}" in text or path.name.startswith(f"sources-{SESSION}"):
+        if f"{os.sep}dense{os.sep}" in text:
             extra += 32 - len(SESSION)
         return len(text) + extra
 
@@ -849,7 +849,7 @@ def test_promotion_removes_this_sessions_staging_and_only_it(world):
     session's runs and its raw-frame paths, and leaves another session's run alone."""
     import json
 
-    M.write_sources(world.store, SESSION, {"k": "p"})
+    M.write_sources(world.store, WORLD, SESSION, {"k": "p"})
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
     M.prefill(world.store, WORLD, SESSION, backend_factory=Stub(), should_stop=lambda: True)
     other = M.new_run_dir(M.staging_root(world.store))
@@ -857,3 +857,64 @@ def test_promotion_removes_this_sessions_staging_and_only_it(world):
     _final(world, Stub(), promote=True)
     left = sorted(p.name for p in M.staging_root(world.store).iterdir())
     assert left == [other.name]
+
+
+# ---------------------------------------------------------------------------
+# review L1e.R2: world-scoped sources, live runs kept, complete mode records only
+# ---------------------------------------------------------------------------
+
+
+def test_two_worlds_sessions_never_share_or_delete_each_others_sources(world):
+    M.write_sources(world.store, WORLD, SESSION, {"a": "1"})
+    M.write_sources(world.store, "w2", SESSION, {"b": "2"})
+    assert M.sources_path(world.store, WORLD, SESSION) != M.sources_path(world.store, "w2", SESSION)
+    M.discard_session(world.store, WORLD, SESSION)
+    assert M.read_sources(world.store, WORLD, SESSION) == {}
+    assert M.read_sources(world.store, "w2", SESSION) == {"b": "2"}
+
+
+def test_a_run_whose_worker_may_still_be_writing_is_never_removed(world):
+    """Cleanup removes a run only when its worker is known to be finished: a final state, or
+    the process its index names gone. A worker whose termination failed keeps its run."""
+    import json
+    import os
+
+    import psutil
+
+    root = M.staging_root(world.store)
+    me = {"pid": os.getpid(), "pid_started": psutil.Process(os.getpid()).create_time()}
+    unused = max(psutil.pids()) + 100_000
+    runs = {}
+    for name, extra in (("alive", dict(me, state="running")),           # termination failed
+                        ("gone", {"pid": unused, "pid_started": 1.0, "state": "running"}),   # killed
+                        ("reused", dict(me, pid_started=1.0, state="running")),   # pid reused since
+                        ("unknown", {"state": "running"}),              # no pid: not known gone
+                        ("ended", dict(me, state="stopped"))):          # finished on its own
+        run = M.new_run_dir(root)
+        (run / M.INDEX_FILENAME).write_text(json.dumps(dict(extra, run=run.name, world_id=WORLD,
+                                                             session_id=SESSION, started_at=1.0)))
+        runs[name] = run
+    M.discard_session(world.store, WORLD, SESSION)
+    assert {n for n, r in runs.items() if r.exists()} == {"alive", "unknown"}
+
+
+def test_the_prefill_index_names_its_worker(world):
+    import json
+    import os
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    index = json.loads((_run_dir(world) / M.INDEX_FILENAME).read_text())
+    assert index["pid"] == os.getpid() and index["pid_started"] and index["state"] == "done"
+
+
+def test_a_mode_record_without_its_newline_is_not_a_record(world):
+    import json
+
+    M.prefill(world.store, WORLD, SESSION, backend_factory=Stub())
+    run = _run_dir(world)
+    lines = (run / M.MODES_FILENAME).read_text().split("\n")[:-1]
+    last = json.loads(lines[-1])["f"]
+    (run / M.MODES_FILENAME).write_text("\n".join(lines))          # valid JSON, cut before its newline
+    out = _promote(world)
+    assert out["refused"] == {"mask-mode": 1} and out["promoted"] == 2 * len(world.kids) - 1
+    assert not (world.dense / "work" / "depth" / last).exists()
