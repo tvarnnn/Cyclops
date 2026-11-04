@@ -1266,6 +1266,16 @@ def world_appearance_groups_setting() -> bool:
     return _flag(WORLD_APPEARANCE_GROUPS_ENV, default=False)
 
 
+# Project each source keyframe into every other view in one batched pass (the
+# exposure observations and the colour votes), not one view group at a time.
+WORLD_APPEARANCE_BATCHED_ENV = "TOWER_WORLD_APPEARANCE_BATCHED"
+
+
+def world_appearance_batched_setting() -> bool:
+    """`TOWER_WORLD_APPEARANCE_BATCHED`: batched appearance projection. Off."""
+    return _flag(WORLD_APPEARANCE_BATCHED_ENV, default=False)
+
+
 def world_stage_timing_setting() -> bool:
     """Whether to write bounded finish-stage timing (off by default)."""
     if _flag(WORLD_STAGE_TIMING_ENV, default=False):

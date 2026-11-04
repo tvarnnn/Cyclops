@@ -963,6 +963,126 @@ def occluder_mask(zs: np.ndarray, zp: np.ndarray, unobserved: np.ndarray,
                   "threshold": round(tau, 4)}
 
 
+# View x point pairs one batched projection (TOWER_WORLD_APPEARANCE_BATCHED)
+# holds at once. A pair keeps about 100 bytes of intermediates alive at the
+# peak: the float32 projected point, u, v, the masks, the float16 sample grid,
+# three samples and their float32 copies. 4M pairs is then ~0.4 GB.
+#
+# Hardware basis: sized for and tested on the Tower's 12 GB GPU (RTX 5070),
+# where the batch adds at most ~0.4 GB over the per-group loop and the
+# appearance stage's measured peak is unchanged (5.7 GB either way, walk 10.2;
+# the image stacks and models dominate). The budget is a fixed constant, not
+# derived from free VRAM; a smaller card is not measured.
+#
+# The budget is soft at one end: a batch never holds less than one view group
+# (32 or 48 views), even when one group alone is over it (more than 125 K / 83 K
+# grid points per source; the default grids give 880 / 3,600 on 10.2's 359 x
+# 639 frames). Such a one-group batch holds that group's per-pair
+# intermediates, as the loop does for that group, but none of the loop's
+# gathered image copies (`rgb[cs]`, `zp[cs]`, `op[cs]`: 10 B per pixel per
+# view), and the vote stack is one preallocated tensor where the loop holds a
+# list and its concatenation: never more memory than today's loop path.
+BATCH_PAIRS = 4_000_000
+
+
+def _batch_views(points: int, group: int) -> int:
+    """Views per batched projection: a whole number of the per-group loop's
+    view groups, so each group's projection is the call that loop makes,
+    within `BATCH_PAIRS` pairs and never less than one group (see above)."""
+    return group * max(1, BATCH_PAIRS // max(1, points * group))
+
+
+def _project_group(R, t, X, cs):
+    """One view group's projection of the points `X`, written exactly as the
+    per-group loops write it: the same operands of the same shapes, so the same
+    matrix product and the same bits."""
+    import torch  # noqa: PLC0415
+
+    return torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
+
+
+def _exposure_views(X, R, t, Kt, zp, op, rgb, groups, group, offset, W, H, bd, params,
+                    spatial, half):
+    """`solve_gains`' per-group observation loop for one source keyframe's
+    points `X`, over all views in `_batch_views` batches. The same elements,
+    the same arithmetic per element and the same order (view, then point):
+    the view groups are contiguous, ascending and a batch holds whole groups."""
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as TF  # noqa: PLC0415
+
+    N = R.shape[0]
+    step = _batch_views(X.shape[0], group)
+    fp, fs, fc, fuv = [], [], [], []
+    for v0 in range(0, N, step):
+        v1 = min(N, v0 + step)
+        pc = torch.cat([_project_group(R, t, X, cs) for cs in groups[v0 // group:-(-v1 // group)]])
+        zz = pc[..., 2]
+        u = Kt[0, 0] * pc[..., 0] / zz.clamp(min=1e-6) + Kt[0, 2]
+        v = Kt[1, 1] * pc[..., 1] / zz.clamp(min=1e-6) + Kt[1, 2]
+        ins = (zz > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
+        grid = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
+        zq = TF.grid_sample(zp[v0:v1], grid, mode="nearest", align_corners=False)[:, 0, :, 0].float()
+        oq = TF.grid_sample(op[v0:v1], grid, mode="nearest", align_corners=False)[:, 0, :, 0]
+        col = TF.grid_sample(rgb[v0:v1], grid, mode="bilinear",
+                             align_corners=False)[..., 0].permute(0, 2, 1).float()
+        good = (ins & ((zz - zq).abs() < params.exposure_vis_tol * zz) & (oq > 0.5)
+                & (col.amin(2) > params.exposure_dark) & (col.amax(2) < params.exposure_saturated))
+        si, pi = torch.nonzero(good, as_tuple=True)
+        fp.append((pi + offset).to(torch.int32))
+        fs.append((si + v0).to(torch.int32))
+        fc.append(col[si, pi].to(torch.float16))
+        if spatial:
+            fuv.append(torch.stack([u[si, pi], v[si, pi]], 1).to(torch.float16))
+    return fp, fs, fc, fuv
+
+
+def _vote_views(X, a, R, t, Kt, zp, op, rgb, groups, group, W, H, bd, params, half):
+    """`transient_votes`' per-group colour samples of source keyframe `a`'s
+    points `X`, over all views in `_batch_views` batches: (views, points, 3),
+    NaN where the view does not see the point. Every row but `a` holds the
+    values the per-group loop stacks, in the same view order. Row `a` is all
+    NaN (a keyframe never votes on itself), which changes none of the
+    NaN-aware statistics taken over the views: the count, the nanmedian (it
+    selects among the finite values) and the agreement."""
+    import torch  # noqa: PLC0415
+    import torch.nn.functional as TF  # noqa: PLC0415
+
+    N, P = R.shape[0], X.shape[0]
+    C = torch.empty((N, P, 3), dtype=torch.float32, device=X.device)
+    step = _batch_views(P, group)
+    for v0 in range(0, N, step):
+        v1 = min(N, v0 + step)
+        pcs = []
+        for gi in range(v0 // group, -(-v1 // group)):
+            base = groups[gi]
+            k = a - gi * group
+            if not 0 <= k < len(base):
+                pcs.append(_project_group(R, t, X, base))
+                continue
+            # The source's own group is projected without it, as the loop
+            # does; a zero row (depth 0: never inside, never visible) holds
+            # its place.
+            cs = torch.cat((base[:k], base[k + 1:]))
+            pe = _project_group(R, t, X, cs) if len(cs) else X.new_zeros((0, P, 3))
+            pcs.append(torch.cat((pe[:k], X.new_zeros((1, P, 3)), pe[k:])))
+            del pe
+        pc = torch.cat(pcs)
+        del pcs  # the per-group parts are in `pc` now; do not hold them twice
+        zb = pc[..., 2]
+        u = Kt[0, 0] * pc[..., 0] / zb.clamp(min=1e-6) + Kt[0, 2]
+        v = Kt[1, 1] * pc[..., 1] / zb.clamp(min=1e-6) + Kt[1, 2]
+        ins = (zb > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
+        gr = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
+        zpb = TF.grid_sample(zp[v0:v1], gr, mode="nearest", align_corners=False)[:, 0, :, 0].float()
+        opb = TF.grid_sample(op[v0:v1], gr, mode="nearest", align_corners=False)[:, 0, :, 0]
+        col = TF.grid_sample(rgb[v0:v1], gr, mode="bilinear",
+                             align_corners=False)[..., 0].permute(0, 2, 1).float()
+        vis = (ins & torch.isfinite(zpb) & ((zb - zpb).abs() < params.transient_vis_tol * zb)
+               & (opb > 0.5))
+        C[v0:v1] = torch.where(vis[..., None], col, torch.full_like(col, float("nan")))
+    return C
+
+
 def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParams, device=None,
                     should_stop=None, slopes=None, vignette=None):
     """Where a keyframe shows something most OTHER keyframes did not see there.
@@ -993,13 +1113,17 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
-    from tower.config import world_appearance_groups_setting  # noqa: PLC0415
+    from tower.config import (  # noqa: PLC0415
+        world_appearance_batched_setting,
+        world_appearance_groups_setting,
+    )
 
     dev = _torch_device(device)
     N = len(zps)
     if N < 2:
         return [(None, None)] * N
     H, W = np.asarray(zps[0]).shape
+    batched = world_appearance_batched_setting()
     half = torch.float16 if dev.type == "cuda" else torch.float32
     Kt = torch.as_tensor(K, dtype=torch.float32, device=dev)
     R = torch.as_tensor(np.asarray(Rs), dtype=torch.float32, device=dev)
@@ -1010,6 +1134,7 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     b = params.transient_box_px
     rgb = torch.empty((N, 3, H, W), dtype=half, device=dev)
     raw_ok = torch.empty((N, 1, H, W), dtype=half, device=dev)
+    coords = exposure_pixel_coordinates(W, H) if batched else None
     for i in range(N):
         x = torch.as_tensor(np.ascontiguousarray(rgbs[i]), device=dev).permute(2, 0, 1)[None].float() / 255
         blur = TF.avg_pool2d(x, b, stride=1, padding=b // 2, count_include_pad=False)[0]
@@ -1018,7 +1143,8 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
                         & (blur.amax(0) > params.transient_dark)).to(half)
         div = g[i][:, None, None]
         if slopes is not None or vignette is not None:
-            field = exposure_field(None if slopes is None else slopes[i], vignette, W, H)
+            field = exposure_field(None if slopes is None else slopes[i], vignette, W, H,
+                                   coordinates=coords)
             div = div * torch.as_tensor(field, device=dev)[None]
         rgb[i] = (blur / div.clamp(min=1e-3)).to(half)
     zp = torch.stack([torch.as_tensor(np.asarray(z, np.float32)) for z in zps]).to(dev, half)[:, None]
@@ -1032,7 +1158,7 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
     ys, xs = ys.reshape(-1), xs.reshape(-1)
     bd = params.exposure_border_px
     group = 48
-    reuse_groups = world_appearance_groups_setting()
+    reuse_groups = world_appearance_groups_setting() or batched
     groups = ([torch.arange(c0, min(N, c0 + group), device=dev)
                for c0 in range(0, N, group)] if reuse_groups else None)
     out = []
@@ -1050,32 +1176,35 @@ def transient_votes(rgbs, opaque, zps, gains, Rs, ts, K, params: AppearanceParam
         x, y, z0 = xs[idx].float() + 0.5, ys[idx].float() + 0.5, z[idx]
         xc = torch.stack([(x - Kt[0, 2]) / Kt[0, 0] * z0, (y - Kt[1, 2]) / Kt[1, 1] * z0, z0], 1)
         X = (xc - t[a]) @ R[a]
-        cols = []
-        for c0 in range(0, N, group):
-            if groups is None:
-                cs = torch.arange(c0, min(N, c0 + group), device=dev)
-                cs = cs[cs != a]
-            else:
-                base = groups[c0 // group]
-                k = a - c0
-                cs = (torch.cat((base[:k], base[k + 1:]))
-                      if 0 <= k < len(base) else base)
-            if not len(cs):
-                continue
-            pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
-            zb = pc[..., 2]
-            u = Kt[0, 0] * pc[..., 0] / zb.clamp(min=1e-6) + Kt[0, 2]
-            v = Kt[1, 1] * pc[..., 1] / zb.clamp(min=1e-6) + Kt[1, 2]
-            ins = (zb > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
-            gr = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
-            zpb = TF.grid_sample(zp[cs], gr, mode="nearest", align_corners=False)[:, 0, :, 0].float()
-            opb = TF.grid_sample(op[cs], gr, mode="nearest", align_corners=False)[:, 0, :, 0]
-            col = TF.grid_sample(rgb[cs], gr, mode="bilinear",
-                                 align_corners=False)[..., 0].permute(0, 2, 1).float()
-            vis = (ins & torch.isfinite(zpb) & ((zb - zpb).abs() < params.transient_vis_tol * zb)
-                   & (opb > 0.5))
-            cols.append(torch.where(vis[..., None], col, torch.full_like(col, float("nan"))))
-        C = torch.cat(cols, 0)                                           # (views, P, 3)
+        if batched:
+            C = _vote_views(X, a, R, t, Kt, zp, op, rgb, groups, group, W, H, bd, params, half)
+        else:
+            cols = []
+            for c0 in range(0, N, group):
+                if groups is None:
+                    cs = torch.arange(c0, min(N, c0 + group), device=dev)
+                    cs = cs[cs != a]
+                else:
+                    base = groups[c0 // group]
+                    k = a - c0
+                    cs = (torch.cat((base[:k], base[k + 1:]))
+                          if 0 <= k < len(base) else base)
+                if not len(cs):
+                    continue
+                pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
+                zb = pc[..., 2]
+                u = Kt[0, 0] * pc[..., 0] / zb.clamp(min=1e-6) + Kt[0, 2]
+                v = Kt[1, 1] * pc[..., 1] / zb.clamp(min=1e-6) + Kt[1, 2]
+                ins = (zb > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
+                gr = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
+                zpb = TF.grid_sample(zp[cs], gr, mode="nearest", align_corners=False)[:, 0, :, 0].float()
+                opb = TF.grid_sample(op[cs], gr, mode="nearest", align_corners=False)[:, 0, :, 0]
+                col = TF.grid_sample(rgb[cs], gr, mode="bilinear",
+                                     align_corners=False)[..., 0].permute(0, 2, 1).float()
+                vis = (ins & torch.isfinite(zpb) & ((zb - zpb).abs() < params.transient_vis_tol * zb)
+                       & (opb > 0.5))
+                cols.append(torch.where(vis[..., None], col, torch.full_like(col, float("nan"))))
+            C = torch.cat(cols, 0)                                       # (views, P, 3)
         n = torch.isfinite(C[..., 0]).sum(0)
         med = torch.nanmedian(C, dim=0).values                           # (P, 3)
         luma = med.mean(1).clamp(min=0.02)
@@ -1204,12 +1333,19 @@ def exposure_coordinates(u, v, width: int, height: int):
     return du / hw, dv / hh, (du * du + dv * dv) / (hw * hw + hh * hh)
 
 
-def exposure_field(slope, vignette, width: int, height: int) -> np.ndarray:
+def exposure_pixel_coordinates(width: int, height: int):
+    """(xn, yn, r2) at every pixel centre of an image, (H, W) float32 each."""
+    vv, uu = np.mgrid[0:height, 0:width].astype(np.float32)
+    return exposure_coordinates(uu + 0.5, vv + 0.5, width, height)
+
+
+def exposure_field(slope, vignette, width: int, height: int, coordinates=None) -> np.ndarray:
     """The spatial factor of §5.4 over a whole image, (H, W) float32:
     `exp(slope_x * xn + slope_y * yn + k1 * r2 + k2 * r2^2)`. The recorded value
-    at a pixel is `gain * field * radiance`."""
-    vv, uu = np.mgrid[0:height, 0:width].astype(np.float32)
-    xn, yn, r2 = exposure_coordinates(uu + 0.5, vv + 0.5, width, height)
+    at a pixel is `gain * field * radiance`. `coordinates`: the image's
+    `exposure_pixel_coordinates`, when the caller already holds them."""
+    xn, yn, r2 = (exposure_pixel_coordinates(width, height) if coordinates is None
+                  else coordinates)
     sx, sy = (float(slope[0]), float(slope[1])) if slope is not None else (0.0, 0.0)
     k1, k2 = (float(vignette[0]), float(vignette[1])) if vignette is not None else (0.0, 0.0)
     return np.exp(sx * xn + sy * yn + k1 * r2 + k2 * r2 * r2).astype(np.float32)
@@ -1320,7 +1456,10 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     """
     import torch  # noqa: PLC0415
     import torch.nn.functional as TF  # noqa: PLC0415
-    from tower.config import world_appearance_groups_setting  # noqa: PLC0415
+    from tower.config import (  # noqa: PLC0415
+        world_appearance_batched_setting,
+        world_appearance_groups_setting,
+    )
 
     model = params.exposure_model
     if model not in EXPOSURE_MODELS:
@@ -1350,7 +1489,8 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
     obs_p, obs_s, obs_c, obs_uv = [], [], [], []
     npts = 0
     group = 32
-    reuse_groups = world_appearance_groups_setting()
+    batched = world_appearance_batched_setting()
+    reuse_groups = world_appearance_groups_setting() or batched
     groups = ([torch.arange(c0, min(N, c0 + group), device=dev)
                for c0 in range(0, N, group)] if reuse_groups else None)
     bd = params.exposure_border_px
@@ -1365,28 +1505,32 @@ def solve_gains(rgbs, opaque, zps, Rs, ts, K, params: AppearanceParams, device=N
         xc = torch.stack([(x - Kt[0, 2]) / Kt[0, 0] * z, (y - Kt[1, 2]) / Kt[1, 1] * z, z], 1)
         X = (xc - t[a]) @ R[a]
         n = X.shape[0]
-        fp, fs, fc, fuv = [], [], [], []
-        for c0 in range(0, N, group):
-            cs = (torch.arange(c0, min(N, c0 + group), device=dev) if groups is None
-                  else groups[c0 // group])
-            pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
-            zz = pc[..., 2]
-            u = Kt[0, 0] * pc[..., 0] / zz.clamp(min=1e-6) + Kt[0, 2]
-            v = Kt[1, 1] * pc[..., 1] / zz.clamp(min=1e-6) + Kt[1, 2]
-            ins = (zz > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
-            grid = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
-            zq = TF.grid_sample(zp[cs], grid, mode="nearest", align_corners=False)[:, 0, :, 0].float()
-            oq = TF.grid_sample(op[cs], grid, mode="nearest", align_corners=False)[:, 0, :, 0]
-            col = TF.grid_sample(rgb[cs], grid, mode="bilinear",
-                                 align_corners=False)[..., 0].permute(0, 2, 1).float()
-            good = (ins & ((zz - zq).abs() < params.exposure_vis_tol * zz) & (oq > 0.5)
-                    & (col.amin(2) > params.exposure_dark) & (col.amax(2) < params.exposure_saturated))
-            si, pi = torch.nonzero(good, as_tuple=True)
-            fp.append((pi + npts).to(torch.int32))
-            fs.append(cs[si].to(torch.int32))
-            fc.append(col[si, pi].to(torch.float16))
-            if spatial:
-                fuv.append(torch.stack([u[si, pi], v[si, pi]], 1).to(torch.float16))
+        if batched:
+            fp, fs, fc, fuv = _exposure_views(X, R, t, Kt, zp, op, rgb, groups, group, npts,
+                                              W, H, bd, params, spatial, half)
+        else:
+            fp, fs, fc, fuv = [], [], [], []
+            for c0 in range(0, N, group):
+                cs = (torch.arange(c0, min(N, c0 + group), device=dev) if groups is None
+                      else groups[c0 // group])
+                pc = torch.einsum("sij,pj->spi", R[cs], X) + t[cs][:, None]
+                zz = pc[..., 2]
+                u = Kt[0, 0] * pc[..., 0] / zz.clamp(min=1e-6) + Kt[0, 2]
+                v = Kt[1, 1] * pc[..., 1] / zz.clamp(min=1e-6) + Kt[1, 2]
+                ins = (zz > 1e-3) & (u > bd) & (u < W - bd) & (v > bd) & (v < H - bd)
+                grid = torch.stack([u / W * 2 - 1, v / H * 2 - 1], -1).unsqueeze(2).to(half)
+                zq = TF.grid_sample(zp[cs], grid, mode="nearest", align_corners=False)[:, 0, :, 0].float()
+                oq = TF.grid_sample(op[cs], grid, mode="nearest", align_corners=False)[:, 0, :, 0]
+                col = TF.grid_sample(rgb[cs], grid, mode="bilinear",
+                                     align_corners=False)[..., 0].permute(0, 2, 1).float()
+                good = (ins & ((zz - zq).abs() < params.exposure_vis_tol * zz) & (oq > 0.5)
+                        & (col.amin(2) > params.exposure_dark) & (col.amax(2) < params.exposure_saturated))
+                si, pi = torch.nonzero(good, as_tuple=True)
+                fp.append((pi + npts).to(torch.int32))
+                fs.append(cs[si].to(torch.int32))
+                fc.append(col[si, pi].to(torch.float16))
+                if spatial:
+                    fuv.append(torch.stack([u[si, pi], v[si, pi]], 1).to(torch.float16))
         # To the host once per source keyframe: 25M observations held on the
         # card while the stream grows peaked at 3.3 GB of a shared 12 GB GPU,
         # and a transfer per group cost more than the projection itself.
