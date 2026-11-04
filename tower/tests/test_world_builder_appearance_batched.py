@@ -23,12 +23,14 @@ DEVICES = ["cpu", pytest.param("cuda", marks=pytest.mark.skipif(
     not torch.cuda.is_available(), reason="CUDA unavailable"))]
 
 # Gains of the batched path against the per-group path when the exposure solve
-# is NOT made deterministic (CUDA atomics): the solve's own run-to-run spread.
-# Measured on walk 10.2 (APPEAR-VEC.md 3.1): the solve run four times in one
-# process on the same byte-identical observation stream differs between runs
-# by max |d log gain| 1.9e-5 to 1.3e-4, and two separate stage runs of main by
-# 2.1e-4. The bound is 1e-4, inside main's own spread, and 39 times below a
-# one-level change of an 8-bit pixel (1/255 relative).
+# is NOT made deterministic (CUDA atomics). The two paths hand the solve the
+# same bytes, so they may differ only by its own run-to-run spread. The bound is
+# checked on the small synthetic scene below (49 views), whose solve noise is
+# far smaller than a walk's; walk 10.2 is context, not its basis (there, two
+# solves on one stream differ by up to 1.3e-4 in log gain and separate runs
+# spread over +-8e-4: APPEAR-VEC.md 3.1, 3.5). What it catches is a changed
+# stream: the scene's stream is subsampled (`exposure_max_observations` 4,000),
+# so one observation more or less redraws the whole subsample.
 GAIN_LOG_TOL = 1e-4
 
 
@@ -67,9 +69,13 @@ def _scene(n=49, h=24, w=32):
     """A textured wall seen by `n` keyframes that pan and slide, with what the
     filters must drop: a hole in the proxy, a transparent patch, clipped and
     near-black texels, a source with no valid points, a near occluder in the
-    proxy of one view, and a transient (a red patch) in one keyframe. Non-square
-    so a W/H mix-up shows. 49 views cross both group sizes (32 and 48) and
-    leave the last 48-view group holding one keyframe."""
+    proxy of one view, and a transient (a red patch) in one keyframe. Two grey
+    ramps run through the filter bands, so a slip in any of those thresholds
+    moves samples across them: a dark one through `exposure_dark` (0.02) and
+    `transient_dark` (0.03), a bright one through `transient_saturated` (0.92)
+    and `exposure_saturated` (0.97). Non-square so a W/H mix-up shows. 49
+    views cross both group sizes (32 and 48) and leave the last 48-view group
+    holding one keyframe."""
     rng = np.random.default_rng(7)
     y, x = np.mgrid[:h, :w]
     base = np.stack((60 + 4 * x, 80 + 5 * y, 100 + 2 * (x + y)), -1)
@@ -78,6 +84,8 @@ def _scene(n=49, h=24, w=32):
         img = np.clip(base + rng.integers(-3, 4, base.shape) + (i % 5), 0, 255).astype(np.uint8)
         img[0:3, 0:4] = 255          # clipped
         img[-3:, -4:] = 0            # near black
+        img[12:18, 24:32] = (2 + (x[12:18, 24:32] - 24) + i % 3)[..., None]          # 2-11 of 255
+        img[18:24, 12:20] = (228 + 3 * (x[18:24, 12:20] - 12) + i % 3)[..., None]    # 228-251
         rgbs.append(img)
         op = np.ones((h, w), bool)
         op[5:8, 20:26] = False       # a transparent patch
@@ -149,6 +157,46 @@ def test_batched_matches_the_per_group_loops_in_one_process(monkeypatch, device,
     _assert_stacks_match(old["vote_stacks"], new["vote_stacks"])
     for key in ("gains", "counts", "record", "votes"):
         _assert_same(old[key], new[key], key)
+
+
+@pytest.mark.parametrize("device", DEVICES)
+def test_batched_projects_each_view_group_as_the_loop_does(monkeypatch, device):
+    """The exactness argument rests on each view group's matrix product being
+    the loop's own call: the same view indices in the same order, one call per
+    group, the source left out of its own group in the votes. One einsum over a
+    whole batch is not guaranteed to give the same bits (measured: 1 of 126,585
+    elements differ on a CPU), and the equivalence tests cannot always see it."""
+    rgbs, opaque, zps, Rs, ts, K = _scene(97)
+    params = _params()
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_GROUPS", raising=False)
+    monkeypatch.setattr(A, "BATCH_PAIRS", 9000)  # batches of several groups, several batches
+    gains = np.ones((len(rgbs), 3), np.float32)
+    original = A._project_group
+    for fn, args in ((A.solve_gains, (rgbs, opaque, zps, Rs, ts, K, params)),
+                     (A.transient_votes, (rgbs, opaque, zps, gains, Rs, ts, K, params))):
+        # the loop's own view groups, read where it calls the einsum
+        monkeypatch.setenv("TOWER_WORLD_APPEARANCE_BATCHED", "off")
+        start, stop, seen = _trace_at(fn, 'pc = torch.einsum("sij,pj->spi", R[cs], X)', ("cs",))
+        start()
+        try:
+            fn(*args, device=device)
+        finally:
+            stop()
+        loop = [s["cs"].tolist() for s in seen]
+        calls = []
+
+        def spy(R, t, X, cs, calls=calls):
+            calls.append(cs.tolist())
+            return original(R, t, X, cs)
+
+        monkeypatch.setattr(A, "_project_group", spy)
+        monkeypatch.setenv("TOWER_WORLD_APPEARANCE_BATCHED", "on")
+        try:
+            fn(*args, device=device)
+        finally:
+            monkeypatch.setattr(A, "_project_group", original)
+        assert len(loop) > len(rgbs), fn.__name__  # several groups per source
+        assert calls == loop, fn.__name__
 
 
 @pytest.mark.parametrize("device", DEVICES)

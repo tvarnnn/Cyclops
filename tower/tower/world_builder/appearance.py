@@ -965,17 +965,30 @@ def occluder_mask(zs: np.ndarray, zp: np.ndarray, unobserved: np.ndarray,
 
 # View x point pairs one batched projection (TOWER_WORLD_APPEARANCE_BATCHED)
 # holds at once. A pair keeps about 100 bytes of intermediates alive at the
-# peak: the float32 projected point and its per-group parts, u, v, the masks,
-# the float16 sample grid, three samples and their float32 copies. 4M pairs is
-# then ~0.4 GB of the 12 GB card the detector's models share, the order of the
-# colour-vote stack the per-group loop already holds for one source keyframe.
+# peak: the float32 projected point, u, v, the masks, the float16 sample grid,
+# three samples and their float32 copies. 4M pairs is then ~0.4 GB.
+#
+# Hardware basis: sized for and tested on the Tower's 12 GB GPU (RTX 5070),
+# where the batch adds at most ~0.4 GB over the per-group loop and the
+# appearance stage's measured peak is unchanged (5.7 GB either way, walk 10.2;
+# the image stacks and models dominate). The budget is a fixed constant, not
+# derived from free VRAM; a smaller card is not measured.
+#
+# The budget is soft at one end: a batch never holds less than one view group
+# (32 or 48 views), even when one group alone is over it (more than 125 K / 83 K
+# grid points per source; the default grids give 880 / 3,600 on 10.2's 359 x
+# 639 frames). Such a one-group batch holds that group's per-pair
+# intermediates, as the loop does for that group, but none of the loop's
+# gathered image copies (`rgb[cs]`, `zp[cs]`, `op[cs]`: 10 B per pixel per
+# view), and the vote stack is one preallocated tensor where the loop holds a
+# list and its concatenation: never more memory than today's loop path.
 BATCH_PAIRS = 4_000_000
 
 
 def _batch_views(points: int, group: int) -> int:
     """Views per batched projection: a whole number of the per-group loop's
     view groups, so each group's projection is the call that loop makes,
-    within `BATCH_PAIRS` pairs and never less than one group."""
+    within `BATCH_PAIRS` pairs and never less than one group (see above)."""
     return group * max(1, BATCH_PAIRS // max(1, points * group))
 
 
@@ -1052,7 +1065,9 @@ def _vote_views(X, a, R, t, Kt, zp, op, rgb, groups, group, W, H, bd, params, ha
             cs = torch.cat((base[:k], base[k + 1:]))
             pe = _project_group(R, t, X, cs) if len(cs) else X.new_zeros((0, P, 3))
             pcs.append(torch.cat((pe[:k], X.new_zeros((1, P, 3)), pe[k:])))
+            del pe
         pc = torch.cat(pcs)
+        del pcs  # the per-group parts are in `pc` now; do not hold them twice
         zb = pc[..., 2]
         u = Kt[0, 0] * pc[..., 0] / zb.clamp(min=1e-6) + Kt[0, 2]
         v = Kt[1, 1] * pc[..., 1] / zb.clamp(min=1e-6) + Kt[1, 2]
