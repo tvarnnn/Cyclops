@@ -21,6 +21,7 @@ import hashlib
 import io
 import json
 import pathlib
+import threading
 import time
 
 import cv2
@@ -1121,6 +1122,166 @@ def test_the_phone_tier_is_capped_and_the_rest_is_kept_for_the_tower(world):
     # coverage is small; three keyframes must still keep most of what all see.
     assert cov["all"]["seen1"] > 0
     assert cov["phone"]["seen1"] >= 0.9 * cov["all"]["seen1"]
+
+
+@pytest.fixture
+def analytic_proxy(monkeypatch):
+    # The synthetic fixture's box has an exact analytic depth. This keeps the
+    # encode tests runnable on Macs whose Open3D wheel cannot load libusb.
+    class Caster:
+        def __init__(self, _V, _F):
+            pass
+
+        def depth(self, R, t, K, width, height):
+            return _render_box_depth(R, t, K, width, height)
+
+    monkeypatch.setattr(A, "ProxyCaster", Caster)
+
+
+def test_encode_pool_switch_defaults_off_and_workers_are_configurable(monkeypatch):
+    from tower.config import get_settings
+
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", raising=False)
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", raising=False)
+    assert get_settings().world_appearance_encode_pool is False
+    assert get_settings().world_appearance_encode_workers == 0
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "on")
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "3")
+    assert get_settings().world_appearance_encode_pool is True
+    assert get_settings().world_appearance_encode_workers == 3
+
+
+def test_encode_pool_off_keeps_the_serial_artifact(world, monkeypatch, analytic_proxy):
+    monkeypatch.setattr(AP.time, "time", lambda: 1234567890.0)
+    monkeypatch.setattr(AP.time, "time_ns", lambda: 1234567890000000000)
+    monkeypatch.delenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", raising=False)
+    params = A.AppearanceParams(selection_samples=4000, chunk_slots=2, phone_budget=3)
+    assert world.build(params=params, redactor_factory=_never_redact).state == AP.STATE_OK
+    root = AP.appearance_dir(world.store, WORLD, SESSION)
+    serial = (root / "manifest.json").read_bytes()
+
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "false")
+    assert world.build(params=params, redactor_factory=_never_redact, force=True).state == AP.STATE_OK
+    assert (root / "manifest.json").read_bytes() == serial
+
+
+def test_encode_pool_size_keeps_the_cpu_budget_and_bounds_astc_threads():
+    # The Tower: 20 cores, ASTC gets 8 native threads per compress, 359x639 frames.
+    assert AP.encode_pool_size(20, 8, True, 359, 639) == (8, 2)
+    assert AP.encode_pool_size(20, 8, False, 359, 639) == (8, 0)
+    # Asked for more: capped by the cores and the memory budget; ASTC still
+    # never more native threads than cores.
+    fit = AP.ENCODE_POOL_MEMORY // (359 * 639 * AP.ENCODE_BYTES_PER_TEXEL)
+    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=12) == (min(12, fit), 2)
+    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=64) == (min(20, fit), 2)
+    assert AP.encode_pool_size(20, 8, True, 64, 64, requested=64) == (20, 2)
+    assert AP.encode_pool_size(20, 8, True, 359, 639, requested=1) == (1, 1)
+    # Two cores: one native ASTC thread, one image at a time.
+    assert AP.encode_pool_size(2, 1, True, 359, 639) == (1, 1)
+    # Frames too large for the working-memory budget: one image at a time.
+    texels = AP.ENCODE_POOL_MEMORY // AP.ENCODE_BYTES_PER_TEXEL
+    assert AP.encode_pool_size(20, 8, True, texels, 2) == (1, 1)
+    assert AP.encode_pool_size(20, 8, True, texels // 3, 1)[0] == 3
+
+
+def test_encode_pool_matches_every_multichunk_blob_digest_and_manifest(
+        world, monkeypatch, analytic_proxy):
+    monkeypatch.setattr(AP.time, "time", lambda: 1234567890.0)
+    monkeypatch.setattr(AP.time, "time_ns", lambda: 1234567890000000000)
+    monkeypatch.setattr(AP.os, "cpu_count", lambda: 8)      # ASTC threads 4: 2 compresses at once
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "4")
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "false")
+    params = A.AppearanceParams(selection_samples=4000, chunk_slots=3, phone_budget=4)
+    assert world.build(params=params, redactor_factory=_never_redact).state == AP.STATE_OK
+    root = AP.appearance_dir(world.store, WORLD, SESSION)
+    serial = (root / "manifest.json").read_bytes()
+    chunks = {c["digest"]: (root / AP._file_name("chunk", c["digest"])).read_bytes()
+              for c in world.manifest()["chunks"]}
+    assert len(chunks) > 2
+
+    real_astc, real_webp = A.encode_astc, A.encode_webp
+    main = threading.get_ident()
+    lock = threading.Lock()
+    seen = {"webp_threads": set(), "astc_now": 0, "astc_max": 0, "in_use": set(),
+            "contexts": set(), "allocated_in_worker": 0}
+
+    def record_astc(rgba, quality, threads, *, contexts=None):
+        assert contexts is not None, "the pool path compresses on its own contexts"
+        with lock:
+            assert id(contexts) not in seen["in_use"], "a context compressed from two threads"
+            seen["in_use"].add(id(contexts))
+            seen["contexts"].add(id(contexts))
+            seen["allocated_in_worker"] += (quality, threads) not in contexts
+            seen["astc_now"] += 1
+            seen["astc_max"] = max(seen["astc_max"], seen["astc_now"])
+        try:
+            time.sleep(0.05)                  # overlap the compresses that may overlap
+            return real_astc(rgba, quality, threads, contexts=contexts)
+        finally:
+            with lock:
+                seen["astc_now"] -= 1
+                seen["in_use"].discard(id(contexts))
+
+    def record_webp(rgba, quality):
+        with lock:
+            seen["webp_threads"].add(threading.get_ident())
+        time.sleep(0.01)
+        return real_webp(rgba, quality)
+
+    monkeypatch.setattr(A, "encode_astc", record_astc)
+    monkeypatch.setattr(A, "encode_webp", record_webp)
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "true")
+    assert world.build(params=params, redactor_factory=_never_redact, force=True).state == AP.STATE_OK
+    # The pool ran: WebP on worker threads, more than one of them.
+    assert main not in seen["webp_threads"] and len(seen["webp_threads"]) > 1
+    if A.astc_available()[0]:
+        astc_slots = max(c["slots"] for c in world.manifest()["chunks"]
+                         if c["encoding"] == A.ENC_ASTC)
+        assert seen["astc_max"] == min(2, astc_slots) and 1 <= len(seen["contexts"]) <= 2
+        assert seen["allocated_in_worker"] == 0, "every context is allocated before the first compress"
+    assert (root / "manifest.json").read_bytes() == serial
+    assert {c["digest"]: (root / AP._file_name("chunk", c["digest"])).read_bytes()
+            for c in world.manifest()["chunks"]} == chunks
+
+
+def test_encode_pool_reports_the_serial_error(world, monkeypatch, analytic_proxy):
+    # One WebP image fails amid successful ones; a LATER image of the same chunk
+    # fails sooner. The pool must report what the serial loop reports: the
+    # first failure in slot order.
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS", "4")
+    monkeypatch.setattr(AP.os, "cpu_count", lambda: 8)
+    real_webp = A.encode_webp
+    calls = []
+
+    def key(rgba):
+        return hashlib.sha1(rgba.tobytes()).hexdigest()[:12]
+
+    def record(rgba, quality):
+        calls.append(key(rgba))
+        return real_webp(rgba, quality)
+
+    monkeypatch.setattr(A, "encode_webp", record)
+    monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", "false")
+    assert world.build(redactor_factory=_never_redact).state == AP.STATE_OK
+    assert len(calls) >= 4
+    slow, fast = calls[1], calls[2]           # the 2nd and 3rd image of the first WebP chunk
+
+    def fail(rgba, quality):
+        k = key(rgba)
+        if k == slow:
+            time.sleep(0.3)
+        if k in (slow, fast):
+            raise RuntimeError(f"WebP failed on {k}")
+        return real_webp(rgba, quality)
+
+    monkeypatch.setattr(A, "encode_webp", fail)
+    details = {}
+    for pool in ("false", "true"):
+        monkeypatch.setenv("TOWER_WORLD_APPEARANCE_ENCODE_POOL", pool)
+        result = world.build(redactor_factory=_never_redact, force=True)
+        assert result.state == AP.STATE_FAILED
+        details[pool] = result.detail
+    assert details == {"false": f"WebP failed on {slow}", "true": f"WebP failed on {slow}"}
 
 
 # ---------------------------------------------------------------------------
