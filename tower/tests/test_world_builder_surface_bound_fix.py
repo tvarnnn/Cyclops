@@ -299,6 +299,14 @@ class TestContradictedFrames:
         off_by_half, K = _plane_frame(3.0)       # 1.5x the points' depth: under the 2x line
         assert self._flags([off_by_half], _points_on(2.0), K) == [False]
 
+    def test_an_offset_camera_reads_its_own_view(self):
+        """The projection uses the frame's own pose: a camera five units along x
+        is contradicted by the points in ITS view, not by points at the origin."""
+        stretched, K = _plane_frame(16.0, eye=(5.0, 0.0, 0.0))
+        here = _points_on(2.0) + np.array([5.0, 0.0, 0.0])
+        assert self._flags([stretched], here, K) == [True]
+        assert self._flags([stretched], _points_on(2.0) + np.array([-5.0, 0.0, 0.0]), K) == [False]
+
     def test_it_is_gauge_free(self):
         good, K = _plane_frame(2000.0)
         stretched, _ = _plane_frame(16000.0)
