@@ -750,6 +750,13 @@ def surfacify(store, world_id: str, session_id: str, *,
     from tower.world_builder.global_solve import load_solution
 
     params = dataclasses.replace(params or SurfaceParams(), depth_known_fov=True)
+    from tower.config import world_surface_bound_fix_setting  # noqa: PLC0415
+
+    if world_surface_bound_fix_setting():
+        # Read here, per build, so the builder, the CLI and the live worker all
+        # follow it; off, `params` is exactly what the caller passed.
+        params = dataclasses.replace(params, bound_from_fused_component=True,
+                                     budget_spares_the_room=True)
     root = surface_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     seconds: dict = {}
@@ -1027,7 +1034,7 @@ def _ensure_transients(store, world_id, session_id, solution, intrinsics, align,
 
 
 def _outlier_record(frames: "_Frames", voxel: float = 0.0, coarsened: float = 1.0,
-                    key_coarsened: float = 1.0) -> dict:
+                    key_coarsened: float = 1.0, spared: dict | None = None) -> dict:
     """What this build did about the solve's outliers, for the manifest.
 
     WRITTEN ON EVERY RETURN PATH, not only on the one that succeeds: a build
@@ -1055,6 +1062,10 @@ def _outlier_record(frames: "_Frames", voxel: float = 0.0, coarsened: float = 1.
             float(coarsened) / float(key_coarsened or 1.0), 4),
         "voxel": float(voxel),
     })
+    if spared is not None:
+        # Only on a build whose budget policy is `budget_spares_the_room`, so a
+        # surface built without it keeps its record byte for byte.
+        record.update({f"blocks_dropped_{k}": int(v) for k, v in spared.items()})
     if frames.bound is not None:
         record.update(frames.bound.record())
     else:
@@ -1080,6 +1091,18 @@ def _stop(root: Path, stage: str, seconds: dict,
 MIN_SCALE_OBSERVATIONS = 64
 
 
+def _fused_component_points(solution, params: SurfaceParams):
+    """`(points, mask)`: the sparse points of the component the surface fuses
+    (`params.component`) and their mask over `solution.xyz`; every point and a
+    None mask when the solution records no per-point component (or no points)."""
+    points = getattr(solution, "xyz", None)
+    comp = getattr(solution, "component", None)
+    if points is None or comp is None or len(comp) != len(points):
+        return points, None
+    only = np.asarray(comp) == params.component
+    return np.asarray(points)[only], only
+
+
 def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
                   median_depth: float):
     """The box this session's depth is fused inside, or None.
@@ -1095,11 +1118,24 @@ def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
     if not len(frames):
         return None
     centres = np.array([-R.T @ t for _ki, _a, _b, R, t, _ho, _z in frames.items])
+    points = getattr(solution, "xyz", None)
+    only = None
+    if params.bound_from_fused_component and points is not None:
+        # Only the fused component's points (`SurfaceParams.bound_from_fused_component`).
+        # A solution without a per-point component cannot be filtered and keeps
+        # every point, as off: the envelope only ever grows when this stands down.
+        points, only = _fused_component_points(solution, params)
     bound = robust_fusion_bound(
-        getattr(solution, "xyz", None), centres,
+        points, centres,
         reach=params.max_depth_frac * float(median_depth),
         radius_multiple=params.outlier_radius_multiple,
         bound_multiple=params.fusion_bound_multiple)
+    if bound is not None and only is not None:
+        import dataclasses  # noqa: PLC0415
+
+        bound = dataclasses.replace(bound, detail=(
+            f"{bound.detail}; sparse points of component {params.component} only "
+            f"({int(only.sum())} of {len(only)})"))
     if bound is not None:
         logger.info("[Tower][WorldBuilder][surface] fusing inside %s -- %s",
                     np.round(bound.hi - bound.lo, 3).tolist(), bound.detail)
@@ -1217,6 +1253,27 @@ def _scale_note(store, world_id: str) -> dict:
     return scale
 
 
+def _spare_the_room(keys, nkey, *, params: SurfaceParams):
+    """What an over-budget walk gives up BEFORE the voxel of the whole room is
+    coarsened (`SurfaceParams.budget_spares_the_room`): `(kept keys,
+    {"unsupported": n})`.
+
+    `keys` are one allocation pass's unique block keys and `nkey` how many
+    frames keyed each (every frame's own keys are unique, so a count is a
+    number of distinct frames). Blocks fewer than `min_support_frames` frames
+    key go: no face whose centroid such a block holds can pass
+    `evidence_filter` (see `SurfaceParams.budget_spares_the_room` for why, and
+    for the one-voxel seam it can cost). Nothing here measures distance.
+    Whatever is left is the caller's to coarsen, exactly as before.
+    """
+    import torch
+
+    n0 = int(keys.numel())
+    floor = int(params.min_support_frames)
+    keep = (nkey >= floor) if (floor > 1 and nkey is not None) else torch.ones_like(keys, dtype=torch.bool)
+    return keys[keep], {"unsupported": n0 - int(keep.sum())}
+
+
 def _build(root, frames, params, median_depth, voxel, trunc, seconds,
            should_stop, progress) -> SurfaceResult:
     import torch
@@ -1244,9 +1301,12 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     # before the frames are prepared so every return below can record them.
     coarsened = 1.0
     key_coarsened = 1.0
+    # What `budget_spares_the_room` dropped on the pass that was reserved; None
+    # when the policy is off, so the record keeps its old keys.
+    spared = {"unsupported": 0} if params.budget_spares_the_room else None
 
     def record():
-        return _outlier_record(frames, voxel, coarsened, key_coarsened)
+        return _outlier_record(frames, voxel, coarsened, key_coarsened, spared)
 
     cached = []
     for z, ok, img, R, tt, w in frames.prepared(params, median_depth, device):
@@ -1291,14 +1351,28 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     # built on top -- which is worse than a refusal. Past the cap the honest
     # refusal is the answer, and it is the answer the stand-down paths of the
     # pose gate rely on.
+    #
+    # AND, WITH `budget_spares_the_room`, NOT BEFORE THE ROOM IS SPARED: a walk
+    # over the budget first loses what no kept face can come from, and the
+    # voxel is coarsened only for what is left (`_spare_the_room`). Under the
+    # budget nothing here changes.
     attempts = 12
     cap = params.max_key_coarsening
+    spare = params.budget_spares_the_room
+    nkey = None
     for attempt in range(attempts):
+        if spare:
+            # Only the pass that is reserved is recorded.
+            spared = {"unsupported": 0}
         try:
             keys = [vol.blocks_for_depth(z.to(device).float(), ok.to(device), R, tt,
                                          frames.K)
                     for z, ok, _img, R, tt, _w in cached]
-            allk = torch.unique(torch.cat(keys))
+            if spare:
+                # How many frames key each block: every frame's keys are unique.
+                allk, nkey = torch.unique(torch.cat(keys), return_counts=True)
+            else:
+                allk = torch.unique(torch.cat(keys))
             del keys
         except SurfaceUnavailable as exc:
             over = exc.key_overshoot
@@ -1337,6 +1411,15 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
         # the previous voxel size on its last pass.
         if params.max_blocks <= 0 or allk.numel() <= params.max_blocks:
             break
+        if spare:
+            allk, spared = _spare_the_room(allk, nkey, params=params)
+            nkey = None
+            logger.info("[Tower][WorldBuilder][surface] over the block budget of %d: "
+                        "dropped %d blocks fewer than %d frames key; %d left",
+                        params.max_blocks, spared["unsupported"], params.min_support_frames,
+                        allk.numel())
+            if allk.numel() <= params.max_blocks:
+                break
         if attempt == attempts - 1:
             # The budget is what stands between a pathological walk and an
             # out-of-memory failure, so the last attempt does not quietly
