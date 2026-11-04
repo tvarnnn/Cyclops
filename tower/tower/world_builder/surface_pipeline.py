@@ -756,7 +756,8 @@ def surfacify(store, world_id: str, session_id: str, *,
         # Read here, per build, so the builder, the CLI and the live worker all
         # follow it; off, `params` is exactly what the caller passed.
         params = dataclasses.replace(params, bound_from_fused_component=True,
-                                     budget_spares_the_room=True)
+                                     budget_spares_the_room=True,
+                                     budget_drops_contradicted=True)
     root = surface_dir(store, world_id, session_id)
     root.mkdir(parents=True, exist_ok=True)
     seconds: dict = {}
@@ -870,6 +871,9 @@ def surfacify(store, world_id: str, session_id: str, *,
         # because the camera-reach term is a multiple of it, and before the
         # depth is prepared, because `_Frames.prepared` is what applies it.
         frames.bound = _fusion_bound(frames, solution, params, median_depth)
+        if params.budget_drops_contradicted:
+            # The evidence `_contradicted_frames` reads, if the budget binds.
+            frames.fused_points, _ = _fused_component_points(solution, params)
 
         if params.depth_consistency:
             t = time.time()
@@ -1077,6 +1081,18 @@ def _stop(root: Path, stage: str, seconds: dict,
 MIN_SCALE_OBSERVATIONS = 64
 
 
+def _fused_component_points(solution, params: SurfaceParams):
+    """`(points, mask)`: the sparse points of the component the surface fuses
+    (`params.component`) and their mask over `solution.xyz`; every point and a
+    None mask when the solution records no per-point component (or no points)."""
+    points = getattr(solution, "xyz", None)
+    comp = getattr(solution, "component", None)
+    if points is None or comp is None or len(comp) != len(points):
+        return points, None
+    only = np.asarray(comp) == params.component
+    return np.asarray(points)[only], only
+
+
 def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
                   median_depth: float):
     """The box this session's depth is fused inside, or None.
@@ -1098,10 +1114,7 @@ def _fusion_bound(frames: "_Frames", solution, params: SurfaceParams,
         # Only the fused component's points (`SurfaceParams.bound_from_fused_component`).
         # A solution without a per-point component cannot be filtered and keeps
         # every point, as off: the envelope only ever grows when this stands down.
-        comp = getattr(solution, "component", None)
-        if comp is not None and len(comp) == len(points):
-            only = np.asarray(comp) == params.component
-            points = np.asarray(points)[only]
+        points, only = _fused_component_points(solution, params)
     bound = robust_fusion_bound(
         points, centres,
         reach=params.max_depth_frac * float(median_depth),
@@ -1230,61 +1243,94 @@ def _scale_note(store, world_id: str) -> dict:
     return scale
 
 
-def _spare_the_room(keys, nkey, *, voxel: float, centres, params: SurfaceParams,
-                    median_depth: float, chunk: int = 1 << 16):
-    """What an over-budget walk gives up BEFORE the voxel of the whole room is
-    coarsened (`SurfaceParams.budget_spares_the_room`): `(kept keys, {"unsupported":
-    n, "periphery": n})`, the blocks each answer dropped.
+def _contradicted_frames(cached, points, K, *, params: SurfaceParams, trel: float,
+                         floor: float, device) -> list[bool]:
+    """Which fused frames the solve's own sparse points contradict
+    (`SurfaceParams.budget_drops_contradicted`), one flag per `cached` frame.
 
-    `keys` are one allocation pass's unique block keys and `nkey` how many
-    frames keyed each (a frame's own keys are unique, so a count is a number of
-    distinct frames); `centres` the fused cameras' centres, on the keys' device.
-
-      1. Blocks fewer than `min_support_frames` frames key. No face such a block
-         could hold would ship: `evidence_filter` removes a face fewer than that
-         many distinct frames support, a frame supports a face only within its
-         truncation band of its depth, and `blocks_for_depth` keys every block
-         within that same band. The allocation subsamples a frame's pixels (to
-         60,000: one in three at the corpus' 359 x 639 frames), whose spacing
-         stays under a block's edge out to ~6 scene depths, and each sample
-         keys its whole band besides, so the count is the frames' own. What
-         can go besides is a cube straddling such a block's boundary with a kept
-         one: one voxel deep, at the edge of a surface only one frame measured.
-      2. While still over the budget: blocks whose centre lies farther than the
-         scene-relative far bound -- `max_depth_frac` x the scene scale, the
-         reach `_fusion_bound` grows every camera by -- plus half a block
-         diagonal from EVERY fused camera. That is the far periphery: no place
-         the wearer stood saw it at a normal range, and the old answer made the
-         whole room pay for it.
-
-    Whatever is left is the caller's to coarsen, exactly as before, if it is
-    still over the budget: a walk whose supported, near-path surface alone is
-    too big is genuinely big.
+    Per frame, the fused component's sparse `points` are projected into it and
+    read against its fused depth `d` (only where that depth is valid):
+    it AGREES with a point at depth `z` when |d - z| <= max(floor, trel * d) --
+    the frames' own measured disagreement, uncapped -- and is CONTRADICTED by
+    it when d > CONTRADICTED_DEPTH_FACTOR * z: the frame measures free space
+    through where the solve triangulated surface. Flagged when contradicted on
+    at least `DenseParams.min_sparse_points` points and on at least
+    `contradiction_ratio` times as many as it agrees with. A frame whose view
+    holds too few points to judge is never flagged.
     """
     import torch
 
-    from tower.world_builder.surface import BLOCK, block_coords  # noqa: PLC0415
+    from tower.world_builder.dense import DenseParams  # noqa: PLC0415
+    from tower.world_builder.surface import CONTRADICTED_DEPTH_FACTOR  # noqa: PLC0415
+
+    need = int(DenseParams().min_sparse_points)
+    P = torch.as_tensor(np.asarray(points, np.float32).reshape(-1, 3), device=device)
+    fx, fy, cx, cy = float(K[0, 0]), float(K[1, 1]), float(K[0, 2]), float(K[1, 2])
+    flags = []
+    for z, ok, _img, R, tt, _w in cached:
+        if not len(P):
+            flags.append(False)
+            continue
+        depth = z.to(device).float()
+        valid = ok.to(device)
+        H, W = depth.shape
+        pc = P @ R.to(device).float().T + tt.to(device).float()
+        zp = pc[:, 2]
+        zc = zp.clamp(min=1e-6)
+        u = torch.round(pc[:, 0] / zc * fx + cx).long()
+        v = torch.round(pc[:, 1] / zc * fy + cy).long()
+        m = (zp > 1e-4) & (u >= 0) & (u < W) & (v >= 0) & (v < H)
+        flat = v.clamp(0, H - 1) * W + u.clamp(0, W - 1)
+        d = depth.reshape(-1)[flat]
+        m &= valid.reshape(-1)[flat] & torch.isfinite(d)
+        band = torch.clamp(trel * d, min=float(floor))
+        agree = int((m & ((d - zp).abs() <= band)).sum())
+        contra = int((m & (d > CONTRADICTED_DEPTH_FACTOR * zp)).sum())
+        flags.append(contra >= need and contra >= params.contradiction_ratio * agree)
+    return flags
+
+
+def _spare_the_room(keys, nkey, frame_keys, *, params: SurfaceParams, contradicted=None):
+    """What an over-budget walk gives up BEFORE the voxel of the whole room is
+    coarsened (`SurfaceParams.budget_spares_the_room`), by evidence, never by
+    distance: `(kept keys, {"unsupported": n, "contradicted": n,
+    "frames_contradicted": n})`.
+
+    `keys` are one allocation pass's unique block keys, `nkey` how many frames
+    keyed each (every frame's own keys are unique, so a count is a number of
+    distinct frames), `frame_keys` each frame's keys, and `contradicted` a
+    callable returning one flag per frame (`_contradicted_frames`), called only
+    if answer 1 leaves the walk over the budget.
+
+      1. Blocks fewer than `min_support_frames` frames key: no face whose
+         centroid such a block holds can pass `evidence_filter` (see
+         `SurfaceParams.budget_spares_the_room` for why, and for the one-voxel
+         seam it can cost).
+      2. While still over the budget, with `budget_drops_contradicted`: blocks
+         keyed ONLY by contradicted frames. A block any uncontradicted frame
+         keys is kept, however far it is.
+
+    Whatever is left is the caller's to coarsen, exactly as before.
+    """
+    import torch
 
     n0 = int(keys.numel())
     floor = int(params.min_support_frames)
-    if floor > 1 and nkey is not None:
-        keys = keys[nkey >= floor]
-    unsupported = n0 - int(keys.numel())
-    periphery = 0
-    reach = float(params.max_depth_frac) * float(median_depth)
-    if keys.numel() > params.max_blocks and reach > 0 and len(centres):
-        C = torch.as_tensor(centres, dtype=torch.float32, device=keys.device).reshape(-1, 3)
-        # 0.8660254 = sqrt(3) / 2: the block's half-diagonal, so the test
-        # over-includes rather than misses (as `_blocks_in_view` does).
-        lim = reach + BLOCK * float(voxel) * 0.8660254
-        near = torch.zeros(keys.numel(), dtype=torch.bool, device=keys.device)
-        for s in range(0, int(keys.numel()), chunk):
-            ctr = (block_coords(keys[s:s + chunk]).to(torch.float32) * BLOCK
-                   + BLOCK / 2) * float(voxel)
-            near[s:s + chunk] = torch.cdist(ctr, C).amin(1) <= lim
-        periphery = int((~near).sum())
-        keys = keys[near]
-    return keys, {"unsupported": unsupported, "periphery": periphery}
+    keep = (nkey >= floor) if (floor > 1 and nkey is not None) else torch.ones_like(keys, dtype=torch.bool)
+    unsupported = n0 - int(keep.sum())
+    dropped = {"unsupported": unsupported, "contradicted": 0, "frames_contradicted": 0}
+    if (int(keep.sum()) > params.max_blocks and params.budget_drops_contradicted
+            and contradicted is not None):
+        flags = list(contradicted())
+        dropped["frames_contradicted"] = int(sum(flags))
+        if any(flags):
+            good = [k for k, f in zip(frame_keys, flags) if not f]
+            vouched = (torch.isin(keys, torch.unique(torch.cat(good))) if good
+                       else torch.zeros_like(keep))
+            before = int(keep.sum())
+            keep &= vouched
+            dropped["contradicted"] = before - int(keep.sum())
+    return keys[keep], dropped
 
 
 def _build(root, frames, params, median_depth, voxel, trunc, seconds,
@@ -1316,7 +1362,8 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     key_coarsened = 1.0
     # What `budget_spares_the_room` dropped on the pass that was reserved; None
     # when the policy is off, so the record keeps its old keys.
-    spared = {"unsupported": 0, "periphery": 0} if params.budget_spares_the_room else None
+    spared = ({"unsupported": 0, "contradicted": 0, "frames_contradicted": 0}
+              if params.budget_spares_the_room else None)
 
     def record():
         return _outlier_record(frames, voxel, coarsened, key_coarsened, spared)
@@ -1366,8 +1413,9 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     # pose gate rely on.
     #
     # AND, WITH `budget_spares_the_room`, NOT BEFORE THE ROOM IS SPARED: a walk
-    # over the budget first loses what no kept face can come from, then the far
-    # periphery, and the voxel is coarsened only for what is left
+    # over the budget first loses what no kept face can come from, then (with
+    # `budget_drops_contradicted`) what only frames the solve's own points
+    # contradict measured, and the voxel is coarsened only for what is left
     # (`_spare_the_room`). Under the budget nothing here changes.
     attempts = 12
     cap = params.max_key_coarsening
@@ -1376,17 +1424,18 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
     for attempt in range(attempts):
         if spare:
             # Only the pass that is reserved is recorded.
-            spared = {"unsupported": 0, "periphery": 0}
+            spared = {"unsupported": 0, "contradicted": 0, "frames_contradicted": 0}
         try:
             keys = [vol.blocks_for_depth(z.to(device).float(), ok.to(device), R, tt,
                                          frames.K)
                     for z, ok, _img, R, tt, _w in cached]
             if spare:
                 # How many frames key each block: every frame's keys are unique.
+                # Each frame's own keys are kept for `_spare_the_room`'s answer 2.
                 allk, nkey = torch.unique(torch.cat(keys), return_counts=True)
             else:
                 allk = torch.unique(torch.cat(keys))
-            del keys
+                del keys
         except SurfaceUnavailable as exc:
             over = exc.key_overshoot
             # Block coordinates scale as 1/voxel, so the overshoot IS the
@@ -1425,15 +1474,19 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
         if params.max_blocks <= 0 or allk.numel() <= params.max_blocks:
             break
         if spare:
-            centres = torch.stack([-(R.T @ tt) for _z, _ok, _img, R, tt, _w in cached])
-            allk, spared = _spare_the_room(allk, nkey, voxel=voxel, centres=centres,
-                                           params=params, median_depth=median_depth)
+            pts = getattr(frames, "fused_points", None)
+            allk, spared = _spare_the_room(
+                allk, nkey, keys, params=params,
+                contradicted=lambda: _contradicted_frames(
+                    cached, pts if pts is not None else np.zeros((0, 3)), frames.K,
+                    params=params, trel=trel, floor=float(band_floor(voxel)), device=device))
             nkey = None
+            del keys
             logger.info("[Tower][WorldBuilder][surface] over the block budget of %d: "
-                        "dropped %d blocks fewer than %d frames key and %d beyond the "
-                        "far bound of every camera; %d left", params.max_blocks,
-                        spared["unsupported"], params.min_support_frames,
-                        spared["periphery"], allk.numel())
+                        "dropped %d blocks fewer than %d frames key and %d keyed only by "
+                        "the %d frames the solve's own points contradict; %d left",
+                        params.max_blocks, spared["unsupported"], params.min_support_frames,
+                        spared["contradicted"], spared["frames_contradicted"], allk.numel())
             if allk.numel() <= params.max_blocks:
                 break
         if attempt == attempts - 1:
@@ -1457,6 +1510,7 @@ def _build(root, frames, params, median_depth, voxel, trunc, seconds,
                     params.max_blocks, coarsened, voxel)
         vol = SurfaceVolume(voxel, band_floor(voxel), device=device, trunc_rel=trel,
                             trunc_max=params.trunc_max_voxels * voxel)
+    keys = None  # each frame's keys, kept for `_spare_the_room`; not needed past here
     vol.reserve(allk)
     del allk
     # The band a sample at the scene scale actually got, cap included --

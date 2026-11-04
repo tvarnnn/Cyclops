@@ -1059,10 +1059,11 @@ def world_no_power_throttling_setting() -> bool:
 # THE SURFACE'S EXTENT GUARDS (fix/surface-bound, 2026-11-03). Read by every surface build
 # (`surface_pipeline.surfacify`, live and final). On: the fusion bound's point envelope comes from
 # the fused component's sparse points only (`SurfaceParams.bound_from_fused_component`), and a walk
-# over the field's block budget first loses the blocks no kept face can come from, then the far
-# periphery, and only then a coarser voxel for the whole room
-# (`SurfaceParams.budget_spares_the_room`). Off: every surface is byte for byte as before. Under
-# the budget and with no other component's points outside the envelope, on builds the same mesh.
+# over the field's block budget first loses the blocks no kept face can come from, then the blocks
+# only frames the solve's own points contradict measured, and only then a coarser voxel for the
+# whole room (`SurfaceParams.budget_spares_the_room`, `budget_drops_contradicted`; by evidence,
+# never by distance). Off: every surface is byte for byte as before. Under the budget and with no
+# other component's points outside the envelope, on builds the same mesh.
 WORLD_SURFACE_BOUND_FIX_ENV = "TOWER_WORLD_SURFACE_BOUND_FIX"
 
 
