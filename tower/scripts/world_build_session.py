@@ -836,6 +836,22 @@ class BackgroundSurface:
             self._log = None
 
 
+def _start_live_counters(store, world_id, session_id):
+    """`TOWER_WORLD_CPU_SAMPLER` (default off): post-Stop machine counters, diagnostics only.
+
+    Off: nothing is imported, started or written. On: anything that goes wrong here is logged
+    and the build goes on without the sampler (`world_builder/live_counters.py`)."""
+    try:
+        from tower.config import world_cpu_sampler_setting  # noqa: PLC0415
+        if not world_cpu_sampler_setting():
+            return None
+        from tower.world_builder.live_counters import start_if_on  # noqa: PLC0415
+        return start_if_on(store, world_id, session_id)
+    except Exception:  # noqa: BLE001 -- diagnostics must not affect the build
+        logger.exception("[Tower][WorldBuilder] live counters unavailable; the build goes on")
+        return None
+
+
 class MasksAtStop:
     """The final build's transient masks, staged by a CHILD while the final solve runs.
 
@@ -3168,6 +3184,7 @@ def main(argv=None) -> int:
     # T-UX1 (WORLDS §2b): `finish_phase.PhaseWriter`, or None -- always None with
     # `TOWER_WORLD_FINISH_STAGES` off, so nothing below writes a byte. Here so `finally` sees it.
     phase = None
+    live_counters = None
     try:
         if capture_start_error is not None:
             raise capture_start_error
@@ -3412,6 +3429,11 @@ def main(argv=None) -> int:
                 "is not in it.",
                 end_reason,
             )
+        # A live capture has ended. The opt-in sampler observes this builder and
+        # its descendants through final solve, surface and appearance; it is stopped at
+        # both returns below, and by `atexit` if an exception leaves `main`.
+        if args.follow_capture:
+            live_counters = _start_live_counters(store, world_id, session_id)
         summary = engine.stop_session(
             end_reason, hold_lock=True, capture_end_reason=capture_end
         )
@@ -3648,6 +3670,8 @@ def main(argv=None) -> int:
         engine.release_world(world_id)
 
     if result is None or summary is None:
+        if live_counters is not None:
+            live_counters.stop()
         return exit_code
 
     report = {
@@ -3832,6 +3856,8 @@ def main(argv=None) -> int:
                 "\nSYNTHETIC, NOT PHYSICAL: nothing here says anything about "
                 "the Ray-Ban camera."
             )
+    if live_counters is not None:
+        live_counters.stop()
     return exit_code
 
 

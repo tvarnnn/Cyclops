@@ -1280,6 +1280,15 @@ def world_bg_stop_at_match_probe_setting() -> bool:
     return _flag(WORLD_BG_STOP_AT_MATCH_PROBE_ENV, default=False)
 
 
+# Post-Stop machine counters beside the session's solve.log. Diagnostics only.
+WORLD_CPU_SAMPLER_ENV = "TOWER_WORLD_CPU_SAMPLER"
+
+
+def world_cpu_sampler_setting() -> bool:
+    """Whether to sample live build counters every ten seconds. Off by default."""
+    return _flag(WORLD_CPU_SAMPLER_ENV, default=False)
+
+
 # Pose quarantine: impossible poses are never
 # published in a room. One switch, three PARTS:
 #   `path`   (a) the viewer's camera list (`surface_render._camera_path`) keeps only published, supported
