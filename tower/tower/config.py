@@ -1023,6 +1023,15 @@ def world_area_builds_setting() -> bool:
     return _flag(WORLD_AREA_BUILDS_ENV, default=False)
 
 
+# The surface pack's confidence rim lookup. Off keeps the two-column edge key.
+WORLD_SURFACE_EDGE_KEY_ENV = "TOWER_WORLD_SURFACE_EDGE_KEY"
+
+
+def world_surface_edge_key_setting() -> bool:
+    """`TOWER_WORLD_SURFACE_EDGE_KEY`: use an int64 edge key in pack. Off."""
+    return _flag(WORLD_SURFACE_EDGE_KEY_ENV, default=False)
+
+
 # WORLD-BUILDER-WORLDS.md §2b; CARTRIDGE-RESULTS.md §10.1 `lifecycle.processing`. Read at call
 # time by the builder (whether to record its finish phase) and by the status producer and the saved-
 # worlds listing (whether to project it). Off: nothing is written, nothing is read, and every payload
