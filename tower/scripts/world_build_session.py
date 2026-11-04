@@ -901,9 +901,17 @@ class MasksAtStop:
             extra = {}
             if os.name == "nt":
                 extra["creationflags"] = subprocess.BELOW_NORMAL_PRIORITY_CLASS
+            from tower.config import world_masks_at_stop_threads_setting  # noqa: PLC0415
+
+            env = child_environment()
+            threads = world_masks_at_stop_threads_setting()
+            if threads:
+                # Its detectors run on the GPU: torch's default pool of one spinning OpenMP
+                # worker per logical CPU only takes cores from the final solve beside it.
+                env = {**env, "OMP_NUM_THREADS": str(threads), "MKL_NUM_THREADS": str(threads)}
             self._child = self._spawn(
                 argv, cwd=str(TOWER_ROOT), stdout=self._log, stderr=subprocess.STDOUT,
-                env=child_environment(), stdin=subprocess.DEVNULL, **extra,
+                env=env, stdin=subprocess.DEVNULL, **extra,
             )
         except Exception:  # noqa: BLE001 -- an optimisation, never a reason to lose the walk
             logger.exception("[Tower][WorldBuilder] masks at Stop: the worker did not start")
