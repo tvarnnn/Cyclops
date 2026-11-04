@@ -17,18 +17,16 @@ components, which the surface never fuses.
 
   * the bound's point envelope is built from the fused component's points only
     (`SurfaceParams.bound_from_fused_component`);
-  * a walk over the budget first loses the blocks no kept face can come from,
-    then the blocks keyed only by frames the solve's own sparse points
-    contradict, and only then a coarser voxel (`budget_spares_the_room`,
-    `budget_drops_contradicted`, `surface_pipeline._spare_the_room`). By
-    evidence, never by distance: a far wall healthy frames see is always kept.
+  * a walk over the budget first loses the blocks no kept face can come from
+    (fewer than `min_support_frames` frames key them), and only then a coarser
+    voxel (`budget_spares_the_room`, `surface_pipeline._spare_the_room`). By
+    evidence, never by distance: a far wall several frames see is always kept.
 
 Off, every surface is byte for byte what it was.
 """
 
 from __future__ import annotations
 
-import json
 from types import SimpleNamespace
 
 import numpy as np
@@ -68,20 +66,19 @@ class TestTheSwitch:
         """A surface built before the switch existed must not rebuild because
         it did: off adds nothing to the digest."""
         off = S.SurfaceParams().digest_fields()
-        assert S.SurfaceParams(bound_from_fused_component=False, budget_spares_the_room=False,
-                               budget_drops_contradicted=False).digest_fields() == off
+        assert S.SurfaceParams(bound_from_fused_component=False,
+                               budget_spares_the_room=False).digest_fields() == off
         assert not [f for f in off if isinstance(f, tuple) and f and f[0] in ("bound-points", "budget")]
 
     def test_on_the_cache_identity_says_so_and_only_appends(self):
         off = S.SurfaceParams().digest_fields()
-        on = S.SurfaceParams(bound_from_fused_component=True, budget_spares_the_room=True,
-                             budget_drops_contradicted=True).digest_fields()
+        on = S.SurfaceParams(bound_from_fused_component=True,
+                             budget_spares_the_room=True).digest_fields()
         assert on[:len(off)] == off
         assert on[len(off):] == (("bound-points", "fused-component"),
-                                 ("budget", "unsupported-then-voxel"),
-                                 ("budget", "contradicted-frames", S.CONTRADICTED_DEPTH_FACTOR))
+                                 ("budget", "unsupported-then-voxel"))
 
-    def test_the_switch_turns_on_all_three(self, monkeypatch):
+    def test_the_switch_turns_on_both(self, monkeypatch):
         """`surfacify` reads the switch per build; checked through the params it
         hands `_build` (a stand-in that stops there)."""
         seen = {}
@@ -98,7 +95,7 @@ class TestTheSwitch:
             store = _synthetic_world(Path(d))
             SP.surfacify(store, WORLD, SESSION, params=_params())
         p = seen["params"]
-        assert p.bound_from_fused_component and p.budget_spares_the_room and p.budget_drops_contradicted
+        assert p.bound_from_fused_component and p.budget_spares_the_room
 
 
 # ---------------------------------------------------------------------------
@@ -184,133 +181,36 @@ def _pass(frame_coords):
     return allk, n, fk
 
 
-class TestTheBudgetAnswersInOrder:
-    """`_spare_the_room`: by evidence, never by distance."""
+class TestTheOneFrameDrop:
+    """`_spare_the_room`: by evidence (how many frames key a block), never by
+    distance."""
 
     def _params(self, **kw):
-        base = dict(max_blocks=4, min_support_frames=2, budget_spares_the_room=True,
-                    budget_drops_contradicted=True)
+        base = dict(max_blocks=4, min_support_frames=2, budget_spares_the_room=True)
         base.update(kw)
         return S.SurfaceParams(**base)
 
-    def test_blocks_fewer_frames_key_than_a_face_needs_go_first(self):
-        allk, n, fk = _pass([[[0, 0, 0], [0, 0, 1], [0, 0, 2]],
-                             [[0, 0, 0], [0, 0, 1], [0, 0, 3]]])
-        asked = []
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(max_blocks=2),
-                                           contradicted=lambda: asked.append(1) or [False, False])
-        assert dropped == {"unsupported": 2, "contradicted": 0, "frames_contradicted": 0}
+    def test_blocks_fewer_frames_key_than_a_face_needs_go(self):
+        allk, n, _fk = _pass([[[0, 0, 0], [0, 0, 1], [0, 0, 2]],
+                              [[0, 0, 0], [0, 0, 1], [0, 0, 3]]])
+        kept, dropped = SP._spare_the_room(allk, n, params=self._params(max_blocks=2))
+        assert dropped == {"unsupported": 2}
         assert sorted(kept.tolist()) == sorted(_keys([[0, 0, 0], [0, 0, 1]]).tolist())
-        assert not asked, "the evidence is not even read once answer 1 is enough"
 
     def test_a_count_of_one_drops_nothing(self):
-        allk, n, fk = _pass([[[0, 0, i] for i in range(6)]])
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(min_support_frames=1,
-                                                                            budget_drops_contradicted=False))
+        allk, n, _fk = _pass([[[0, 0, i] for i in range(6)]])
+        kept, dropped = SP._spare_the_room(allk, n, params=self._params(min_support_frames=1))
         assert dropped["unsupported"] == 0 and kept.numel() == 6
 
-    def test_blocks_only_contradicted_frames_key_go_next(self):
-        room = [[0, 0, i] for i in range(3)]
-        ghost = [[0, 50, i] for i in range(4)]          # keyed by the two contradicted frames only
-        allk, n, fk = _pass([room, room, ghost, ghost])
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(max_blocks=3),
-                                           contradicted=lambda: [False, False, True, True])
-        assert dropped == {"unsupported": 0, "contradicted": 4, "frames_contradicted": 2}
-        assert sorted(kept.tolist()) == sorted(_keys(room).tolist())
-
-    def test_one_healthy_frame_vouches_for_a_block(self):
-        """A block a contradicted frame keys is kept if any uncontradicted frame
-        keys it too: only blocks NO healthy frame measured go."""
-        shared = [[0, 0, 0], [0, 0, 1]]
-        allk, n, fk = _pass([shared, shared + [[9, 9, 9]], [[9, 9, 9]]])
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(max_blocks=1),
-                                           contradicted=lambda: [True, False, True])
-        assert dropped["contradicted"] == 0 and kept.numel() == 3
-
-    def test_a_far_wall_healthy_frames_see_is_kept_however_far(self):
+    def test_a_far_wall_several_frames_see_is_kept_however_far(self):
         """The case a distance rule gets wrong: a wall a hundred blocks from
-        every camera, measured by several healthy frames, over the budget."""
+        every camera, measured by several frames, over the budget."""
         near = [[0, 0, i] for i in range(3)]
         wall = [[100, j, 400] for j in range(5)]
-        allk, n, fk = _pass([near + wall, near + wall, wall])
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(max_blocks=2),
-                                           contradicted=lambda: [False, False, False])
-        assert dropped == {"unsupported": 0, "contradicted": 0, "frames_contradicted": 0}
+        allk, n, _fk = _pass([near + wall, near + wall, wall])
+        kept, dropped = SP._spare_the_room(allk, n, params=self._params(max_blocks=2))
+        assert dropped == {"unsupported": 0}
         assert kept.numel() == 8, "over the budget, the caller coarsens; nothing here drops the wall"
-
-    def test_without_the_evidence_step_contradicted_frames_keep_their_blocks(self):
-        ghost = [[0, 50, i] for i in range(4)]
-        allk, n, fk = _pass([ghost, ghost])
-        kept, dropped = SP._spare_the_room(allk, n, fk, params=self._params(budget_drops_contradicted=False,
-                                                                            max_blocks=1),
-                                           contradicted=lambda: [True, True])
-        assert dropped["contradicted"] == 0 and kept.numel() == 4
-
-
-# ---------------------------------------------------------------------------
-# which frames the solve's own points contradict
-# ---------------------------------------------------------------------------
-
-
-def _plane_frame(depth, *, w=64, h=48, f=60.0, eye=(0.0, 0.0, 0.0)):
-    """A camera at `eye` looking down +z at a constant-depth plane: the cached
-    tuple `_build` holds, plus K."""
-    K = np.array([[f, 0, w / 2], [0, f, h / 2], [0, 0, 1.0]])
-    z = torch.full((h, w), float(depth))
-    ok = torch.ones((h, w), dtype=torch.bool)
-    R = torch.eye(3)
-    t = -torch.as_tensor(np.asarray(eye, np.float32))
-    return (z, ok, None, R, t, None), K
-
-
-def _points_on(depth, n=8, half=0.3):
-    g = np.linspace(-half, half, n)
-    X, Y = np.meshgrid(g * depth, g * depth)
-    return np.stack([X.ravel(), Y.ravel(), np.full(X.size, float(depth))], 1)
-
-
-class TestContradictedFrames:
-
-    def _flags(self, frames, points, K, scale=1.0, **kw):
-        params = S.SurfaceParams(**kw)
-        return SP._contradicted_frames([f for f in frames], np.asarray(points) * scale, K,
-                                       params=params, trel=0.05, floor=0.01 * scale,
-                                       device=torch.device("cpu"))
-
-    def test_a_frame_that_measures_through_the_solves_surface_is_contradicted(self):
-        good, K = _plane_frame(2.0)
-        stretched, _ = _plane_frame(16.0)        # its fit put the same surface 8x too far
-        assert self._flags([good, stretched], _points_on(2.0), K) == [False, True]
-
-    def test_a_far_wall_whose_points_agree_is_not(self):
-        wall, K = _plane_frame(50.0)
-        assert self._flags([wall], _points_on(50.0), K) == [False]
-
-    def test_a_point_behind_the_surface_is_no_evidence_against_it(self):
-        near, K = _plane_frame(2.0)              # an occluder in front of the points
-        assert self._flags([near], _points_on(10.0), K) == [False]
-
-    def test_too_few_contradicting_points_to_judge(self):
-        stretched, K = _plane_frame(16.0)
-        few = _points_on(2.0, n=4)               # 16 points: under `min_sparse_points`
-        assert self._flags([stretched], few, K) == [False]
-
-    def test_mild_disagreement_is_not_contradiction(self):
-        off_by_half, K = _plane_frame(3.0)       # 1.5x the points' depth: under the 2x line
-        assert self._flags([off_by_half], _points_on(2.0), K) == [False]
-
-    def test_an_offset_camera_reads_its_own_view(self):
-        """The projection uses the frame's own pose: a camera five units along x
-        is contradicted by the points in ITS view, not by points at the origin."""
-        stretched, K = _plane_frame(16.0, eye=(5.0, 0.0, 0.0))
-        here = _points_on(2.0) + np.array([5.0, 0.0, 0.0])
-        assert self._flags([stretched], here, K) == [True]
-        assert self._flags([stretched], _points_on(2.0) + np.array([-5.0, 0.0, 0.0]), K) == [False]
-
-    def test_it_is_gauge_free(self):
-        good, K = _plane_frame(2000.0)
-        stretched, _ = _plane_frame(16000.0)
-        assert self._flags([good, stretched], _points_on(2.0), K, scale=1000.0) == [False, True]
 
 
 # ---------------------------------------------------------------------------
@@ -374,19 +274,24 @@ class TestAThinFeatureIsCountedByEveryFrameThatSeesIt:
 # ---------------------------------------------------------------------------
 
 
-def _with_far_frame(tmp_path):
-    """The ring fixture, with frame 0's fit stretched 8x and its anchor range
-    with it: a frame whose depth the solve's own anchors put far outside the
-    room, as int4-w102-2's frames 471-474 were."""
-    store = _synthetic_world(tmp_path, anchors=True)
-    align_p = store.world_dir(WORLD) / "dense" / SESSION / "align.json"
-    align = json.loads(align_p.read_text())
-    r = align["records"][0]
-    r["a"] = 1.0 / 8.0          # kind "depth": z = (pred - b) / a, so 8x farther
-    r["z_sparse_min"] = 8.0 * r["z_sparse_min"]
-    r["z_sparse_max"] = 8.0 * r["z_sparse_max"]
-    align_p.write_text(json.dumps(align))
-    return store
+def _overlapping_world(tmp_path):
+    """Views that overlap (so faces have two supporters, and the edges of the
+    overlap are keyed by one frame): six look at a slab close by, four look
+    back at the room's wall ~3 units away -- twelve scene depths, beyond the
+    far bound of every camera, which a distance rule would cut."""
+    slab = ([-1.0, -1.0, 0.25], [1.0, 1.0, 0.35])
+    views = [(np.array([dx, dy, 0.0]), np.array([dx, dy, 1.0]), slab)
+             for dx in (-0.06, 0.0, 0.06) for dy in (-0.04, 0.04)]
+    views += [(np.array([dx, 0.0, 0.0]), np.array([dx, 0.0, -1.0]), slab)
+              for dx in (-0.06, -0.02, 0.02, 0.06)]
+    return _synthetic_world(tmp_path, views=views, anchors=True)
+
+
+P2 = dict(min_support_frames=2, depth_consistency=False)
+
+
+def _factor(store):
+    return _manifest(store)["outliers"]["voxel_coarsened_for_block_budget"]
 
 
 class TestThroughTheStage:
@@ -412,93 +317,66 @@ class TestThroughTheStage:
         assert on["params_digest"] != off["params_digest"], "on rebuilds"
         assert on["voxel"] == off["voxel"] and on["faces"] == off["faces"]
         assert SP.read_surface_level(store, WORLD, SESSION, 0) == off_mesh
-        for k in ("unsupported", "contradicted", "frames_contradicted"):
-            assert on["outliers"][f"blocks_dropped_{k}"] == 0
+        assert on["outliers"]["blocks_dropped_unsupported"] == 0
 
-    def _far(self, tmp_path):
-        store = _with_far_frame(tmp_path)
-        # The consistency field would pull the stretched frame back towards its
-        # (unstretched) anchors; these tests are about the budget, so it is off.
-        params = dict(depth_consistency=False)
-        free = SP.surfacify(store, WORLD, SESSION, params=_params(**params))
-        assert free.state == SP.STATE_OK, free.detail
-        return store, params, free, _manifest(store)["voxel"]
-
-    def test_a_contradicted_frame_over_the_budget_costs_its_own_blocks_not_the_room(
-            self, tmp_path, monkeypatch):
+    def test_when_the_one_frame_drop_is_enough_the_room_keeps_its_voxel(self, tmp_path,
+                                                                        monkeypatch):
         monkeypatch.delenv(WORLD_SURFACE_BOUND_FIX_ENV, raising=False)
-        store, params, free, free_voxel = self._far(tmp_path)
-        budget = free.blocks // 2
+        store = _overlapping_world(tmp_path)
+        free = SP.surfacify(store, WORLD, SESSION, params=_params(**P2))
+        assert free.state == SP.STATE_OK, free.detail
+        free_voxel = _manifest(store)["voxel"]
+        budget = free.blocks - 1
 
-        old = SP.surfacify(store, WORLD, SESSION, force=True,
-                           params=_params(max_blocks=budget, **params))
+        old = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget, **P2))
         assert old.state == SP.STATE_OK, old.detail
-        assert json.loads(old.detail)["voxel_coarsened_by"] > 1.0, "the old answer: the room"
+        assert _factor(store) > 1.0, "the old answer: the whole room"
 
         monkeypatch.setenv(WORLD_SURFACE_BOUND_FIX_ENV, "on")
-        new = SP.surfacify(store, WORLD, SESSION, force=True,
-                           params=_params(max_blocks=budget, **params))
+        new = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget, **P2))
         assert new.state == SP.STATE_OK, new.detail
         man = _manifest(store)
-        assert json.loads(new.detail)["voxel_coarsened_by"] == 1.0
-        assert man["voxel"] == free_voxel
-        assert new.blocks <= budget
-        assert man["outliers"]["blocks_dropped_frames_contradicted"] == 1, "the stretched frame only"
-        assert man["outliers"]["blocks_dropped_contradicted"] > 0
-        assert man["outliers"]["voxel_coarsened_for_block_budget"] == 1.0
-        assert man["faces"] > 0
+        assert man["outliers"]["blocks_dropped_unsupported"] >= 1
+        assert _factor(store) == 1.0 and man["voxel"] == free_voxel
+        assert new.blocks <= budget and man["faces"] > 0
 
     def test_what_is_left_over_the_budget_is_coarsened_by_what_is_left(self, tmp_path,
                                                                        monkeypatch):
-        """The kitchen's path: both answers taken and still over the budget.
-        The voxel is coarsened, by less than the old answer at the same budget,
-        and the reserved pass fits."""
+        """The kitchen's and int4's path: the one-frame drop taken and still
+        over the budget. The voxel is coarsened, by no more than the old
+        answer at the same budget, and the reserved pass fits."""
         monkeypatch.delenv(WORLD_SURFACE_BOUND_FIX_ENV, raising=False)
-        store, params, free, free_voxel = self._far(tmp_path)
+        store = _overlapping_world(tmp_path)
+        free = SP.surfacify(store, WORLD, SESSION, params=_params(**P2))
         monkeypatch.setenv(WORLD_SURFACE_BOUND_FIX_ENV, "on")
-        first = SP.surfacify(store, WORLD, SESSION, force=True,
-                             params=_params(max_blocks=free.blocks // 2, **params))
-        o = _manifest(store)["outliers"]
-        left = free.blocks - o["blocks_dropped_unsupported"] - o["blocks_dropped_contradicted"]
-        assert first.state == SP.STATE_OK and left > 0
+        SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=free.blocks - 1, **P2))
+        left = free.blocks - _manifest(store)["outliers"]["blocks_dropped_unsupported"]
         budget = max(1, left // 3)
 
-        new = SP.surfacify(store, WORLD, SESSION, force=True,
-                           params=_params(max_blocks=budget, **params))
+        new = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget, **P2))
         assert new.state == SP.STATE_OK, new.detail
-        on = _manifest(store)
-        assert new.blocks <= budget
+        on_factor = _factor(store)
+        assert new.blocks <= budget and on_factor > 1.0
         monkeypatch.delenv(WORLD_SURFACE_BOUND_FIX_ENV, raising=False)
-        old = SP.surfacify(store, WORLD, SESSION, force=True,
-                           params=_params(max_blocks=budget, **params))
+        old = SP.surfacify(store, WORLD, SESSION, force=True, params=_params(max_blocks=budget, **P2))
         assert old.state == SP.STATE_OK, old.detail
-        assert 1.0 < on["outliers"]["voxel_coarsened_for_block_budget"] \
-            < _manifest(store)["outliers"]["voxel_coarsened_for_block_budget"]
+        assert on_factor <= _factor(store)
 
-    def test_a_far_wall_healthy_frames_see_is_kept_over_the_budget(self, tmp_path, monkeypatch):
+    def test_a_far_wall_several_frames_see_is_kept_over_the_budget(self, tmp_path, monkeypatch):
         """World Builder must work anywhere: a wall twelve scene depths from
-        every camera, measured by several healthy frames, in a walk over the
-        budget, is kept -- coarsened with the room if it must be, never cut."""
-        slab = ([-1.0, -1.0, 0.25], [1.0, 1.0, 0.35])          # what most frames look at, close
-        views = [(np.array([dx, dy, 0.0]), np.array([dx, dy, 1.0]), slab)
-                 for dx in (-0.06, 0.0, 0.06) for dy in (-0.04, 0.04)]
-        views += [(np.array([dx, 0.0, 0.0]), np.array([dx, 0.0, -1.0]), slab)
-                  for dx in (-0.06, -0.02, 0.02, 0.06)]          # four look back at the far wall
+        every camera, measured by four frames, in a walk over the budget, is
+        kept -- coarsened with the room if it must be, never cut."""
         monkeypatch.delenv(WORLD_SURFACE_BOUND_FIX_ENV, raising=False)
-        store = _synthetic_world(tmp_path, views=views, anchors=True)
-        p = dict(min_support_frames=2, depth_consistency=False)
-        free = SP.surfacify(store, WORLD, SESSION, params=_params(**p))
+        store = _overlapping_world(tmp_path)
+        free = SP.surfacify(store, WORLD, SESSION, params=_params(**P2))
         assert free.state == SP.STATE_OK, free.detail
         md = _manifest(store)["median_scene_depth"]
         assert 6.0 * md < 2.9, "the wall must be beyond the far bound of every camera to test this"
 
         monkeypatch.setenv(WORLD_SURFACE_BOUND_FIX_ENV, "on")
         new = SP.surfacify(store, WORLD, SESSION, force=True,
-                           params=_params(max_blocks=free.blocks // 2, **p))
+                           params=_params(max_blocks=free.blocks // 2, **P2))
         assert new.state == SP.STATE_OK, new.detail
-        man = _manifest(store)
-        assert man["outliers"]["blocks_dropped_frames_contradicted"] == 0
-        assert man["outliers"]["blocks_dropped_contradicted"] == 0
         V, F, _C, _N = S.read_mesh_bytes(SP.read_surface_level(store, WORLD, SESSION, 0))
         cz = np.asarray(V)[np.asarray(F)].mean(1)[:, 2]
         assert (cz < -2.5).sum() > 0, "the far wall is in the mesh"

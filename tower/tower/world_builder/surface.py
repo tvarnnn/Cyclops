@@ -170,11 +170,6 @@ stands down rather than guess. Eight is where a ring of cameras still has a
 meaningful middle; a session with fewer frames than this has no surface worth
 arguing about anyway."""
 
-CONTRADICTED_DEPTH_FACTOR = 2.0
-"""`SurfaceParams.budget_drops_contradicted`: a frame's depth contradicts a
-sparse point on the same pixel ray when it is more than this many times the
-point's depth (see the field for why 2)."""
-
 MIN_ROBUST_POINTS = 16
 """The same idea for the sparse cloud. The envelope only ever grows when the
 filter stands down, so standing down is the safe direction."""
@@ -638,7 +633,7 @@ class SurfaceParams:
     `max_blocks`. Off (the default, and every world built before
     `TOWER_WORLD_SURFACE_BOUND_FIX`): the voxel of the WHOLE scene is coarsened
     until the blocks fit. On (`surface_pipeline._spare_the_room`), only while
-    the budget still binds, and by EVIDENCE, never by distance:
+    the budget binds, and by evidence, never by distance:
 
       1. blocks fewer than `min_support_frames` frames key. A frame keys every
          block within its truncation band of its depth
@@ -651,9 +646,7 @@ class SurfaceParams:
          corpus' 359 x 639 frames), denser than a block edge out to ~6.3 scene
          depths at that resolution; a frame of twice the linear resolution
          would hold it only to ~2.7, so this rests on the frame size.
-      2. with `budget_drops_contradicted`, blocks keyed ONLY by frames the
-         solve's own sparse points contradict (`_contradicted_frames`).
-      3. only then, a coarser voxel, exactly as before, on what is left.
+      2. only then, a coarser voxel, exactly as before, on what is left.
 
     WHY. Block count is a SUM over frames of their footprints, and a frame's
     footprint grows with the square of its depth. On replay int4-w102-2 of walk
@@ -663,35 +656,13 @@ class SurfaceParams:
     against a median of 8.5 K; the walk needed 4.09 M blocks against the
     budget's 360 K, and the old answer coarsened every voxel of the room 3.54x
     (0.069 against 0.020-0.024 on every other replay of the walk). Answer 1
-    alone leaves 1.36 M (the four consecutive frames overlap each other) and
-    would still coarsen 2.25x; answer 2 removes the seven frames' own blocks
-    and the room fits at its own voxel. A walk whose supported,
-    uncontradicted surface alone is over the budget is genuinely big, and is
-    coarsened as before."""
-
-    budget_drops_contradicted: bool = False
-    """Answer 2 of `budget_spares_the_room` (it does nothing without it).
-
-    A fused frame is CONTRADICTED when the solve's own sparse points of the
-    fused component, projected into it, say its depth is grossly wrong:
-    on at least `contradiction_ratio` times as many of them as it agrees with,
-    and on at least `DenseParams.min_sparse_points` of them, its depth puts the
-    surface beyond TWICE the distance of the point on the same pixel ray --
-    i.e. it measures free space through where the solve triangulated surface.
-    "Agrees" is |depth - point| within the frames' own measured disagreement
-    (`truncation_rel` x depth, at least the band floor). The ratio is the one
-    `evidence_filter` removes a face by; the count is the evidence the depth
-    stage needs to fit a frame at all; "twice" is a relative error of 100%,
-    12.5x the 8% held-out residual a fit may have (`gate_rel`).
-
-    Measured: on int4-w102-2 it flags exactly the seven frames above (each
-    sees through 1,500-13,500 points and agrees with 1-32) and one more
-    (39 vs 9); on the kitchen 9.1 world frame 200 and the run 499-507. Their
-    see-through points sit at a median 0.05-0.47 of their depth; most healthy
-    frames' at 0.7-0.9, and the few gross ones are far outnumbered by the
-    points the frame agrees with. A wall seen
-    far away by healthy frames agrees with the points on it and is never
-    contradicted, however far it is: nothing here measures distance."""
+    leaves 1.27 M there (the four consecutive frames overlap each other), so
+    the voxel is still coarsened, but 2.17x instead of 3.54x; on the kitchen
+    9.1 world 2.40x instead of 3.31x; on 9.3, walk 10 and main122-w102-2,
+    which the old answer coarsened 1.10x, it fits at the room's own voxel.
+    The blocks those far frames share with each other are left to a reviewed
+    follow-up (branch `fix/surface-bound-evidence`): any rule that removes
+    them must never remove a real far wall."""
 
     depth_falloff: bool = True
     """Weight falls as 1/z^2: a far pixel's depth is less certain and covers
@@ -1146,8 +1117,6 @@ class SurfaceParams:
             base = base + (("bound-points", "fused-component"),)
         if self.budget_spares_the_room:
             base = base + (("budget", "unsupported-then-voxel"),)
-        if self.budget_drops_contradicted:
-            base = base + (("budget", "contradicted-frames", CONTRADICTED_DEPTH_FACTOR),)
         return base
 
     def _consistency_digest(self):
