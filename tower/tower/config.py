@@ -862,6 +862,14 @@ def world_appearance_encode_workers_setting() -> int:
     return _non_negative_int(os.environ.get("TOWER_WORLD_APPEARANCE_ENCODE_WORKERS"), default=0)
 
 
+WORLD_MASK_SKIP_SYNC_CHECK_ENV = "TOWER_WORLD_MASK_SKIP_SYNC_CHECK"
+
+
+def world_mask_skip_sync_check_setting() -> bool:
+    """Skip Transformers' deformable-attention shape sync during mask inference. Off."""
+    return _flag(WORLD_MASK_SKIP_SYNC_CHECK_ENV, default=False)
+
+
 # The final solve's two settings, by name. Public, and read through the two
 # functions below rather than through `get_settings()`, because the reader is
 # the solve itself: a `world_solve.py` child (or `world_finalize.py`) that
